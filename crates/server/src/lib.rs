@@ -10,9 +10,11 @@ pub mod error;
 pub mod extract;
 pub mod logging;
 pub mod models;
+pub mod modules_api;
 pub mod openapi;
 pub mod static_files;
 pub mod structure_api;
+pub mod structure_dto;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub mod users;

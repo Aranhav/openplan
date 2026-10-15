@@ -2,7 +2,10 @@ use std::error::Error as _;
 
 use axum::{
     Json,
-    extract::{FromRequest, FromRequestParts, Path, Request, rejection::JsonRejection},
+    extract::{
+        FromRequest, FromRequestParts, Path, Query, Request,
+        rejection::{JsonRejection, QueryRejection},
+    },
     http::{StatusCode, request::Parts},
 };
 use serde::de::DeserializeOwned;
@@ -48,6 +51,50 @@ where
     }
 }
 
+/// A query string whose rejections are `application/problem+json` 422s that name the missing
+/// field.
+pub struct ApiQuery<T>(pub T);
+
+impl<S, T> FromRequestParts<S> for ApiQuery<T>
+where
+    S: Send + Sync,
+    T: DeserializeOwned,
+{
+    type Rejection = AppError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, AppError> {
+        let Query(value) = Query::<T>::from_request_parts(parts, state).await?;
+        Ok(ApiQuery(value))
+    }
+}
+
+impl From<QueryRejection> for AppError {
+    fn from(rejection: QueryRejection) -> Self {
+        let message = rejection
+            .source()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        AppError::Validation(vec![match missing_field(&message) {
+            Some(name) => FieldError {
+                field: name.to_string(),
+                message: format!("{} is required.", validate::label(name)),
+            },
+            None => FieldError {
+                field: "query".to_string(),
+                message: "The query string is invalid.".to_string(),
+            },
+        }])
+    }
+}
+
+/// The name in a deserialization message such as "missing field `password`".
+fn missing_field(message: &str) -> Option<&str> {
+    message
+        .strip_prefix("missing field `")
+        .and_then(|rest| rest.split_once('`'))
+        .map(|(name, _)| name)
+}
+
 impl From<JsonRejection> for AppError {
     fn from(rejection: JsonRejection) -> Self {
         match rejection {
@@ -74,11 +121,7 @@ fn data_error_field(message: &str) -> FieldError {
         Some((path, detail)) if is_field_path(path) => (Some(path), detail),
         _ => (None, message),
     };
-    let missing = detail
-        .strip_prefix("missing field `")
-        .and_then(|rest| rest.split_once('`'))
-        .map(|(name, _)| name);
-    match (path, missing) {
+    match (path, missing_field(detail)) {
         (path, Some(name)) => {
             let field = path.map_or_else(|| name.to_string(), |path| format!("{path}.{name}"));
             let message = format!("{} is required.", validate::label(&field));
@@ -267,5 +310,61 @@ mod tests {
         assert_eq!(content_type.unwrap(), "application/problem+json");
         let json: Value = serde_json::from_str(&body).unwrap();
         assert_eq!(json["code"], "not_found");
+    }
+
+    #[derive(Deserialize)]
+    struct Search {
+        line_item_id: Uuid,
+        #[serde(default)]
+        prefix: String,
+    }
+
+    async fn get_query(uri: &str) -> (StatusCode, Value) {
+        let router = Router::new().route(
+            "/",
+            get(|ApiQuery(search): ApiQuery<Search>| async move {
+                format!("{}:{}", search.line_item_id, search.prefix)
+            }),
+        );
+        let response = router
+            .oneshot(Request::get(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes)
+                .unwrap_or_else(|_| Value::String(String::from_utf8(bytes.to_vec()).unwrap())),
+        )
+    }
+
+    #[tokio::test]
+    async fn well_formed_query_is_extracted() {
+        let id = Uuid::now_v7();
+
+        let (status, body) = get_query(&format!("/?line_item_id={id}&prefix=Re%20v")).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, Value::String(format!("{id}:Re v")));
+    }
+
+    #[tokio::test]
+    async fn missing_query_field_names_the_field() {
+        let (status, json) = get_query("/?prefix=a").await;
+
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(json["code"], "validation");
+        assert_eq!(json["errors"][0]["field"], "line_item_id");
+        assert_eq!(json["errors"][0]["message"], "Line item id is required.");
+    }
+
+    #[tokio::test]
+    async fn ill_typed_query_falls_back_to_the_query_field() {
+        let (status, json) = get_query("/?line_item_id=nope").await;
+
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(json["errors"][0]["field"], "query");
+        assert_eq!(json["errors"][0]["message"], "The query string is invalid.");
     }
 }

@@ -41,6 +41,10 @@ pub enum AppError {
     CodedNotFound { code: &'static str, detail: String },
     #[error("validation failed")]
     Validation(Vec<FieldError>),
+    /// A request body refers to something that does not exist. Only a path parameter that names
+    /// nothing is a 404; this one is `structure.invalid` and names the fields.
+    #[error("the request refers to something that does not exist")]
+    MissingReferences(Vec<FieldError>),
     #[error("engine rejected the change: {0}")]
     Engine(#[from] EngineError),
     #[error(transparent)]
@@ -215,6 +219,18 @@ impl IntoResponse for AppError {
                     "Some fields are invalid.".to_string(),
                 )
             }
+            AppError::MissingReferences(field_errors) => {
+                let detail = match field_errors.as_slice() {
+                    [only] => only.message.clone(),
+                    _ => "Some of the things the request refers to do not exist.".to_string(),
+                };
+                errors = Some(field_errors);
+                (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "structure.invalid",
+                    detail,
+                )
+            }
             AppError::Engine(error) => {
                 match &error {
                     EngineError::Formula(problems) => {
@@ -313,6 +329,38 @@ mod tests {
         assert_eq!(json["code"], "validation");
         assert_eq!(json["errors"][0]["field"], "name");
         assert_eq!(json["errors"][0]["message"], "Name is required");
+    }
+
+    #[tokio::test]
+    async fn missing_references_are_structure_invalid_and_name_their_fields() {
+        let one = AppError::MissingReferences(vec![FieldError {
+            field: "format.list".into(),
+            message: "The list does not exist.".into(),
+        }])
+        .into_response();
+        assert_eq!(one.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let json = body_json(one).await;
+        assert_eq!(json["code"], "structure.invalid");
+        assert_eq!(json["detail"], "The list does not exist.");
+        assert_eq!(json["errors"][0]["field"], "format.list");
+
+        let two = AppError::MissingReferences(vec![
+            FieldError {
+                field: "axes[0].list".into(),
+                message: "The list does not exist.".into(),
+            },
+            FieldError {
+                field: "axes[1].subset".into(),
+                message: "The subset does not exist.".into(),
+            },
+        ])
+        .into_response();
+        let json = body_json(two).await;
+        assert_eq!(
+            json["detail"],
+            "Some of the things the request refers to do not exist."
+        );
+        assert_eq!(json["errors"].as_array().unwrap().len(), 2);
     }
 
     #[tokio::test]

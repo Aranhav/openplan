@@ -25,7 +25,7 @@ use crate::{
     auth::{self, csrf, rate_limit::LoginLimiter, renewal},
     config::Config,
     error::AppError,
-    models,
+    models, modules_api,
     openapi::ApiDoc,
     static_files, structure_api, users, workspaces,
 };
@@ -130,6 +130,7 @@ pub fn build_router(state: AppState) -> Router {
         .merge(workspaces::router())
         .merge(models::router())
         .merge(structure_api::router())
+        .merge(modules_api::router())
         .layer(middleware::from_fn(csrf::require_csrf));
     let api_v1: Router<AppState> = csrf_protected
         .merge(auth::routes::session_router())

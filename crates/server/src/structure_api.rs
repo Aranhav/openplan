@@ -10,15 +10,12 @@ use axum::{
     routing::{delete, get, patch, post, put},
 };
 use openplan_engine::{
-    Calendar as EngineCalendar, Command, Item, ItemId, ItemSpec, List, ListId, StructureDoc,
-    Subset, SubsetId, TimeLevel, TimeRange, TimeRangeId, Version, VersionId,
+    Calendar as EngineCalendar, Command, Item, ItemId, ItemSpec, List, ListId, Subset, SubsetId,
+    TimeLevel, TimeRange, TimeRangeId, Version, VersionId,
 };
 use serde::{Deserialize, Deserializer, Serialize};
 use sqlx::PgPool;
-use utoipa::{
-    PartialSchema, ToSchema,
-    openapi::{ObjectBuilder, RefOr, Schema, schema::AdditionalProperties},
-};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::{
@@ -29,6 +26,7 @@ use crate::{
     error::{AppError, AppResult, FieldError},
     extract::{ApiJson, ApiPath},
     models::{Calendar, ModelMode},
+    structure_dto::StructureDto,
     validate,
 };
 
@@ -82,29 +80,6 @@ where
 {
     Option::<T>::deserialize(deserializer).map(Some)
 }
-
-/// The structure document of a model, as the engine stores it: calendar, lists with their items,
-/// subsets, versions, time ranges, modules and line items.
-#[derive(Serialize)]
-#[serde(transparent)]
-pub struct StructureDto(StructureDoc);
-
-/// Documented as an open object rather than field by field: the engine owns the document's shape.
-impl PartialSchema for StructureDto {
-    fn schema() -> RefOr<Schema> {
-        ObjectBuilder::new()
-            .additional_properties(Some(AdditionalProperties::FreeForm(true)))
-            .description(Some(
-                "The structure document of the model: calendar, lists with their items, \
-                 subsets, versions, time ranges, modules and line items. Its fields follow \
-                 the engine's structure document (format_version 1); months and periods are \
-                 indices from the start of the calendar.",
-            ))
-            .into()
-    }
-}
-
-impl ToSchema for StructureDto {}
 
 /// A list of the model.
 #[derive(Serialize, ToSchema)]
@@ -424,7 +399,9 @@ pub(crate) async fn get_structure(
     ApiPath(model_id): ApiPath<Uuid>,
 ) -> AppResult<Json<StructureDto>> {
     let handle = read_handle(&state, &user, model_id).await?;
-    Ok(Json(StructureDto(handle.snapshot().export_structure())))
+    Ok(Json(StructureDto::from(
+        handle.snapshot().export_structure(),
+    )))
 }
 
 #[utoipa::path(

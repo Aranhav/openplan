@@ -84,6 +84,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/formula/functions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["functions_reference"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/models/{id}": {
         parameters: {
             query?: never;
@@ -114,6 +130,70 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/v1/models/{id}/formula/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["check_formula"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/models/{id}/formula/completions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["completions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/models/{id}/line-items/reorder": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["reorder_line_items"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/models/{id}/line-items/{line_item_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["delete_line_item"];
+        options?: never;
+        head?: never;
+        patch: operations["update_line_item"];
         trace?: never;
     };
     "/api/v1/models/{id}/lists": {
@@ -194,6 +274,54 @@ export interface paths {
         options?: never;
         head?: never;
         patch: operations["update_item"];
+        trace?: never;
+    };
+    "/api/v1/models/{id}/modules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["create_module"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/models/{id}/modules/{module_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["delete_module"];
+        options?: never;
+        head?: never;
+        patch: operations["update_module"];
+        trace?: never;
+    };
+    "/api/v1/models/{id}/modules/{module_id}/line-items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["create_line_item"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/models/{id}/structure": {
@@ -461,6 +589,33 @@ export interface components {
             role: components["schemas"]["WorkspaceRole"];
         };
         /**
+         * @description A dimension of a module. Whatever their order, cells are laid out with the list and subset
+         *     dimensions first, then Time, then Versions.
+         */
+        AxisDto: {
+            /** @enum {string} */
+            kind: "list";
+            /** Format: uuid */
+            list: string;
+        } | {
+            /** @enum {string} */
+            kind: "subset";
+            /** Format: uuid */
+            subset: string;
+        } | {
+            /** @enum {string} */
+            kind: "time";
+            level: components["schemas"]["TimeLevelDto"];
+            /**
+             * Format: uuid
+             * @description The named time range to use instead of the model calendar.
+             */
+            range?: string | null;
+        } | {
+            /** @enum {string} */
+            kind: "versions";
+        };
+        /**
          * @description A model's fiscal calendar: the month each fiscal year starts in, the first
          *     year, and how many years it covers.
          */
@@ -479,8 +634,60 @@ export interface components {
         ChangeRoleRequest: {
             role: components["schemas"]["WorkspaceRole"];
         };
+        CheckFormulaRequest: {
+            formula: string;
+            /**
+             * Format: uuid
+             * @description The line item the formula is for.
+             */
+            line_item_id: string;
+        };
+        /** @description What checking a formula found. */
+        CheckFormulaResponse: {
+            /** @description Everything wrong with the formula; only when it is not accepted. */
+            errors?: components["schemas"]["FormulaProblem"][];
+            /** @description Whether the formula would be accepted. */
+            ok: boolean;
+            /** @description The type of the formula; only when it is accepted. */
+            type?: components["schemas"]["ValueTypeDto"];
+        };
+        /** @description Something the formula editor offers at the cursor. */
+        CompletionDto: {
+            /** @description A line of help: the type of a line item, the documentation of a function. */
+            detail: string;
+            kind: components["schemas"]["CompletionKindDto"];
+            /** @description What to insert: a name as it is written in a formula, quoted when it needs to be. */
+            label: string;
+        };
+        /**
+         * @description What kind of thing a completion is.
+         * @enum {string}
+         */
+        CompletionKindDto: "line_item" | "list" | "function" | "keyword";
         CreateItemsRequest: {
             items: components["schemas"]["ItemInput"][];
+        };
+        CreateLineItemRequest: {
+            applies_to?: components["schemas"]["AxisDto"][] | null;
+            code?: string | null;
+            format?: null | components["schemas"]["FormatDto"];
+            /** @description Without a formula, or with a blank one, the line item is an input. */
+            formula?: string | null;
+            name: string;
+            notes?: string | null;
+            /**
+             * Format: int32
+             * @description The position among the line items of the module; one after the last when absent.
+             */
+            ordinal?: number | null;
+            /** Format: uuid */
+            read_access_driver?: string | null;
+            summary?: null | components["schemas"]["SummaryMethodDto"];
+            time_scale?: null | components["schemas"]["TimeScaleDto"];
+            time_summary?: null | components["schemas"]["SummaryMethodDto"];
+            versions?: null | components["schemas"]["VersionsScopeDto"];
+            /** Format: uuid */
+            write_access_driver?: string | null;
         };
         CreateListRequest: {
             name: string;
@@ -492,6 +699,12 @@ export interface components {
         };
         CreateModelRequest: {
             description?: string | null;
+            name: string;
+        };
+        CreateModuleRequest: {
+            axes: components["schemas"]["AxisDto"][];
+            /** @description The folder label used for navigation; none when absent. */
+            functional_area?: string | null;
             name: string;
         };
         CreateSubsetRequest: {
@@ -527,6 +740,38 @@ export interface components {
             field: string;
             message: string;
         };
+        /** @description How a line item's values are typed and displayed. */
+        FormatDto: {
+            /**
+             * Format: int32
+             * @description How many decimals are shown, 0 to 10. Wider than the engine's, so that a request with
+             *     too many is refused with a message about the decimals.
+             */
+            decimals: number;
+            negative: components["schemas"]["NegativeStyleDto"];
+            thousands_sep: boolean;
+            /** @enum {string} */
+            type: "number";
+            unit: components["schemas"]["NumberUnitDto"];
+        } | {
+            /** @enum {string} */
+            type: "boolean";
+        } | {
+            /** @enum {string} */
+            type: "text";
+        } | {
+            /** @enum {string} */
+            type: "date";
+        } | {
+            /** Format: uuid */
+            list: string;
+            /** @enum {string} */
+            type: "list";
+        } | {
+            level: components["schemas"]["TimeLevelDto"];
+            /** @enum {string} */
+            type: "time_period";
+        };
         /** @description A problem found in a formula, located by the byte positions of the part it concerns. */
         FormulaProblem: {
             /** @description A stable code such as `formula.unknown_name`. */
@@ -538,6 +783,19 @@ export interface components {
             start: number;
             /** @description What to write instead, such as the name that was probably meant. */
             suggestion?: string | null;
+        };
+        /** @description A built-in function of the formula language. */
+        FunctionDto: {
+            category: string;
+            /** @description One sentence saying what the function does. */
+            doc: string;
+            /** @description A formula that uses the function. */
+            example: string;
+            /** @description The most arguments a call takes; none when there is no limit. */
+            max_args?: number | null;
+            /** @description The fewest arguments a call takes. */
+            min_args: number;
+            name: string;
         };
         HealthResponse: {
             status: string;
@@ -561,6 +819,37 @@ export interface components {
             name: string;
             /** Format: uuid */
             parent_id?: string | null;
+        };
+        /**
+         * @description A row of a module. Without a formula it is an input line item that stores typed cells; with
+         *     one it is calculated.
+         */
+        LineItemDto: {
+            /** @description The list and subset dimensions that replace the module's for this line item. */
+            applies_to?: components["schemas"]["AxisDto"][] | null;
+            code?: string | null;
+            format: components["schemas"]["FormatDto"];
+            formula?: string | null;
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            module: string;
+            name: string;
+            notes: string;
+            /**
+             * Format: int32
+             * @description The position among the line items of the module.
+             */
+            ordinal: number;
+            /** Format: uuid */
+            read_access_driver?: string | null;
+            /** @description How cells roll up along a hierarchy. */
+            summary: components["schemas"]["SummaryMethodDto"];
+            time_scale: components["schemas"]["TimeScaleDto"];
+            time_summary?: null | components["schemas"]["SummaryMethodDto"];
+            versions: components["schemas"]["VersionsScopeDto"];
+            /** Format: uuid */
+            write_access_driver?: string | null;
         };
         /** @description A list of the model. */
         ListDto: {
@@ -617,6 +906,33 @@ export interface components {
          * @enum {string}
          */
         ModelMode: "dev" | "prod";
+        /** @description A grid of line items over shared dimensions. */
+        ModuleDto: {
+            axes: components["schemas"]["AxisDto"][];
+            /** @description The folder label used for navigation; empty when the module is in none. */
+            functional_area: string;
+            /** Format: uuid */
+            id: string;
+            name: string;
+        };
+        /**
+         * @description How a negative number is shown.
+         * @enum {string}
+         */
+        NegativeStyleDto: "minus" | "parens";
+        /** @description The unit a number is shown in. */
+        NumberUnitDto: {
+            /** @enum {string} */
+            type: "none";
+        } | {
+            /** @description The ISO 4217 code: three uppercase letters, such as `USD`. */
+            code: string;
+            /** @enum {string} */
+            type: "currency";
+        } | {
+            /** @enum {string} */
+            type: "percent";
+        };
         /** @description The body of every error response, served as `application/problem+json`. */
         Problem: {
             /** @description A stable code such as `auth.csrf` that clients can match on. */
@@ -637,6 +953,12 @@ export interface components {
             /** @description Always `about:blank`. */
             type: string;
         };
+        ReorderLineItemsRequest: {
+            /** @description Every line item of the module once, in the order they are to have. */
+            ids: string[];
+            /** Format: uuid */
+            module_id: string;
+        };
         SetupRequest: {
             email: string;
             name: string;
@@ -650,9 +972,104 @@ export interface components {
         SetupStatus: {
             needs_setup: boolean;
         };
-        /** @description The structure document of the model: calendar, lists with their items, subsets, versions, time ranges, modules and line items. Its fields follow the engine's structure document (format_version 1); months and periods are indices from the start of the calendar. */
+        /** @description The timeline of the model: whole fiscal years of months. */
+        StructureCalendarDto: {
+            /**
+             * Format: int32
+             * @description The index of the current month from the start of the calendar.
+             */
+            current_month?: number | null;
+            /**
+             * Format: int32
+             * @description The label year of the first fiscal year, which is the calendar year it ends in.
+             */
+            first_year: number;
+            /**
+             * Format: int32
+             * @description The month a fiscal year starts in, 1 to 12.
+             */
+            fiscal_year_start_month: number;
+            /** Format: int32 */
+            years: number;
+        };
+        /**
+         * @description The structure document of a model: calendar, lists with their items, subsets, versions, time
+         *     ranges, modules and line items. Months and periods are indices from the start of the calendar.
+         */
         StructureDto: {
-            [key: string]: unknown;
+            calendar: components["schemas"]["StructureCalendarDto"];
+            /**
+             * Format: int32
+             * @description The version of the document format; 1.
+             */
+            format_version: number;
+            line_items: components["schemas"]["LineItemDto"][];
+            lists: components["schemas"]["StructureListDto"][];
+            modules: components["schemas"]["ModuleDto"][];
+            subsets: components["schemas"]["StructureSubsetDto"][];
+            time_ranges: components["schemas"]["StructureTimeRangeDto"][];
+            versions: components["schemas"]["StructureVersionDto"][];
+        };
+        /** @description An item of a list. */
+        StructureItemDto: {
+            code?: string | null;
+            /** Format: uuid */
+            id: string;
+            name: string;
+            /**
+             * Format: uuid
+             * @description The item of the parent list this item belongs to.
+             */
+            parent?: string | null;
+        };
+        /** @description A list with its items, in order. */
+        StructureListDto: {
+            /** Format: uuid */
+            id: string;
+            items: components["schemas"]["StructureItemDto"][];
+            name: string;
+            numbered: boolean;
+            /**
+             * Format: uuid
+             * @description The list one level up: every item of this list has a parent item in it.
+             */
+            parent?: string | null;
+            production_data: boolean;
+            selective_access: boolean;
+            /** @description The name of the single total item above all items, if the list has one. */
+            top_level_name?: string | null;
+        };
+        /** @description A named selection of the items of one list. */
+        StructureSubsetDto: {
+            /** Format: uuid */
+            id: string;
+            items: string[];
+            /** Format: uuid */
+            list: string;
+            name: string;
+        };
+        /** @description A named run of whole fiscal years. */
+        StructureTimeRangeDto: {
+            /** Format: int32 */
+            first_year: number;
+            /** Format: uuid */
+            id: string;
+            name: string;
+            /** Format: int32 */
+            years: number;
+        };
+        /** @description A scenario of the model. */
+        StructureVersionDto: {
+            /** Format: uuid */
+            id: string;
+            is_actual: boolean;
+            is_current: boolean;
+            name: string;
+            /**
+             * Format: int32
+             * @description The index of the month before which this version shows the actual version's values.
+             */
+            switchover?: number | null;
         };
         /** @description A named selection of the items of one list. */
         SubsetDto: {
@@ -663,6 +1080,56 @@ export interface components {
             list_id: string;
             name: string;
         };
+        /** @description How cells roll up along a hierarchy or through time. */
+        SummaryMethodDto: {
+            /** @enum {string} */
+            method: "sum";
+        } | {
+            /** @enum {string} */
+            method: "average";
+        } | {
+            /** @enum {string} */
+            method: "min";
+        } | {
+            /** @enum {string} */
+            method: "max";
+        } | {
+            /** @enum {string} */
+            method: "none";
+        } | {
+            /** @enum {string} */
+            method: "formula";
+        } | {
+            /** Format: uuid */
+            denominator: string;
+            /** @enum {string} */
+            method: "ratio";
+            /** Format: uuid */
+            numerator: string;
+        } | {
+            /** @enum {string} */
+            method: "first";
+        } | {
+            /** @enum {string} */
+            method: "last";
+        } | {
+            /** @enum {string} */
+            method: "opening";
+        } | {
+            /** @enum {string} */
+            method: "closing";
+        } | {
+            /** @enum {string} */
+            method: "any";
+        } | {
+            /** @enum {string} */
+            method: "all";
+        };
+        /**
+         * @description The granularity of a time axis, finest first.
+         * @enum {string}
+         */
+        TimeLevelDto: "month" | "quarter" | "half_year" | "year" | "all";
         /** @description A named run of whole fiscal years. */
         TimeRangeDto: {
             /** Format: int32 */
@@ -672,6 +1139,10 @@ export interface components {
             name: string;
             /** Format: int32 */
             years: number;
+        };
+        /** @description The time axis of a line item relative to its module's: the module's, none, or a coarser level. */
+        TimeScaleDto: "module" | "none" | {
+            level: components["schemas"]["TimeLevelDto"];
         };
         UpdateCalendarRequest: {
             /** @description The current month, as a month label such as `Jun 27`. */
@@ -693,6 +1164,39 @@ export interface components {
              */
             parent_id?: string | null;
         };
+        UpdateLineItemRequest: {
+            /**
+             * @description Absent leaves the dimensions as they are; `null` clears them, so that the line item
+             *     has those of its module.
+             */
+            applies_to?: components["schemas"]["AxisDto"][] | null;
+            /** @description Absent leaves the code as it is; `null` clears it. */
+            code?: string | null;
+            format?: null | components["schemas"]["FormatDto"];
+            /**
+             * @description Absent leaves the formula as it is; `null` or a blank formula clears it, which makes the
+             *     line item an input.
+             */
+            formula?: string | null;
+            name?: string | null;
+            notes?: string | null;
+            /** Format: int32 */
+            ordinal?: number | null;
+            /**
+             * Format: uuid
+             * @description Absent leaves the driver as it is; `null` clears it.
+             */
+            read_access_driver?: string | null;
+            summary?: null | components["schemas"]["SummaryMethodDto"];
+            time_scale?: null | components["schemas"]["TimeScaleDto"];
+            time_summary?: null | components["schemas"]["SummaryMethodDto"];
+            versions?: null | components["schemas"]["VersionsScopeDto"];
+            /**
+             * Format: uuid
+             * @description Absent leaves the driver as it is; `null` clears it.
+             */
+            write_access_driver?: string | null;
+        };
         UpdateListRequest: {
             name?: string | null;
             production_data?: boolean | null;
@@ -703,6 +1207,12 @@ export interface components {
         UpdateModelRequest: {
             description?: string | null;
             mode?: null | components["schemas"]["ModelMode"];
+            name?: string | null;
+        };
+        UpdateModuleRequest: {
+            /** @description Replaces the dimensions of the module. */
+            axes?: components["schemas"]["AxisDto"][] | null;
+            functional_area?: string | null;
             name?: string | null;
         };
         UpdateProfileRequest: {
@@ -729,6 +1239,29 @@ export interface components {
             is_instance_admin: boolean;
             name: string;
         };
+        /** @description The type a formula evaluates to. */
+        ValueTypeDto: {
+            /** @enum {string} */
+            type: "number";
+        } | {
+            /** @enum {string} */
+            type: "boolean";
+        } | {
+            /** @enum {string} */
+            type: "text";
+        } | {
+            /** @enum {string} */
+            type: "date";
+        } | {
+            /** Format: uuid */
+            list: string;
+            /** @enum {string} */
+            type: "item";
+        } | {
+            level: components["schemas"]["TimeLevelDto"];
+            /** @enum {string} */
+            type: "period";
+        };
         /** @description A scenario of the model. */
         VersionDto: {
             /** Format: uuid */
@@ -748,6 +1281,13 @@ export interface components {
             name: string;
             /** @description The first month that shows this version's own values, as a month label such as `Jan 26`. */
             switchover?: string | null;
+        };
+        /**
+         * @description The versions axis of a line item relative to its module's: the module's, none, or only some
+         *     versions, in this order.
+         */
+        VersionsScopeDto: "module" | "none" | {
+            only: string[];
         };
         WorkspaceNameRequest: {
             name: string;
@@ -993,6 +1533,35 @@ export interface operations {
             };
         };
     };
+    functions_reference: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The built-in functions of the formula language, by category */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FunctionDto"][];
+                };
+            };
+            /** @description Not signed in (auth.unauthenticated) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     get_model: {
         parameters: {
             query?: never;
@@ -1216,6 +1785,327 @@ export interface operations {
                 };
             };
             /** @description The calendar is invalid, or the current period is not a month of it (structure.invalid, validation) */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    check_formula: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The model's id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CheckFormulaRequest"];
+            };
+        };
+        responses: {
+            /** @description Whether the formula would be accepted for the line item, with its type or every problem found. Nothing is changed. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CheckFormulaResponse"];
+                };
+            };
+            /** @description Not signed in (auth.unauthenticated) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not a workspace builder (auth.forbidden). It is also returned when the CSRF token is missing or invalid (auth.csrf). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such model, or the caller is not a member of its workspace (not_found) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The line item does not exist (structure.invalid) */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    completions: {
+        parameters: {
+            query: {
+                /** @description The line item the formula is for. */
+                line_item_id: string;
+                /** @description What has been typed so far, matched without regard to case. */
+                prefix?: string;
+            };
+            header?: never;
+            path: {
+                /** @description The model's id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description What can be typed after the prefix, at most 50: the line items of the line item's module first, then those of other modules, lists, functions and keywords */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CompletionDto"][];
+                };
+            };
+            /** @description Not signed in (auth.unauthenticated) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such model, or the caller is not a member of its workspace (not_found) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The line item is missing or does not exist (validation, structure.invalid) */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    reorder_line_items: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The model's id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReorderLineItemsRequest"];
+            };
+        };
+        responses: {
+            /** @description The line items now have the order given */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not signed in (auth.unauthenticated) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not a workspace builder (auth.forbidden). It is also returned when the CSRF token is missing or invalid (auth.csrf). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such model, or the caller is not a member of its workspace (not_found) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The model is in production mode (model.production_locked) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The module or a line item does not exist, or the ids are not every line item of the module once (structure.invalid, validation) */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_line_item: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The model's id */
+                id: string;
+                /** @description The line item's id */
+                line_item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The line item was deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not signed in (auth.unauthenticated) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not a workspace builder (auth.forbidden). It is also returned when the CSRF token is missing or invalid (auth.csrf). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such model or line item, or the caller is not a member of the workspace (not_found) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The model is in production mode (model.production_locked), or another line item uses it as a ratio part or an access driver (structure.in_use) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    update_line_item: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The model's id */
+                id: string;
+                /** @description The line item's id */
+                line_item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateLineItemRequest"];
+            };
+        };
+        responses: {
+            /** @description The updated line item */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LineItemDto"];
+                };
+            };
+            /** @description Not signed in (auth.unauthenticated) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not a workspace builder (auth.forbidden). It is also returned when the CSRF token is missing or invalid (auth.csrf). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such model or line item, or the caller is not a member of the workspace (not_found) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The model is in production mode (model.production_locked), or the name is taken (structure.name_taken) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Some fields are invalid, something the line item refers to does not exist, or the formula is not valid (validation, structure.invalid, formula.*) */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -1686,6 +2576,285 @@ export interface operations {
                 };
             };
             /** @description Some fields are invalid, or the parent is missing or not in the parent list (validation, structure.invalid) */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    create_module: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The model's id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateModuleRequest"];
+            };
+        };
+        responses: {
+            /** @description The module was created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModuleDto"];
+                };
+            };
+            /** @description Not signed in (auth.unauthenticated) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not a workspace builder (auth.forbidden). It is also returned when the CSRF token is missing or invalid (auth.csrf). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such model, or the caller is not a member of its workspace (not_found) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The model is in production mode (model.production_locked), or the name is taken (structure.name_taken) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Some fields are invalid, or a list, subset or time range of the dimensions does not exist (validation, structure.invalid) */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_module: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The model's id */
+                id: string;
+                /** @description The module's id */
+                module_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The module and its line items were deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not signed in (auth.unauthenticated) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not a workspace builder (auth.forbidden). It is also returned when the CSRF token is missing or invalid (auth.csrf). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such model or module, or the caller is not a member of the workspace (not_found) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The model is in production mode (model.production_locked), or a line item of another module uses one of its line items (structure.in_use) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    update_module: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The model's id */
+                id: string;
+                /** @description The module's id */
+                module_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateModuleRequest"];
+            };
+        };
+        responses: {
+            /** @description The updated module */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModuleDto"];
+                };
+            };
+            /** @description Not signed in (auth.unauthenticated) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not a workspace builder (auth.forbidden). It is also returned when the CSRF token is missing or invalid (auth.csrf). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such model or module, or the caller is not a member of the workspace (not_found) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The model is in production mode (model.production_locked), or the name is taken (structure.name_taken) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Some fields are invalid, a dimension does not exist, or a line item's time scale would be finer than the module's (validation, structure.invalid) */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    create_line_item: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The model's id */
+                id: string;
+                /** @description The module's id */
+                module_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateLineItemRequest"];
+            };
+        };
+        responses: {
+            /** @description The line item was created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LineItemDto"];
+                };
+            };
+            /** @description Not signed in (auth.unauthenticated) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not a workspace builder (auth.forbidden). It is also returned when the CSRF token is missing or invalid (auth.csrf). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such model or module, or the caller is not a member of the workspace (not_found) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The model is in production mode (model.production_locked), or the name is taken (structure.name_taken) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Some fields are invalid, something the line item refers to does not exist, or the formula is not valid (validation, structure.invalid, formula.*) */
             422: {
                 headers: {
                     [name: string]: unknown;
