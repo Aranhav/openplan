@@ -637,3 +637,55 @@ fn no_more_than_the_limit_are_offered() {
     assert_eq!(members.len(), openplan_engine::MAX_COMPLETIONS);
     assert_eq!(members[0].label, "Many.Item 0");
 }
+
+#[test]
+fn a_patch_applied_to_a_copy_gives_the_line_item_the_model_stores() {
+    let mut fx = fixture();
+    let before = fx.model.structure().line_item(fx.revenue).unwrap().clone();
+    let patch = LineItemPatch {
+        name: Some("Sales".to_string()),
+        ordinal: Some(7),
+        format: Some(Format::Boolean),
+        formula: Some(Some("TRUE".to_string())),
+        summary: Some(SummaryMethod::Any),
+        time_summary: Some(Some(SummaryMethod::Last)),
+        applies_to: Some(Some(Vec::new())),
+        time_scale: Some(TimeScale::None),
+        versions: Some(VersionsScope::None),
+        notes: Some("Notes".to_string()),
+        code: Some(Some("S1".to_string())),
+        read_access_driver: Some(Some(fx.units)),
+        write_access_driver: Some(Some(fx.cost)),
+    };
+    let mut copy = before.clone();
+    patch.clone().apply_to(&mut copy);
+
+    fx.model
+        .apply(Command::UpdateLineItem {
+            id: fx.revenue,
+            patch: patch.clone(),
+        })
+        .unwrap();
+
+    assert_ne!(copy, before);
+    assert_eq!(fx.model.structure().line_item(fx.revenue), Some(&copy));
+
+    let mut cleared = copy.clone();
+    LineItemPatch {
+        formula: Some(None),
+        time_summary: Some(None),
+        applies_to: Some(None),
+        code: Some(None),
+        read_access_driver: Some(None),
+        write_access_driver: Some(None),
+        ..LineItemPatch::default()
+    }
+    .apply_to(&mut cleared);
+    assert_eq!(cleared.formula, None);
+    assert_eq!(cleared.time_summary, None);
+    assert_eq!(cleared.applies_to, None);
+    assert_eq!(cleared.code, None);
+    assert_eq!(cleared.read_access_driver, None);
+    assert_eq!(cleared.write_access_driver, None);
+    assert_eq!(cleared.name, "Sales");
+}

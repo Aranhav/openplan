@@ -186,6 +186,68 @@ pub struct LineItemPatch {
     pub write_access_driver: Option<Option<LineItemId>>,
 }
 
+impl LineItemPatch {
+    /// Sets the fields this patch carries on `line_item`; the others keep their values. This is
+    /// what [`Command::UpdateLineItem`] does to a line item before it checks the result, so it
+    /// shows what the model will hold without applying the command.
+    pub fn apply_to(self, line_item: &mut LineItem) {
+        let LineItemPatch {
+            name,
+            ordinal,
+            format,
+            formula,
+            summary,
+            time_summary,
+            applies_to,
+            time_scale,
+            versions,
+            notes,
+            code,
+            read_access_driver,
+            write_access_driver,
+        } = self;
+        if let Some(name) = name {
+            line_item.name = name;
+        }
+        if let Some(ordinal) = ordinal {
+            line_item.ordinal = ordinal;
+        }
+        if let Some(format) = format {
+            line_item.format = format;
+        }
+        if let Some(formula) = formula {
+            line_item.formula = formula;
+        }
+        if let Some(summary) = summary {
+            line_item.summary = summary;
+        }
+        if let Some(time_summary) = time_summary {
+            line_item.time_summary = time_summary;
+        }
+        if let Some(applies_to) = applies_to {
+            line_item.applies_to = applies_to;
+        }
+        if let Some(time_scale) = time_scale {
+            line_item.time_scale = time_scale;
+        }
+        if let Some(versions) = versions {
+            line_item.versions = versions;
+        }
+        if let Some(notes) = notes {
+            line_item.notes = notes;
+        }
+        if let Some(code) = code {
+            line_item.code = code;
+        }
+        if let Some(driver) = read_access_driver {
+            line_item.read_access_driver = driver;
+        }
+        if let Some(driver) = write_access_driver {
+            line_item.write_access_driver = driver;
+        }
+    }
+}
+
 /// One cell to write: its coordinates, one token per axis of the line item, and its value.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CellEdit {
