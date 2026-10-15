@@ -1,7 +1,7 @@
 import { QueryClientProvider } from "@tanstack/react-query"
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { HttpResponse, http } from "msw"
+import { HttpResponse, delay, http } from "msw"
 import { useCallback, useMemo, useState } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { QUERY_STALE_TIME } from "@/lib/query-client"
@@ -23,6 +23,7 @@ import {
   salesView,
   serveViewQuery,
   serveViewQueryBy,
+  versionsDim,
 } from "@/test/view-query"
 import type { ViewFixture } from "@/test/view-query"
 import { mockViewport } from "@/test/viewport"
@@ -489,6 +490,57 @@ describe("hierarchy", () => {
     expect(grid).toHaveFocus()
   })
 
+  describe("while a changed view loads", () => {
+    function serveSlowCollapse() {
+      server.use(
+        http.post("/api/v1/models/:id/query", async ({ request }) => {
+          const asked = (await request.json()) as ViewQuery
+          if (asked.collapsed?.length) {
+            await delay(300)
+          }
+          return HttpResponse.json(answer(hierarchyFor(asked), asked))
+        }),
+      )
+      render(
+        <QueryClientProvider client={createTestQueryClient({ staleTime: QUERY_STALE_TIME })}>
+          <Collapsing />
+        </QueryClientProvider>,
+      )
+      return loadedGrid()
+    }
+
+    it("keeps the previous headers and cells on show, dimmed and busy", async () => {
+      const grid = await serveSlowCollapse()
+      expect(grid).not.toHaveAttribute("aria-busy")
+      expect(grid).not.toHaveClass("opacity-60")
+
+      await userEvent.click(within(grid).getByRole("button", { name: "Collapse EMEA" }))
+
+      expect(grid).toHaveAttribute("aria-busy", "true")
+      expect(grid).toHaveClass("opacity-60")
+      expect(within(grid).getByRole("rowheader", { name: "United Kingdom" })).toBeInTheDocument()
+      expect(cellAt(grid, 2, 0)).toHaveTextContent("20")
+      expect(grid.querySelector("[aria-busy='true'][role='gridcell']")).toBeNull()
+
+      await waitFor(() => expect(grid).not.toHaveAttribute("aria-busy"))
+      expect(grid).not.toHaveClass("opacity-60")
+      expect(
+        within(grid).queryByRole("rowheader", { name: "United Kingdom" }),
+      ).not.toBeInTheDocument()
+    })
+
+    it("does not dim a grid that is only scrolling to blocks it has not loaded", async () => {
+      serveViewQuery()
+      renderGrid()
+      const grid = await loadedGrid()
+
+      await userEvent.keyboard("{Control>}{ArrowDown}{/Control}")
+
+      expect(grid).not.toHaveClass("opacity-60")
+      expect(grid).not.toHaveAttribute("aria-busy")
+    })
+  })
+
   describe("from the keyboard", () => {
     const altShift = (key: string) => `{Alt>}{Shift>}{${key}}{/Shift}{/Alt}`
 
@@ -576,6 +628,19 @@ describe("hierarchy", () => {
       // The same words again are a new message: the node is replaced, which a screen reader reads.
       await userEvent.keyboard(altShift("ArrowUp"))
       expect(screen.getByText("Nothing to collapse")).not.toBe(message)
+    })
+
+    it("says there is nothing to expand when the key asks to expand", async () => {
+      const grid = await renderCollapsing()
+      grid.focus()
+      await userEvent.keyboard("{ArrowDown}{ArrowDown}{ArrowRight}")
+
+      await userEvent.keyboard(altShift("ArrowRight"))
+      expect(screen.getByText("Nothing to expand")).toBeInTheDocument()
+      expect(screen.queryByText("Nothing to collapse")).not.toBeInTheDocument()
+
+      await userEvent.keyboard(altShift("ArrowDown"))
+      expect(screen.getByText("Nothing to expand")).toBeInTheDocument()
     })
 
     it("stays quiet about collapsing when the grid cannot collapse at all", async () => {
@@ -726,6 +791,140 @@ describe("hierarchy", () => {
           ).not.toBeInTheDocument(),
         )
         expect(grid).toHaveAttribute("aria-activedescendant", cellAt(grid, 1, 0).id)
+      })
+
+      describe("with a dimension inside the one that collapses", () => {
+        const nestedQuery: GridQuery = {
+          module: MODULE_ID,
+          rows: [regionsList],
+          columns: [timeDim, versionsDim],
+          pages: [{ dim: lineItemsDim, key: "li-0" }],
+        }
+        const versions = [member("v-actual", "Actual"), member("v-budget", "Budget")]
+
+        /** Two months and their quarter, each in two versions, the versions varying fastest. */
+        function nestedFor(q: { collapsed?: MemberRef[] }): ViewFixture {
+          const collapsed = new Set((q.collapsed ?? []).map((m) => m.key))
+          const times = collapsed.has("Q1 FY26")
+            ? [quarter("Q1 FY26", collapsed)]
+            : [month("Jan 26"), month("Feb 26"), quarter("Q1 FY26", collapsed)]
+          const columns = times.flatMap((time) => versions.map((version) => [time, version]))
+          return salesView({
+            rowDims: [regionsList],
+            columnDims: [timeDim, versionsDim],
+            pages: [{ dim: lineItemsDim, member: member("li-0", "Revenue") }],
+            lineItems: [lineItem("li-0", "Revenue")],
+            totalRows: 1,
+            totalColumns: columns.length,
+            rowHeader: () => header(member("top", "All Regions")),
+            columnHeader: (col) => header(...columns[col]),
+            cell: (row, col) => numberCell(row * 10 + col),
+          })
+        }
+
+        it("stays in the same version of the collapsed member", async () => {
+          const grid = await renderCollapsing(undefined, nestedFor, nestedQuery)
+          grid.focus()
+          await userEvent.keyboard("{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}")
+          expect(grid).toHaveAttribute("aria-activedescendant", cellAt(grid, 0, 4).id)
+
+          await userEvent.keyboard(altShift("ArrowUp"))
+
+          await waitFor(() =>
+            expect(
+              within(grid).queryByRole("columnheader", { name: "Jan 26" }),
+            ).not.toBeInTheDocument(),
+          )
+          await waitFor(() =>
+            expect(grid).toHaveAttribute("aria-activedescendant", cellAt(grid, 0, 0).id),
+          )
+        })
+
+        it("stays in the same version of the expanded member", async () => {
+          const grid = await renderCollapsing(undefined, nestedFor, nestedQuery)
+          grid.focus()
+          await userEvent.keyboard("{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}")
+          await userEvent.keyboard(altShift("ArrowUp"))
+          await waitFor(() =>
+            expect(
+              within(grid).queryByRole("columnheader", { name: "Jan 26" }),
+            ).not.toBeInTheDocument(),
+          )
+          await userEvent.keyboard("{ArrowRight}")
+          expect(grid).toHaveAttribute("aria-activedescendant", cellAt(grid, 0, 1).id)
+
+          await userEvent.keyboard(altShift("ArrowDown"))
+
+          await waitFor(() =>
+            expect(within(grid).getAllByRole("columnheader", { name: "Jan 26" })).not.toHaveLength(
+              0,
+            ),
+          )
+          await waitFor(() =>
+            expect(grid).toHaveAttribute("aria-activedescendant", cellAt(grid, 0, 5).id),
+          )
+        })
+      })
+
+      it("stops following when the user moves on while the view loads", async () => {
+        server.use(
+          http.post("/api/v1/models/:id/query", async ({ request }) => {
+            const asked = (await request.json()) as ViewQuery
+            if (asked.collapsed?.length) {
+              await delay(300)
+            }
+            return HttpResponse.json(answer(quartersFor(asked), asked))
+          }),
+        )
+        render(
+          <QueryClientProvider client={createTestQueryClient({ staleTime: QUERY_STALE_TIME })}>
+            <Collapsing />
+          </QueryClientProvider>,
+        )
+        const grid = await loadedGrid()
+        grid.focus()
+        await userEvent.keyboard("{ArrowRight}{ArrowRight}")
+
+        await userEvent.keyboard(altShift("ArrowUp"))
+        await userEvent.keyboard("{ArrowRight}")
+        expect(grid).toHaveAttribute("aria-activedescendant", cellAt(grid, 0, 3).id)
+        await waitFor(() =>
+          expect(
+            within(grid).queryByRole("columnheader", { name: "Jan 26" }),
+          ).not.toBeInTheDocument(),
+        )
+
+        expect(grid).toHaveAttribute("aria-activedescendant", cellAt(grid, 0, 3).id)
+      })
+
+      it("stops following when the user clicks another cell while the view loads", async () => {
+        server.use(
+          http.post("/api/v1/models/:id/query", async ({ request }) => {
+            const asked = (await request.json()) as ViewQuery
+            if (asked.collapsed?.length) {
+              await delay(300)
+            }
+            return HttpResponse.json(answer(quartersFor(asked), asked))
+          }),
+        )
+        render(
+          <QueryClientProvider client={createTestQueryClient({ staleTime: QUERY_STALE_TIME })}>
+            <Collapsing />
+          </QueryClientProvider>,
+        )
+        const grid = await loadedGrid()
+        grid.focus()
+        await userEvent.keyboard("{ArrowRight}{ArrowRight}")
+
+        await userEvent.keyboard(altShift("ArrowUp"))
+        await userEvent.click(cellAt(grid, 0, 4))
+        await waitFor(() =>
+          expect(
+            within(grid).queryByRole("columnheader", { name: "Jan 26" }),
+          ).not.toBeInTheDocument(),
+        )
+
+        expect(grid).toHaveAttribute("aria-activedescendant", cellAt(grid, 0, 4).id)
       })
 
       it("does not move the active cell for a collapse by chevron", async () => {

@@ -7,10 +7,12 @@ import { queryKeys } from "@/lib/api/keys"
 import { QUERY_STALE_TIME } from "@/lib/query-client"
 import { createTestQueryClient } from "@/test/render"
 import { server } from "@/test/server"
+import { problem } from "@/test/problem"
 import {
   MODEL_ID,
   answer,
   failViewQuery,
+  numberCell,
   salesQuery,
   salesView,
   serveViewQuery,
@@ -208,7 +210,7 @@ describe("useViewData", () => {
     expect(result.current.pages).toEqual(pages)
   })
 
-  it("shows no cells of the previous query while the next one loads", async () => {
+  it("shows the cells and headers of the previous query, as a placeholder, while the next one loads", async () => {
     serveViewQuery()
     const { Wrapper } = wrapper()
     const { result, rerender } = renderHook(
@@ -221,9 +223,12 @@ describe("useViewData", () => {
 
     expect(result.current.isPlaceholder).toBe(true)
     expect(result.current.totalRows).toBe(1000)
-    expect(result.current.cell(0, 0)).toBeUndefined()
-    expect(result.current.rowHeaders(0)).toBeUndefined()
-    await waitFor(() => expect(result.current.cell(0, 0)).toBeDefined())
+    expect(result.current.cell(0, 0)?.value).toEqual({ t: "number", v: 0 })
+    expect(result.current.rowHeaders(0)?.members[0].label).toBe("Product 1")
+    expect(result.current.colHeaders(0)?.members[1].label).toBe("Line item 0")
+    expect(result.current.lineItems).toHaveLength(25)
+    await waitFor(() => expect(result.current.isPlaceholder).toBe(false))
+    expect(result.current.cell(0, 0)).toBeDefined()
   })
 
   it("keys each block under the model's query key", async () => {
@@ -543,5 +548,253 @@ describe("useViewData consistency", () => {
     await waitFor(() => expect(result.current.isFetching).toBe(false))
     await waitFor(() => expect(result.current.cell(0, 41)).toBeDefined())
     expect(identities.size).toBe(1)
+  })
+})
+
+describe("useViewData while the view changes", () => {
+  const far: CellRange = { rowStart: 500, rowEnd: 520, colStart: 0, colEnd: 5 }
+  const changed: GridQuery = { ...salesQuery, show_summaries: false }
+  const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+  /** The changed query answers with negative numbers, and its row block 5 after `lateMs`. */
+  function serveChange({ lateMs = 0, fail = false } = {}) {
+    server.use(
+      http.post("/api/v1/models/:id/query", async ({ request }) => {
+        const query = (await request.json()) as ViewQuery
+        if (query.show_summaries !== false) {
+          return HttpResponse.json(answer(salesView(), query))
+        }
+        if (fail) {
+          return problem(422, "structure.invalid", "The change is not valid.")
+        }
+        if (query.window.row_offset === 500) {
+          await delay(lateMs)
+        }
+        const fixture = salesView({ cell: (row, col) => numberCell(-(row * 1000 + col)) })
+        return HttpResponse.json(answer(fixture, query))
+      }),
+    )
+  }
+
+  it("keeps the previous view until the blocks that hold the visible cells have loaded too", async () => {
+    serveChange({ lateMs: 400 })
+    const { Wrapper } = wrapper()
+    const { result, rerender } = renderHook(
+      ({ query }: { query: GridQuery }) => useViewData(MODEL_ID, query, far),
+      { wrapper: Wrapper, initialProps: { query: salesQuery } },
+    )
+    await waitFor(() => expect(result.current.cell(505, 0)).toBeDefined())
+    expect(result.current.cell(505, 0)?.value).toEqual({ t: "number", v: 505000 })
+
+    rerender({ query: changed })
+    await wait(150)
+
+    // The first block of the changed query is in; the block with the visible cells is not.
+    expect(result.current.isPlaceholder).toBe(true)
+    expect(result.current.cell(505, 0)?.value).toEqual({ t: "number", v: 505000 })
+    await waitFor(() => expect(result.current.isPlaceholder).toBe(false), { timeout: 3000 })
+    expect(result.current.cell(505, 0)?.value).toEqual({ t: "number", v: -505000 })
+  })
+
+  it("shows skeletons, not the previous view, for a block of the same query that has not loaded", async () => {
+    serveViewQuery()
+    const { Wrapper } = wrapper()
+    const { result, rerender } = renderHook(
+      ({ visible }: { visible: CellRange }) => useViewData(MODEL_ID, salesQuery, visible),
+      { wrapper: Wrapper, initialProps: { visible: topLeft } },
+    )
+    await waitFor(() => expect(result.current.cell(0, 0)).toBeDefined())
+
+    rerender({ visible: far })
+
+    expect(result.current.isPlaceholder).toBe(false)
+    expect(result.current.cell(505, 0)).toBeUndefined()
+    await waitFor(() => expect(result.current.cell(505, 0)).toBeDefined())
+  })
+
+  it("keeps the previous view, not dimmed, beside the error when the changed query fails", async () => {
+    serveChange({ fail: true })
+    const { Wrapper } = wrapper()
+    const { result, rerender } = renderHook(
+      ({ query }: { query: GridQuery }) => useViewData(MODEL_ID, query, topLeft),
+      { wrapper: Wrapper, initialProps: { query: salesQuery } },
+    )
+    await waitFor(() => expect(result.current.cell(0, 0)).toBeDefined())
+
+    rerender({ query: changed })
+
+    await waitFor(() => expect(result.current.error?.message).toBe("The change is not valid."))
+    expect(result.current.hasShape).toBe(true)
+    expect(result.current.isPlaceholder).toBe(false)
+    expect(result.current.cell(0, 0)?.value).toEqual({ t: "number", v: 0 })
+  })
+
+  it("shows the changed view once a retry succeeds", async () => {
+    serveChange({ fail: true })
+    const { Wrapper } = wrapper()
+    const { result, rerender } = renderHook(
+      ({ query }: { query: GridQuery }) => useViewData(MODEL_ID, query, topLeft),
+      { wrapper: Wrapper, initialProps: { query: salesQuery } },
+    )
+    await waitFor(() => expect(result.current.cell(0, 0)).toBeDefined())
+    rerender({ query: changed })
+    await waitFor(() => expect(result.current.error).not.toBeNull())
+    serveChange()
+
+    await act(() => result.current.refetch())
+
+    await waitFor(() => expect(result.current.error).toBeNull())
+    await waitFor(() => expect(result.current.cell(1, 1)?.value).toEqual({ t: "number", v: -1001 }))
+    expect(result.current.isPlaceholder).toBe(false)
+  })
+})
+
+describe("useViewData blocks of an older shape that cannot be loaded again", () => {
+  const originKey = { rowBlock: 0, colBlock: 0 }
+  const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+  it("does not ask for a block again when asking for it failed", async () => {
+    let grown = false
+    const asked: string[] = []
+    server.use(
+      http.post("/api/v1/models/:id/query", async ({ request }) => {
+        const query = (await request.json()) as ViewQuery
+        const key = windows([query])[0]
+        asked.push(key)
+        if (grown && key === "1,0") {
+          return problem(500, "internal", "The block could not be read.")
+        }
+        return HttpResponse.json(answer(salesView({ totalRows: grown ? 1100 : 1000 }), query))
+      }),
+    )
+    const { Wrapper, queryClient } = wrapper()
+    const { result } = renderHook(() => useViewData(MODEL_ID, salesQuery, topLeft), {
+      wrapper: Wrapper,
+    })
+    await waitFor(() => expect(result.current.isFetching).toBe(false))
+    await waitFor(() => expect(asked).toHaveLength(4))
+    grown = true
+
+    await act(() =>
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.query(MODEL_ID, salesQuery, originKey),
+        exact: true,
+      }),
+    )
+    await waitFor(() => expect(result.current.totalRows).toBe(1100))
+    await wait(600)
+
+    expect(asked.filter((key) => key === "1,0")).toHaveLength(2)
+    expect(result.current.error?.message).toBe("The block could not be read.")
+  })
+
+  it("loads it again when the grid retries", async () => {
+    let grown = false
+    let broken = true
+    server.use(
+      http.post("/api/v1/models/:id/query", async ({ request }) => {
+        const query = (await request.json()) as ViewQuery
+        if (grown && broken && windows([query])[0] === "1,0") {
+          return problem(500, "internal", "The block could not be read.")
+        }
+        return HttpResponse.json(answer(salesView({ totalRows: grown ? 1100 : 1000 }), query))
+      }),
+    )
+    const { Wrapper, queryClient } = wrapper()
+    const { result } = renderHook(() => useViewData(MODEL_ID, salesQuery, topLeft), {
+      wrapper: Wrapper,
+    })
+    await waitFor(() => expect(result.current.isFetching).toBe(false))
+    await waitFor(() => expect(result.current.cell(150, 0)).toBeDefined())
+    grown = true
+    await act(() =>
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.query(MODEL_ID, salesQuery, originKey),
+        exact: true,
+      }),
+    )
+    await waitFor(() => expect(result.current.error).not.toBeNull())
+    broken = false
+
+    await act(() => result.current.refetch())
+
+    await waitFor(() => expect(result.current.error).toBeNull())
+    expect(result.current.cell(150, 0)).toBeDefined()
+  })
+})
+
+describe("useViewData load", () => {
+  const far: CellRange = { rowStart: 500, rowEnd: 520, colStart: 0, colEnd: 5 }
+
+  it("loads the blocks that hold a range, and answers with their cells and headers", async () => {
+    const served = serveViewQuery()
+    const { Wrapper } = wrapper()
+    const { result } = renderHook(() => useViewData(MODEL_ID, salesQuery, topLeft), {
+      wrapper: Wrapper,
+    })
+    await waitFor(() => expect(result.current.isFetching).toBe(false))
+    await waitFor(() => expect(served.requests).toHaveLength(4))
+
+    let lookup!: Awaited<ReturnType<typeof result.current.load>>
+    await act(async () => {
+      lookup = await result.current.load(far)
+    })
+
+    expect(lookup.cell(505, 2)?.value).toEqual({ t: "number", v: 505002 })
+    expect(lookup.rowHeaders(505)?.members[0].label).toBe("Product 506")
+    expect(lookup.colHeaders(3)?.members[1].label).toBe("Line item 3")
+    expect(lookup.lineItems.length).toBeGreaterThan(0)
+    expect(windows(served.requests).filter((key) => key === "5,0")).toHaveLength(1)
+  })
+
+  it("asks for nothing when everything the range needs is loaded", async () => {
+    const served = serveViewQuery()
+    const { Wrapper } = wrapper()
+    const { result } = renderHook(() => useViewData(MODEL_ID, salesQuery, topLeft), {
+      wrapper: Wrapper,
+    })
+    await waitFor(() => expect(result.current.isFetching).toBe(false))
+    await waitFor(() => expect(served.requests).toHaveLength(4))
+
+    await act(async () => {
+      await result.current.load(topLeft)
+      await result.current.load({ rowStart: 0, rowEnd: 150, colStart: 0, colEnd: 45 })
+    })
+
+    expect(served.requests).toHaveLength(4)
+  })
+
+  it("loads the first block along with the blocks of the range", async () => {
+    const served = serveViewQuery()
+    const { Wrapper } = wrapper()
+    const { result } = renderHook(() => useViewData(MODEL_ID, salesQuery, topLeft), {
+      wrapper: Wrapper,
+    })
+
+    let lookup!: Awaited<ReturnType<typeof result.current.load>>
+    await act(async () => {
+      lookup = await result.current.load(far)
+    })
+
+    expect(lookup.cell(505, 2)).toBeDefined()
+    expect(windows(served.requests)).toContain("0,0")
+  })
+
+  it("rejects when a block cannot be loaded", async () => {
+    server.use(
+      http.post("/api/v1/models/:id/query", async ({ request }) => {
+        const query = (await request.json()) as ViewQuery
+        return query.window.row_offset === 500
+          ? problem(500, "internal", "The block could not be read.")
+          : HttpResponse.json(answer(salesView(), query))
+      }),
+    )
+    const { Wrapper } = wrapper()
+    const { result } = renderHook(() => useViewData(MODEL_ID, salesQuery, topLeft), {
+      wrapper: Wrapper,
+    })
+    await waitFor(() => expect(result.current.hasShape).toBe(true))
+
+    await expect(result.current.load(far)).rejects.toThrow("The block could not be read.")
   })
 })

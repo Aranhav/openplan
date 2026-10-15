@@ -1,12 +1,12 @@
 import {
   type UseQueryResult,
-  keepPreviousData,
+  hashKey,
   queryOptions,
   useQueries,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query"
-import { useEffect, useEffectEvent, useMemo } from "react"
+import { useEffect, useEffectEvent, useMemo, useState } from "react"
 import { queryKeys } from "@/lib/api/keys"
 import { type Block, COL_BLOCK, ROW_BLOCK, blocksFor, windowOf } from "./core/blocks"
 import type { CellRange } from "./core/selection"
@@ -62,18 +62,13 @@ function blockOptions(modelId: string, query: GridQuery, block: Block, waitToSet
 }
 
 function useOriginBlock(modelId: string, query: GridQuery) {
-  // Keeping the last view while the next one loads lets the grid stay where it is when a
-  // collapse, filter or page change asks for a new query.
-  return useQuery({ ...blockOptions(modelId, query, ORIGIN), placeholderData: keepPreviousData })
+  return useQuery(blockOptions(modelId, query, ORIGIN))
 }
 
 /** What the first block says about a view as a whole. */
 type ViewShape = {
-  /** The size and dimensions are known, if only from the previous query (see `isPlaceholder`). */
+  /** The size and dimensions are known. */
   hasShape: boolean
-  /** The shape is the previous query's, kept until the current one arrives. */
-  isPlaceholder: boolean
-  error: Error | null
   totalRows: number
   totalColumns: number
   rowDims: ViewDim[]
@@ -85,8 +80,6 @@ function shapeOf(origin: UseQueryResult<QueryResult, Error>): ViewShape {
   const data = origin.data
   return {
     hasShape: data !== undefined,
-    isPlaceholder: origin.isPlaceholderData,
-    error: origin.error,
     totalRows: data?.total_rows ?? 0,
     totalColumns: data?.total_columns ?? 0,
     rowDims: data?.row_dims ?? NO_DIMS,
@@ -96,6 +89,12 @@ function shapeOf(origin: UseQueryResult<QueryResult, Error>): ViewShape {
 }
 
 export type ViewData = ViewShape & {
+  /**
+   * The view shown is the previous query's, kept until the changed query has loaded the first
+   * block and the blocks that hold what is visible; the grid dims it meanwhile.
+   */
+  isPlaceholder: boolean
+  error: Error | null
   lineItems: LineItemInfo[]
   /** The header of a row, once the block that holds it has loaded. */
   rowHeaders(row: number): Header | undefined
@@ -104,11 +103,23 @@ export type ViewData = ViewShape & {
   isFetching: boolean
   /** Loads every block on show again, which is what a retry after an error needs. */
   refetch(): Promise<void>
+  /**
+   * Loads the blocks that hold `range` (both ends included), and the first block, unless they
+   * are loaded, and answers with what they hold. For acting on cells that are not on screen.
+   */
+  load(range: CellRange): Promise<Lookup>
 }
 
-type Loaded = { block: Block; result: QueryResult; fetching: boolean; updatedAt: number }
+type Loaded = {
+  block: Block
+  result: QueryResult
+  fetching: boolean
+  /** The last load of the block failed; its older data is still all there is. */
+  errored: boolean
+  updatedAt: number
+}
 
-type Lookup = Pick<ViewData, "lineItems" | "rowHeaders" | "colHeaders" | "cell">
+export type Lookup = Pick<ViewData, "lineItems" | "rowHeaders" | "colHeaders" | "cell">
 
 // Large enough that no two blocks of a view share a key.
 const KEY_STRIDE = 1_000_000
@@ -215,6 +226,8 @@ class BlockResults {
   readonly data: readonly (QueryResult | undefined)[]
   /** Whether each block is being loaded (again) right now. */
   readonly fetching: readonly boolean[]
+  /** Whether the last load of each block failed. */
+  readonly errored: readonly boolean[]
   /** When each block's answer arrived. */
   readonly updatedAt: readonly number[]
   readonly isFetching: boolean
@@ -223,11 +236,13 @@ class BlockResults {
   constructor(
     data: readonly (QueryResult | undefined)[],
     fetching: readonly boolean[],
+    errored: readonly boolean[],
     updatedAt: readonly number[],
     error: Error | null,
   ) {
     this.data = data
     this.fetching = fetching
+    this.errored = errored
     this.updatedAt = updatedAt
     this.isFetching = fetching.some(Boolean)
     this.error = error
@@ -238,20 +253,28 @@ function combineBlocks(results: UseQueryResult<QueryResult, Error>[]): BlockResu
   return new BlockResults(
     results.map((result) => result.data),
     results.map((result) => result.isFetching),
+    results.map((result) => result.isError),
     results.map((result) => result.dataUpdatedAt),
     results.find((result) => result.error)?.error ?? null,
   )
 }
 
+/** A view that finished loading, kept to show while the next one loads. */
+type Settled = { key: string; shape: ViewShape; lookup: Lookup }
+
 /**
  * The cells of a pivot, loaded in blocks as `visible` (both ends included) moves over it, and
  * looked up by their position in the whole view. Blocks stay cached, so scrolling back is instant.
+ *
+ * When `query` changes (a member is collapsed, a filter set), the last view that had loaded stays
+ * on show, as a placeholder, until the first block and the blocks that hold the visible cells of
+ * the new query have arrived, so the grid does not go blank in between.
  */
 export function useViewData(modelId: string, query: GridQuery, visible: CellRange): ViewData {
   const queryClient = useQueryClient()
   const origin = useOriginBlock(modelId, query)
   const shape = shapeOf(origin)
-  const sized = shape.hasShape && !shape.isPlaceholder
+  const sized = shape.hasShape
   const { totalRows, totalColumns } = shape
   // Only the blocks matter, so the list of blocks to load is the same until the view crosses one.
   const firstRowBlock = Math.floor(Math.max(visible.rowStart, 0) / ROW_BLOCK)
@@ -277,9 +300,10 @@ export function useViewData(modelId: string, query: GridQuery, visible: CellRang
     combine: combineBlocks,
   })
 
-  const originResult = origin.isPlaceholderData ? undefined : origin.data
+  const originResult = origin.data
   const originUpdatedAt = origin.dataUpdatedAt
   const originFetching = origin.isFetching
+  const originErrored = origin.isError
   const merged = useMemo(() => {
     const loaded: Loaded[] = originResult
       ? [
@@ -287,6 +311,7 @@ export function useViewData(modelId: string, query: GridQuery, visible: CellRang
             block: ORIGIN,
             result: originResult,
             fetching: originFetching,
+            errored: originErrored,
             updatedAt: originUpdatedAt,
           },
         ]
@@ -298,17 +323,19 @@ export function useViewData(modelId: string, query: GridQuery, visible: CellRang
           block,
           result,
           fetching: others.fetching[index],
+          errored: others.errored[index],
           updatedAt: others.updatedAt[index],
         })
       }
     })
     return assemble(loaded)
-  }, [originResult, originUpdatedAt, originFetching, wanted, others])
+  }, [originResult, originUpdatedAt, originFetching, originErrored, wanted, others])
   const { lookup } = merged
 
-  // Blocks that no longer describe the view are loaded again, unless they already are.
+  // Blocks that no longer describe the view are loaded again, unless they already are, or the
+  // last attempt failed: asking again would only fail again, and again. A retry does it.
   const reloadKeys = merged.stale
-    .filter((entry) => !entry.fetching)
+    .filter((entry) => !entry.fetching && !entry.errored)
     .map(({ block }) => `${block.rowBlock}:${block.colBlock}`)
     .join(",")
   const reload = useEffectEvent((keys: string) => {
@@ -326,14 +353,53 @@ export function useViewData(modelId: string, query: GridQuery, visible: CellRang
     }
   }, [reloadKeys])
 
+  // The view is settled once the first block and the blocks with the visible cells are in.
+  const key = hashKey([modelId, query])
+  const loadedNow =
+    originResult !== undefined &&
+    wanted.every(({ neighbour }, index) => neighbour || others.data[index] || others.errored[index])
+  const [settled, setSettled] = useState<Settled | null>(null)
+  if (loadedNow && (settled === null || settled.key !== key || settled.lookup !== lookup)) {
+    setSettled({ key, shape, lookup })
+  }
+  const error = origin.error ?? others.error
+  const showPrevious = !loadedNow && settled !== null && settled.key !== key
+  const shown = showPrevious ? settled : { shape, lookup }
+
   return {
-    ...shape,
-    ...lookup,
-    error: shape.error ?? others.error,
+    ...shown.shape,
+    ...shown.lookup,
+    error,
+    isPlaceholder: showPrevious && error === null,
     isFetching: origin.isFetching || others.isFetching,
     refetch: () =>
       queryClient
         .refetchQueries({ queryKey: queryKeys.query(modelId, query), type: "active" })
         .then(() => undefined),
+    load: async (range) => {
+      const blocks = [ORIGIN, ...blocksFor(range)].filter(
+        (block, index, all) =>
+          all.findIndex((b) => b.rowBlock === block.rowBlock && b.colBlock === block.colBlock) ===
+          index,
+      )
+      await Promise.all(
+        blocks.map((block) => queryClient.ensureQueryData(blockOptions(modelId, query, block))),
+      )
+      const loaded: Loaded[] = blocks.flatMap((block) => {
+        const state = queryClient.getQueryState<QueryResult>(queryKeys.query(modelId, query, block))
+        return state?.data
+          ? [
+              {
+                block,
+                result: state.data,
+                fetching: false,
+                errored: false,
+                updatedAt: state.dataUpdatedAt,
+              },
+            ]
+          : []
+      })
+      return assemble(loaded).lookup
+    },
   }
 }

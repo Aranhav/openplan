@@ -36,12 +36,12 @@ import {
 import { useColumnWidths } from "./use-column-widths"
 import { cellOf, useDragSelect } from "./use-drag-select"
 import { sameSelection, useGridSelection } from "./use-grid-selection"
+import { useFollowMember } from "./use-follow-member"
 import { useHoveredNote } from "./use-hovered-note"
 import { useViewData } from "./use-view-data"
 import type {
   ConditionalFormat,
   GridQuery,
-  Header,
   LineItemInfo,
   Member,
   MemberRef,
@@ -107,44 +107,6 @@ function GridSkeleton() {
 
 // How long after the active cell moves that headers arriving late may still move the grid to it.
 const LATE_HEADERS_MS = 1000
-
-// How long the active cell waits for the view that a keyboard collapse asked for.
-const FOLLOW_MS = 5000
-
-/** The member a keyboard collapse or expand acted on, which the active cell goes to. */
-type Following = {
-  axis: "row" | "column"
-  /** The keys of the member and of the members it is under, outermost first. */
-  path: string[]
-  /** Where the member was, to look for it nearest to that place. */
-  from: number
-  /** The row of the active cell for a column, the column for a row: it stays. */
-  other: number
-  until: number
-}
-
-const FOLLOW_RADIUS = 400
-
-/** The position nearest to `from` whose header is under the path, if any such header is loaded. */
-function nearestUnder(
-  path: readonly string[],
-  from: number,
-  count: number,
-  headerAt: (index: number) => Header | undefined,
-): number | undefined {
-  const matches = (index: number) => {
-    const header = headerAt(index)
-    return header !== undefined && path.every((key, level) => header.members[level]?.key === key)
-  }
-  for (let distance = 0; distance <= FOLLOW_RADIUS; distance++) {
-    for (const index of [from - distance, from + distance]) {
-      if (index >= 0 && index < count && matches(index)) {
-        return index
-      }
-    }
-  }
-  return undefined
-}
 
 /** How many cells a range holds, in words, or nothing for a single cell. */
 function selectionMessage(range: CellRange): string {
@@ -312,33 +274,14 @@ export function Grid({
   )
   const headerCallbacks: HeaderCallbacks = { ...callbacks, onToggleCollapse: toggleMember }
 
-  // A member that comes after its children (a time summary) moves when it collapses or expands,
-  // and the index the active cell had would then lie on its neighbour. So after a keyboard
-  // collapse the active cell goes to the member, once the view with the member in its new place
-  // has loaded.
-  const follow = useRef<Following | null>(null)
-  const goTo = useEffectEvent((pos: Pos) => select(pos))
-  useEffect(() => {
-    const pending = follow.current
-    if (!pending) {
-      return
-    }
-    if (Date.now() > pending.until) {
-      follow.current = null
-      return
-    }
-    const row = pending.axis === "row"
-    const found = nearestUnder(
-      pending.path,
-      pending.from,
-      row ? totalRows : totalColumns,
-      row ? rowHeaders : colHeaders,
-    )
-    if (found !== undefined) {
-      follow.current = null
-      goTo(row ? { row: found, col: pending.other } : { row: pending.other, col: found })
-    }
-  }, [rowHeaders, colHeaders, totalRows, totalColumns])
+  const follow = useFollowMember({
+    rowHeaders,
+    colHeaders,
+    totalRows,
+    totalColumns,
+    waiting: data.isPlaceholder,
+    onFound: select,
+  })
 
   // The notes: what a switchover or error cell cannot say by its value, in one tooltip that
   // follows the pointer, or the active cell while the grid has focus.
@@ -380,19 +323,20 @@ export function Grid({
       if (member.has_children) {
         // Only a member that is not in the state asked for changes.
         if (member.collapsed === command.expand) {
-          follow.current = {
+          const row = command.axis === "row"
+          follow.start({
             axis: command.axis,
             path: header.members.slice(0, level + 1).map((m) => m.key),
-            from: command.axis === "row" ? active.row : active.col,
-            other: command.axis === "row" ? active.col : active.row,
-            until: Date.now() + FOLLOW_MS,
-          }
+            inner: header.members.slice(level + 1).map((m) => m.key),
+            from: row ? active.row : active.col,
+            other: row ? active.col : active.row,
+          })
           toggleMember(dims[level], member)
         }
         return
       }
     }
-    announce("Nothing to collapse")
+    announce(command.expand ? "Nothing to expand" : "Nothing to collapse")
   }
 
   function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
@@ -412,6 +356,8 @@ export function Grid({
     if (command.type === "collapse") {
       collapseActive(command)
     } else {
+      // Going on with something else ends a collapse that is still waiting for its view.
+      follow.cancel()
       const next = run(command, pageRows(event.currentTarget))
       // Tab on the last cell, or Shift+Tab on the first, goes on to the next control.
       if (next && event.key === "Tab" && sameSelection(next, selection)) {
@@ -444,6 +390,7 @@ export function Grid({
     }
     const element = event.currentTarget
     element.focus({ preventScroll: true })
+    follow.cancel()
     select(cell, event.shiftKey)
     startDrag(cell, (move) => cellNear(move, element))
   }
@@ -518,7 +465,10 @@ export function Grid({
             aria-readonly={readOnly || undefined}
             aria-busy={data.isPlaceholder || undefined}
             aria-activedescendant={activeRendered ? activeId : undefined}
-            className="group/grid h-full overflow-auto overscroll-contain bg-background outline-none"
+            className={cn(
+              "group/grid h-full overflow-auto overscroll-contain bg-background outline-none",
+              data.isPlaceholder && "opacity-60",
+            )}
             onKeyDown={handleKeyDown}
             onPointerDown={handlePointerDown}
             onPointerOver={onPointerOver}
