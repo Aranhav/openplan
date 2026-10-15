@@ -285,9 +285,7 @@ pub(crate) async fn delete_workspace(
     if deleted.rows_affected() == 0 {
         return Err(AppError::NotFound);
     }
-    for model_id in model_ids {
-        state.models.discard(model_id).await;
-    }
+    state.models.discard_many(model_ids).await;
     Ok(StatusCode::NO_CONTENT)
 }
 

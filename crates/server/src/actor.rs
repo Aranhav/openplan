@@ -619,10 +619,20 @@ impl ModelRegistry {
     /// Unloads a model that was deleted, without saving it, and closes its events channel. A
     /// later `get` finds the model gone. It is done even if the caller does not wait for it.
     pub async fn discard(&self, model_id: Uuid) {
+        self.discard_many(vec![model_id]).await;
+    }
+
+    /// Unloads models that were deleted together, as `discard` does for one. They are discarded
+    /// one after another by a single task, which is finished even if the caller does not wait.
+    pub async fn discard_many(&self, model_ids: Vec<Uuid>) {
         let registry = self.clone();
-        let discarding = tokio::spawn(async move { registry.discard_now(model_id).await });
+        let discarding = tokio::spawn(async move {
+            for model_id in model_ids {
+                registry.discard_now(model_id).await;
+            }
+        });
         if let Err(error) = discarding.await {
-            tracing::error!(%model_id, %error, "failed to discard the model");
+            tracing::error!(%error, "failed to discard the models");
         }
     }
 

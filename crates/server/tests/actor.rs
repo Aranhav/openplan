@@ -959,7 +959,7 @@ async fn a_value_the_database_cannot_store_leaves_the_model_as_it_was(pool: PgPo
     let region = plan.regions[0];
     let before = handle.snapshot();
     let rows = count(&pool, stored.id, "true").await;
-    // The engine takes any text; a JSON document in Postgres cannot hold a NUL character.
+    // The engine refuses text with a NUL character, which a JSON document in Postgres cannot hold.
     let nul = Command::SetCells {
         line_item: plan.note,
         edits: vec![CellEdit {
@@ -970,7 +970,7 @@ async fn a_value_the_database_cannot_store_leaves_the_model_as_it_was(pool: PgPo
 
     let failed = handle.apply(stored.user, vec![nul]).await.unwrap_err();
 
-    assert!(matches!(failed, AppError::Internal(_)), "{failed:?}");
+    assert!(matches!(failed, AppError::Engine(_)), "{failed:?}");
     assert!(Arc::ptr_eq(&before, &handle.snapshot()));
     assert_eq!(count(&pool, stored.id, "true").await, rows);
     handle
@@ -1870,6 +1870,38 @@ async fn deleting_a_workspace_drops_the_actors_of_its_models(pool: PgPool) {
     assert_closed(&mut events).await;
     assert!(matches!(
         app.state.models.get(id).await,
+        Err(AppError::NotFound)
+    ));
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn deleting_a_workspace_drops_the_actors_of_all_its_models(pool: PgPool) {
+    let mut app = TestApp::new(pool);
+    let (workspace_id, admin) = setup_admin(&mut app).await;
+    let (_, first) = model_in_use(&mut app, &workspace_id, admin).await;
+    let created = app
+        .post(
+            &format!("/api/v1/workspaces/{workspace_id}/models"),
+            Some(json!({ "name": "Other plan" })),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text);
+    let second_id: Uuid = created.json["id"].as_str().unwrap().parse().unwrap();
+    let second = app.state.models.get(second_id).await.unwrap();
+    let (_, structure) = plan(1);
+    second.apply(admin, structure).await.unwrap();
+    let mut first_events = first.subscribe();
+    let mut second_events = second.subscribe();
+
+    let deleted = app
+        .delete(&format!("/api/v1/workspaces/{workspace_id}"))
+        .await;
+
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.text);
+    assert_closed(&mut first_events).await;
+    assert_closed(&mut second_events).await;
+    assert!(matches!(
+        app.state.models.get(second_id).await,
         Err(AppError::NotFound)
     ));
 }
