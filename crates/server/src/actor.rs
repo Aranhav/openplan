@@ -5,7 +5,8 @@
 //! of the model, stored in the change log and only then becomes the model: whatever fails on the
 //! way leaves the model as it was. After each batch the actor publishes the new model for
 //! readers, which never wait for it, and tells the subscribers what changed. Once enough changes
-//! have piled up in the log, and when the actor stops, it saves a checkpoint of the model.
+//! have piled up in the log the actor has a checkpoint of the model saved, by a task of its own
+//! so that edits go on meanwhile, and it saves a last one when it stops.
 //!
 //! The [`ModelRegistry`] starts the actors and hands out [`ModelHandle`]s to them. It unloads
 //! models that are not used for a while and keeps at most one actor per model: two actors for
@@ -21,8 +22,8 @@ use anyhow::anyhow;
 use openplan_engine::{ChangeSet, Command, CoordToken, LineItemId, Model, Value};
 use sqlx::PgPool;
 use tokio::{
-    sync::{broadcast, mpsc, oneshot, watch},
-    task::{JoinHandle, JoinSet},
+    sync::{Semaphore, broadcast, mpsc, oneshot, watch},
+    task::{JoinError, JoinHandle, JoinSet},
     time::MissedTickBehavior,
 };
 use uuid::Uuid;
@@ -32,9 +33,13 @@ use crate::{
     error::{AppError, AppResult},
 };
 
-/// How many change-log rows, batches and the cells they set, pile up before an actor saves a
-/// checkpoint of its model.
+/// How many change-log rows, batches and the cells they changed, pile up before an actor has a
+/// checkpoint of its model saved.
 const CHECKPOINT_AFTER_ROWS: u64 = 10_000;
+/// After a checkpoint failed, how many more rows pile up before the next try ...
+const RETRY_AFTER_ROWS: u64 = 1_000;
+/// ... or how long the actor waits, at the next batch, whichever comes first.
+const RETRY_AFTER: Duration = Duration::from_secs(5 * 60);
 /// How many requests wait for an actor before the ones sending them have to wait too.
 const MAILBOX_SIZE: usize = 256;
 /// How many events a slow subscriber may fall behind by before it misses some.
@@ -72,11 +77,13 @@ struct Published {
     seq: i64,
 }
 
-#[derive(Debug)]
+/// Makes the commands of a batch from the model they are applied to.
+type Build = Box<dyn FnOnce(&Model) -> AppResult<Vec<Command>> + Send>;
+
 enum Request {
     Apply {
         user_id: Uuid,
-        cmds: Vec<Command>,
+        build: Build,
         reply: oneshot::Sender<AppResult<ApplyOutcome>>,
     },
     /// Ends the actor once the requests before this one are done.
@@ -101,14 +108,27 @@ impl ModelHandle {
     ///
     /// A batch the engine rejects fails with [`AppError::Engine`], and one that cannot be stored
     /// with `Internal` (`NotFound` when the model is gone); either way nothing was changed. An
-    /// empty batch changes nothing and is not stored.
+    /// empty batch changes nothing and is not stored: its outcome has the sequence number of the
+    /// last batch applied and no change.
     pub async fn apply(&self, user_id: Uuid, cmds: Vec<Command>) -> AppResult<ApplyOutcome> {
+        self.apply_with(user_id, move |_| Ok(cmds)).await
+    }
+
+    /// Applies the commands that `build` makes from the model, as `apply` does. `build` runs in
+    /// the actor, on the model the batch is applied to, so a change made from what the model has,
+    /// such as adding to a name, cannot miss the batches applied before it. An error from `build`
+    /// is the result and nothing is written.
+    pub async fn apply_with(
+        &self,
+        user_id: Uuid,
+        build: impl FnOnce(&Model) -> AppResult<Vec<Command>> + Send + 'static,
+    ) -> AppResult<ApplyOutcome> {
         self.touch();
         let (reply, outcome) = oneshot::channel();
         self.mailbox
             .send(Request::Apply {
                 user_id,
-                cmds,
+                build: Box::new(build),
                 reply,
             })
             .await
@@ -135,6 +155,14 @@ impl ModelHandle {
             Some(events) => events.subscribe(),
             None => broadcast::channel(1).1,
         }
+    }
+
+    /// How many subscriptions follow the model. A model that has some is not unloaded for being
+    /// idle.
+    pub fn subscribers(&self) -> usize {
+        self.events
+            .upgrade()
+            .map_or(0, |events| events.receiver_count())
     }
 
     fn stopped(&self) -> AppError {
@@ -169,6 +197,23 @@ enum Applied {
     Unsettled(AppError),
 }
 
+/// A checkpoint being saved by a task of its own.
+struct InFlight {
+    /// The sequence number of the last batch in the model it saves.
+    seq: i64,
+    /// What `rows_since_checkpoint` was when it began, so that it is the rows since it began
+    /// that remain when it is done.
+    rows: u64,
+    task: JoinHandle<AppResult<()>>,
+}
+
+/// A checkpoint that could not be saved, and when.
+struct Failure {
+    /// What `rows_since_checkpoint` was.
+    rows: u64,
+    at: Instant,
+}
+
 /// The task that owns a model.
 struct Actor {
     model_id: Uuid,
@@ -178,26 +223,49 @@ struct Actor {
     seq: i64,
     /// The sequence number of the last batch in the stored checkpoint.
     checkpointed_seq: i64,
+    /// The change-log rows since the stored checkpoint, and since the one being saved if there
+    /// is one: those it does not hold.
     rows_since_checkpoint: u64,
+    in_flight: Option<InFlight>,
+    last_failure: Option<Failure>,
     published: watch::Sender<Published>,
     events: broadcast::Sender<ModelEvent>,
 }
 
+/// What the actor wakes up for.
+enum Event {
+    Request(Option<Request>),
+    /// The checkpoint being saved is done.
+    Saved(Option<Saved>),
+}
+
+/// A checkpoint that is done, and how it went.
+type Saved = (InFlight, Result<AppResult<()>, JoinError>);
+
 impl Actor {
     async fn run(mut self, mut mailbox: mpsc::Receiver<Request>) {
-        while let Some(request) = mailbox.recv().await {
-            match request {
-                Request::Apply {
+        loop {
+            let event = tokio::select! {
+                request = mailbox.recv() => Event::Request(request),
+                saved = Self::saved(&mut self.in_flight), if self.in_flight.is_some() => {
+                    Event::Saved(saved)
+                }
+            };
+            match event {
+                Event::Saved(saved) => self.checkpoint_settled(saved),
+                // Every handle is gone and the registry too: the process is going away.
+                Event::Request(None) => return,
+                Event::Request(Some(Request::Apply {
                     user_id,
-                    cmds,
+                    build,
                     reply,
-                } => match self.apply(user_id, cmds).await {
+                })) => match self.apply(user_id, build).await {
                     Applied::Settled(result) => {
                         let stored = result.is_ok();
                         // The caller may have gone away; the batch is applied all the same.
                         let _ = reply.send(result);
-                        if stored && self.rows_since_checkpoint >= CHECKPOINT_AFTER_ROWS {
-                            self.checkpoint().await;
+                        if stored && self.checkpoint_due() {
+                            self.start_checkpoint();
                         }
                     }
                     Applied::Unsettled(error) => {
@@ -205,9 +273,19 @@ impl Actor {
                         return;
                     }
                 },
-                Request::Stop { checkpoint } => {
-                    if checkpoint && self.seq > self.checkpointed_seq {
-                        self.checkpoint().await;
+                Event::Request(Some(Request::Stop { checkpoint: true })) => {
+                    let saved = Self::saved(&mut self.in_flight).await;
+                    self.checkpoint_settled(saved);
+                    if self.seq > self.checkpointed_seq {
+                        self.start_checkpoint();
+                        let saved = Self::saved(&mut self.in_flight).await;
+                        self.checkpoint_settled(saved);
+                    }
+                    return;
+                }
+                Event::Request(Some(Request::Stop { checkpoint: false })) => {
+                    if let Some(in_flight) = self.in_flight.take() {
+                        in_flight.task.abort();
                     }
                     return;
                 }
@@ -215,42 +293,55 @@ impl Actor {
         }
     }
 
-    async fn apply(&mut self, user_id: Uuid, cmds: Vec<Command>) -> Applied {
-        if cmds.is_empty() {
-            return Applied::Settled(Ok(ApplyOutcome {
-                seq: self.seq,
-                change_set: ChangeSet {
-                    generation: self.model.generation(),
-                    changed_line_items: Vec::new(),
-                    structure_changed: false,
-                },
-            }));
-        }
-        let cmds = Arc::new(cmds);
-        let (next, change_set, previous) = match run_engine(&self.model, &cmds).await {
-            Ok(applied) => applied,
+    /// Waits for the checkpoint being saved to be done, and takes it out; `None` if there is
+    /// none. Dropping this before it is done loses nothing.
+    async fn saved(in_flight: &mut Option<InFlight>) -> Option<Saved> {
+        let result = (&mut in_flight.as_mut()?.task).await;
+        in_flight.take().map(|in_flight| (in_flight, result))
+    }
+
+    async fn apply(&mut self, user_id: Uuid, build: Build) -> Applied {
+        let engined = match run_engine(&self.model, build).await {
+            Ok(Some(engined)) => engined,
+            Ok(None) => {
+                return Applied::Settled(Ok(ApplyOutcome {
+                    seq: self.seq,
+                    change_set: ChangeSet {
+                        generation: self.model.generation(),
+                        changed_line_items: Vec::new(),
+                        structure_changed: false,
+                    },
+                }));
+            }
             Err(error) => return Applied::Settled(Err(error)),
         };
+        let Engined {
+            cmds,
+            next,
+            change_set,
+            previous,
+        } = engined;
 
         // Dropping the transaction on the way out undoes it.
         let mut tx = match self.db.begin().await {
             Ok(tx) => tx,
             Err(error) => return Applied::Settled(Err(error.into())),
         };
-        let seq =
+        let appended =
             match engine_store::append(&mut tx, self.model_id, Some(user_id), &cmds, &previous)
                 .await
             {
-                Ok(seq) => seq,
+                Ok(appended) => appended,
                 Err(error) => return Applied::Settled(Err(error)),
             };
         if let Err(error) = tx.commit().await {
             return Applied::Unsettled(error.into());
         }
 
+        let seq = appended.seq;
         self.model = Arc::new(next);
         self.seq = seq;
-        self.rows_since_checkpoint += 1 + previous.len() as u64;
+        self.rows_since_checkpoint += appended.rows;
         // The snapshot comes first, so that a subscriber told of the batch finds it in the model.
         self.published.send_replace(Published {
             model: Arc::clone(&self.model),
@@ -270,37 +361,94 @@ impl Actor {
         Applied::Settled(Ok(ApplyOutcome { seq, change_set }))
     }
 
-    /// Saves the model. A checkpoint only shortens the next load, since the change log has every
-    /// batch, so a failure is logged and tried again with the next one.
-    async fn checkpoint(&mut self) {
-        match engine_store::checkpoint(&self.db, self.model_id, &self.model, self.seq).await {
-            Ok(()) => {
-                self.checkpointed_seq = self.seq;
-                self.rows_since_checkpoint = 0;
+    /// Whether a checkpoint should be saved now: enough rows have piled up and none is being
+    /// saved, and if the last one failed, a thousand more rows or five minutes have passed.
+    fn checkpoint_due(&self) -> bool {
+        self.in_flight.is_none()
+            && self.rows_since_checkpoint >= CHECKPOINT_AFTER_ROWS
+            && self.last_failure.as_ref().is_none_or(|failure| {
+                self.rows_since_checkpoint >= failure.rows + RETRY_AFTER_ROWS
+                    || failure.at.elapsed() >= RETRY_AFTER
+            })
+    }
+
+    /// Has the model as it is now saved as a checkpoint by a task of its own, which holds the
+    /// published model and so does not hold up the batches that come next. Not while another
+    /// is being saved.
+    fn start_checkpoint(&mut self) {
+        let (db, model_id, model, seq) = (
+            self.db.clone(),
+            self.model_id,
+            Arc::clone(&self.model),
+            self.seq,
+        );
+        self.in_flight = Some(InFlight {
+            seq,
+            rows: self.rows_since_checkpoint,
+            task: tokio::spawn(async move {
+                engine_store::checkpoint(&db, model_id, &model, seq).await
+            }),
+        });
+    }
+
+    /// Takes in how a checkpoint went. A checkpoint only shortens the next load, since the change
+    /// log has every batch, so a failure is logged and the next try comes later.
+    fn checkpoint_settled(&mut self, saved: Option<Saved>) {
+        let Some((in_flight, result)) = saved else {
+            return;
+        };
+        match result {
+            Ok(Ok(())) => {
+                self.checkpointed_seq = self.checkpointed_seq.max(in_flight.seq);
+                self.rows_since_checkpoint =
+                    self.rows_since_checkpoint.saturating_sub(in_flight.rows);
+                self.last_failure = None;
+                return;
             }
-            Err(AppError::NotFound) => {
+            Ok(Err(AppError::NotFound)) => {
                 tracing::debug!(model_id = %self.model_id, "the model is gone, so it is not checkpointed");
             }
-            Err(error) => {
+            Ok(Err(error)) => {
                 tracing::warn!(model_id = %self.model_id, %error, "failed to checkpoint the model");
             }
+            Err(error) => {
+                tracing::error!(model_id = %self.model_id, %error, "failed to checkpoint the model");
+            }
         }
+        self.last_failure = Some(Failure {
+            rows: self.rows_since_checkpoint,
+            at: Instant::now(),
+        });
     }
 }
 
-/// Applies the commands to a clone of `model`, on a thread that may block: a large batch keeps
-/// the engine busy for a while. Returns the changed model, what it changed and the value each
-/// edited cell had before.
-async fn run_engine(
-    model: &Arc<Model>,
-    cmds: &Arc<Vec<Command>>,
-) -> AppResult<(Model, ChangeSet, Vec<Value>)> {
-    let (before, cmds) = (Arc::clone(model), Arc::clone(cmds));
+/// A batch run on a clone of the model.
+struct Engined {
+    cmds: Vec<Command>,
+    next: Model,
+    change_set: ChangeSet,
+    /// The value each edited cell had before, one for every edit.
+    previous: Vec<Value>,
+}
+
+/// Makes the commands from `model` and applies them to a clone of it, on a thread that may
+/// block: a large batch keeps the engine busy for a while. `None` when there are no commands.
+async fn run_engine(model: &Arc<Model>, build: Build) -> AppResult<Option<Engined>> {
+    let before = Arc::clone(model);
     tokio::task::spawn_blocking(move || {
+        let cmds = build(&before)?;
+        if cmds.is_empty() {
+            return Ok(None);
+        }
         let mut next = Model::clone(&before);
-        let change_set = next.apply_batch(Vec::clone(&cmds))?;
+        let change_set = next.apply_batch(cmds.clone())?;
         let previous = previous_values(&before, &cmds);
-        Ok::<_, AppError>((next, change_set, previous))
+        Ok::<_, AppError>(Some(Engined {
+            cmds,
+            next,
+            change_set,
+            previous,
+        }))
     })
     .await
     .map_err(|error| AppError::Internal(error.into()))?
@@ -351,7 +499,8 @@ impl Running {
     /// Loads the model and starts its actor.
     async fn start(db: &PgPool, model_id: Uuid) -> AppResult<Running> {
         let (model, seq) = engine_store::load(db, model_id).await?;
-        let (checkpointed_seq, rows_since_checkpoint) = checkpoint_progress(db, model_id).await?;
+        let (checkpointed_seq, rows_since_checkpoint) =
+            engine_store::batches_since_checkpoint(db, model_id).await?;
         let model = Arc::new(model);
         let (published, snapshots) = watch::channel(Published {
             model: Arc::clone(&model),
@@ -373,6 +522,8 @@ impl Running {
             seq,
             checkpointed_seq,
             rows_since_checkpoint,
+            in_flight: None,
+            last_failure: None,
             published,
             events,
         };
@@ -394,21 +545,6 @@ impl Running {
     }
 }
 
-/// The sequence number of the last batch in the stored checkpoint of a model, and how many
-/// change-log rows come after it.
-async fn checkpoint_progress(db: &PgPool, model_id: Uuid) -> AppResult<(i64, u64)> {
-    let (checkpoint_seq, rows) = sqlx::query_as::<_, (i64, i64)>(
-        "SELECT m.checkpoint_seq,
-                (SELECT count(*) FROM change_log c
-                 WHERE c.model_id = m.id AND c.seq > m.checkpoint_seq)
-         FROM models m WHERE m.id = $1",
-    )
-    .bind(model_id)
-    .fetch_one(db)
-    .await?;
-    Ok((checkpoint_seq, rows.unsigned_abs()))
-}
-
 /// What a model's slot holds: its actor, if it is loaded. The lock on the slot is held while the
 /// model is loaded and while its actor is stopped, so that nobody loads a model that another
 /// actor still owns.
@@ -417,7 +553,8 @@ type Slot = tokio::sync::Mutex<Option<Running>>;
 /// Which actors to stop.
 #[derive(Clone, Copy)]
 enum Pick {
-    /// Those whose model was not used for this long, and those that stopped by themselves.
+    /// Those whose model was not used for this long and has no subscribers, and those that
+    /// stopped by themselves.
     Idle(Duration),
     All,
 }
@@ -426,6 +563,9 @@ struct Registry {
     db: PgPool,
     idle: Duration,
     slots: Mutex<HashMap<Uuid, Arc<Slot>>>,
+    /// Lets as many actors save their last checkpoint at once as half the connections of the
+    /// pool, so that unloading many models does not make the batches that go on wait for one.
+    stopping: Arc<Semaphore>,
 }
 
 /// The actors of the models in use, started when a model is first asked for.
@@ -437,11 +577,13 @@ pub struct ModelRegistry {
 impl ModelRegistry {
     /// A registry over the models in `db`, which unloads a model once it is `idle` unused.
     pub fn new(db: PgPool, idle: Duration) -> ModelRegistry {
+        let stopping = (db.options().get_max_connections() / 2).max(1) as usize;
         ModelRegistry {
             inner: Arc::new(Registry {
                 db,
                 idle,
                 slots: Mutex::new(HashMap::new()),
+                stopping: Arc::new(Semaphore::new(stopping)),
             }),
         }
     }
@@ -463,8 +605,8 @@ impl ModelRegistry {
         Ok(handle)
     }
 
-    /// Saves and unloads the models that nobody has used for the idle time. Their handles stop
-    /// working and their events channels close.
+    /// Saves and unloads the models that nobody has used for the idle time and that nobody
+    /// follows. Their handles stop working and their events channels close.
     pub async fn evict_idle(&self) {
         self.stop_actors(Pick::Idle(self.inner.idle)).await;
     }
@@ -475,8 +617,16 @@ impl ModelRegistry {
     }
 
     /// Unloads a model that was deleted, without saving it, and closes its events channel. A
-    /// later `get` finds the model gone.
+    /// later `get` finds the model gone. It is done even if the caller does not wait for it.
     pub async fn discard(&self, model_id: Uuid) {
+        let registry = self.clone();
+        let discarding = tokio::spawn(async move { registry.discard_now(model_id).await });
+        if let Err(error) = discarding.await {
+            tracing::error!(%model_id, %error, "failed to discard the model");
+        }
+    }
+
+    async fn discard_now(&self, model_id: Uuid) {
         let slot = self.slots().get(&model_id).cloned();
         let Some(slot) = slot else {
             return;
@@ -515,14 +665,19 @@ impl ModelRegistry {
                 },
             };
             let picked = running.as_ref().is_some_and(|actor| match pick {
-                Pick::Idle(idle) => actor.handle.is_stopped() || actor.handle.idle_for() >= idle,
+                Pick::Idle(idle) => {
+                    actor.handle.is_stopped()
+                        || (actor.handle.idle_for() >= idle && actor.handle.subscribers() == 0)
+                }
                 Pick::All => true,
             });
             if !picked {
                 continue;
             }
             // The slot stays locked until the actor is gone.
+            let permits = Arc::clone(&self.inner.stopping);
             stopping.spawn(async move {
+                let _permit = permits.acquire_owned().await;
                 if let Some(running) = running.take() {
                     running.stop(true).await;
                 }

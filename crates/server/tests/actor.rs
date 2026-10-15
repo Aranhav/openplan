@@ -1,6 +1,14 @@
 mod common;
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    io,
+    sync::{
+        Arc, Mutex, PoisonError,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use axum::http::StatusCode;
 use common::TestApp;
@@ -10,12 +18,12 @@ use openplan_engine::{
     VersionsScope,
 };
 use openplan_server::{
-    actor::{ModelEvent, ModelHandle, ModelRegistry},
+    actor::{ApplyOutcome, ModelEvent, ModelHandle, ModelRegistry},
     engine_store::{self, cell_key},
-    error::AppError,
+    error::{AppError, AppResult},
 };
 use serde_json::json;
-use sqlx::{PgPool, types::Json};
+use sqlx::{PgPool, postgres::PgPoolOptions, types::Json};
 use tokio::{
     sync::broadcast::{
         self,
@@ -23,6 +31,7 @@ use tokio::{
     },
     time::{sleep, timeout},
 };
+use tracing_subscriber::fmt::MakeWriter;
 use uuid::Uuid;
 
 const MONTHS: [&str; 12] = [
@@ -240,12 +249,90 @@ async fn next_event(events: &mut broadcast::Receiver<ModelEvent>) -> ModelEvent 
         .expect("the channel is open")
 }
 
-/// The channel was closed, and does not leave its subscribers waiting.
+/// The channel is closed, after whatever events were still waiting in it, and does not leave its
+/// subscribers waiting.
 async fn assert_closed(events: &mut broadcast::Receiver<ModelEvent>) {
-    let received = timeout(WAIT, events.recv())
-        .await
-        .expect("the channel was neither closed nor used");
-    assert_eq!(received, Err(RecvError::Closed));
+    loop {
+        let received = timeout(WAIT, events.recv())
+            .await
+            .expect("the channel was neither closed nor used");
+        match received {
+            Err(RecvError::Closed) => return,
+            Ok(_) | Err(RecvError::Lagged(_)) => {}
+        }
+    }
+}
+
+/// Waits for a checkpoint that an actor saves in the background to reach `seq`.
+async fn wait_for_checkpoint(pool: &PgPool, model_id: Uuid, seq: i64) {
+    timeout(WAIT, async {
+        while checkpoint_seq(pool, model_id).await < seq {
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the checkpoint was not saved");
+}
+
+/// Gives a checkpoint that must not happen time to happen anyway.
+async fn assert_no_checkpoint_follows(pool: &PgPool, model_id: Uuid, saved: i64) {
+    sleep(Duration::from_millis(300)).await;
+    assert_eq!(checkpoint_seq(pool, model_id).await, saved);
+}
+
+/// What the log of the test says, kept so that the test can read it.
+#[derive(Clone, Default)]
+struct LogBuffer(Arc<Mutex<Vec<u8>>>);
+
+impl LogBuffer {
+    fn contents(&self) -> String {
+        let bytes = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+}
+
+impl io::Write for LogBuffer {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl MakeWriter<'_> for LogBuffer {
+    type Writer = LogBuffer;
+
+    fn make_writer(&self) -> LogBuffer {
+        self.clone()
+    }
+}
+
+/// Starts keeping the log of this test (the runtime of a test is one thread, so the tasks of the
+/// registry log to it too). The log is kept until the guard is dropped.
+fn capture_logs() -> (LogBuffer, tracing::subscriber::DefaultGuard) {
+    let buffer = LogBuffer::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(buffer.clone())
+        .with_ansi(false)
+        .finish();
+    (buffer, tracing::subscriber::set_default(subscriber))
+}
+
+/// Waits until the log has said `message` `times` times.
+async fn wait_for_log(logs: &LogBuffer, message: &str, times: usize) {
+    timeout(WAIT, async {
+        while logs.contents().matches(message).count() < times {
+            sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("the log did not say \"{message}\" {times} times"));
 }
 
 fn assert_same_cells(actual: &Model, expected: &Model, plan: &Plan) {
@@ -542,12 +629,10 @@ async fn evict_then_reload_same_values(pool: PgPool) {
         .await
         .unwrap();
     let live = handle.snapshot();
-    let mut events = handle.subscribe();
 
     registry.evict_idle().await;
 
     assert_eq!(checkpoint_seq(&pool, stored.id).await, outcome.seq);
-    assert_closed(&mut events).await;
     assert!(
         handle.apply(stored.user, vec![]).await.is_err(),
         "the evicted actor takes no more work"
@@ -638,6 +723,112 @@ async fn an_empty_batch_writes_nothing(pool: PgPool) {
     assert_eq!(outcome.seq, applied.seq);
     assert!(!outcome.change_set.structure_changed);
     assert!(outcome.change_set.changed_line_items.is_empty());
+    assert_eq!(count(&pool, stored.id, "true").await, rows);
+    assert!(matches!(events.try_recv(), Err(TryRecvError::Empty)));
+}
+
+/// The name of an item of a list.
+fn item_name(model: &Model, list: ListId, item: ItemId) -> String {
+    let list = model.structure().list(list).unwrap();
+    list.items()
+        .find(|(_, candidate)| candidate.id == item)
+        .unwrap()
+        .1
+        .name
+        .clone()
+}
+
+/// A change that adds `suffix` to the name of an item, to the name the model it is made on has.
+fn append_to_name(
+    list: ListId,
+    item: ItemId,
+    suffix: char,
+) -> impl FnOnce(&Model) -> AppResult<Vec<Command>> + Send + 'static {
+    move |model| {
+        let name = format!("{}{suffix}", item_name(model, list, item));
+        Ok(vec![Command::UpsertListItems {
+            list,
+            items: vec![ItemSpec {
+                id: item,
+                code: None,
+                name,
+                parent: None,
+            }],
+        }])
+    }
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn concurrent_read_modify_write_closures_lose_no_update(pool: PgPool) {
+    let Setup {
+        stored,
+        handle,
+        plan,
+        ..
+    } = setup(&pool, 1).await;
+    let item = plan.regions[0];
+    let letters: Vec<char> = ('a'..='t').collect();
+
+    let applies: Vec<_> = letters
+        .iter()
+        .map(|&letter| {
+            let handle = handle.clone();
+            let (user, list) = (stored.user, plan.list);
+            tokio::spawn(async move {
+                handle
+                    .apply_with(user, append_to_name(list, item, letter))
+                    .await
+            })
+        })
+        .collect();
+    for apply in applies {
+        apply.await.unwrap().unwrap();
+    }
+
+    // Each closure saw the name the one before it left: every letter is there, once.
+    let (replayed, _) = engine_store::load(&pool, stored.id).await.unwrap();
+    for model in [&*handle.snapshot(), &replayed] {
+        let name = item_name(model, plan.list, item);
+        let mut appended: Vec<char> = name.strip_prefix("Region 0").unwrap().chars().collect();
+        appended.sort_unstable();
+        assert_eq!(appended, letters, "{name}");
+    }
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn an_error_from_a_closure_is_returned_and_nothing_is_written(pool: PgPool) {
+    let Setup { stored, handle, .. } = setup(&pool, 1).await;
+    let before = handle.snapshot();
+    let rows = count(&pool, stored.id, "true").await;
+    let mut events = handle.subscribe();
+
+    let failed = handle
+        .apply_with(stored.user, |_| Err(AppError::Forbidden))
+        .await
+        .unwrap_err();
+
+    assert!(matches!(failed, AppError::Forbidden), "{failed:?}");
+    assert!(Arc::ptr_eq(&before, &handle.snapshot()));
+    assert_eq!(count(&pool, stored.id, "true").await, rows);
+    assert!(matches!(events.try_recv(), Err(TryRecvError::Empty)));
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn a_closure_with_no_commands_writes_nothing(pool: PgPool) {
+    let Setup { stored, handle, .. } = setup(&pool, 1).await;
+    let (before, seq) = handle.snapshot_seq();
+    let rows = count(&pool, stored.id, "true").await;
+    let mut events = handle.subscribe();
+
+    let outcome = handle
+        .apply_with(stored.user, |_| Ok(Vec::new()))
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.seq, seq);
+    assert!(!outcome.change_set.structure_changed);
+    assert!(outcome.change_set.changed_line_items.is_empty());
+    assert!(Arc::ptr_eq(&before, &handle.snapshot()));
     assert_eq!(count(&pool, stored.id, "true").await, rows);
     assert!(matches!(events.try_recv(), Err(TryRecvError::Empty)));
 }
@@ -947,6 +1138,38 @@ async fn discard_drops_the_actor_without_a_checkpoint(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn a_model_with_subscribers_is_not_evicted(pool: PgPool) {
+    let Setup {
+        stored,
+        registry,
+        handle,
+        plan,
+    } = setup_with(&pool, 1, Duration::ZERO).await;
+    assert_eq!(handle.subscribers(), 0);
+    let mut events = handle.subscribe();
+    assert_eq!(handle.subscribers(), 1);
+
+    registry.evict_idle().await;
+
+    // Nobody has used the model, but somebody follows it: the actor and its channel go on.
+    let outcome = handle
+        .apply(
+            stored.user,
+            vec![numbers(plan.units, [(plan.regions[0], 3.0)])],
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        next_event(&mut events).await,
+        ModelEvent::CellsChanged { seq, .. } if seq == outcome.seq
+    ));
+    drop(events);
+    assert_eq!(handle.subscribers(), 0);
+    registry.evict_idle().await;
+    assert!(!is_running(&handle), "with nobody following it, it goes");
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn recently_used_models_stay_loaded(pool: PgPool) {
     let Setup {
         registry, handle, ..
@@ -957,35 +1180,55 @@ async fn recently_used_models_stay_loaded(pool: PgPool) {
     assert!(is_running(&handle));
 }
 
+/// The idle time of the tests that wait it out: each wait is shorter than it, but two together
+/// are not, so a model that was used between them must still be loaded after both.
+const SHORT_IDLE: Duration = Duration::from_millis(1500);
+const HALF_IDLE: Duration = Duration::from_millis(900);
+
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
-async fn getting_and_applying_both_keep_a_model_from_going_idle(pool: PgPool) {
+async fn applying_keeps_a_model_from_going_idle(pool: PgPool) {
     let Setup {
         stored,
         registry,
         handle,
         plan,
-    } = setup_with(&pool, 1, Duration::from_millis(600)).await;
-    let edit = || vec![numbers(plan.units, [(plan.regions[0], 1.0)])];
+    } = setup_with(&pool, 1, SHORT_IDLE).await;
 
-    // Each wait is shorter than the idle time, but the two together are not.
-    sleep(Duration::from_millis(400)).await;
-    handle.apply(stored.user, edit()).await.unwrap();
-    sleep(Duration::from_millis(400)).await;
+    sleep(HALF_IDLE).await;
+    handle
+        .apply(
+            stored.user,
+            vec![numbers(plan.units, [(plan.regions[0], 1.0)])],
+        )
+        .await
+        .unwrap();
+    sleep(HALF_IDLE).await;
     registry.evict_idle().await;
     assert!(is_running(&handle), "an apply is use");
 
-    sleep(Duration::from_millis(400)).await;
-    registry.get(stored.id).await.unwrap();
-    sleep(Duration::from_millis(400)).await;
-    registry.evict_idle().await;
-    assert!(is_running(&handle), "a get is use");
-
-    sleep(Duration::from_millis(700)).await;
+    sleep(SHORT_IDLE + Duration::from_millis(100)).await;
     registry.evict_idle().await;
     assert!(
         !is_running(&handle),
         "a model nobody used for long is evicted"
     );
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn getting_keeps_a_model_from_going_idle(pool: PgPool) {
+    let Setup {
+        stored,
+        registry,
+        handle,
+        ..
+    } = setup_with(&pool, 1, SHORT_IDLE).await;
+
+    sleep(HALF_IDLE).await;
+    registry.get(stored.id).await.unwrap();
+    sleep(HALF_IDLE).await;
+    registry.evict_idle().await;
+
+    assert!(is_running(&handle), "a get is use");
 }
 
 /// The grid the checkpoint tests fill: 750 rows by the 12 months of the calendar.
@@ -1022,8 +1265,10 @@ fn grid() -> (Grid, Vec<Command>) {
     (grid, commands)
 }
 
-/// Sets `count` cells of the grid, filling it row by row from its first cell.
-fn fill(grid: &Grid, count: usize) -> Command {
+/// Sets `count` cells of the grid, filling it row by row from its first cell, to `base` plus 1
+/// for the first and on. A cell set to what it has is not logged, so a base that differs from
+/// the one before makes every edit a logged row.
+fn fill(grid: &Grid, count: usize, base: f64) -> Command {
     Command::SetCells {
         line_item: grid.value,
         edits: (0..count)
@@ -1032,35 +1277,61 @@ fn fill(grid: &Grid, count: usize) -> Command {
                     CoordToken::Item(grid.rows[i / 12]),
                     CoordToken::Period(format!("{} 26", MONTHS[i % 12])),
                 ],
-                value: Value::Number(i as f64),
+                value: Value::Number(base + i as f64 + 1.0),
             })
             .collect(),
     }
 }
 
-#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
-async fn checkpoints_after_10000_change_log_rows(pool: PgPool) {
-    let stored = insert_model(&pool).await;
+/// A model whose grid is empty, and the handle of its actor, in a registry that evicts nothing.
+async fn grid_model(pool: &PgPool) -> (Stored, ModelRegistry, ModelHandle, Grid) {
+    let stored = insert_model(pool).await;
     let registry = ModelRegistry::new(pool.clone(), LONG);
     let handle = registry.get(stored.id).await.unwrap();
     let (grid, structure) = grid();
     handle.apply(stored.user, structure).await.unwrap();
+    (stored, registry, handle, grid)
+}
 
-    // 1 row for the structure, 9,001 for these cells: 9,002.
+/// Applies the edits that bring the change log of a model that `grid_model` made to 9,002 rows:
+/// one for the structure, and one for the batch and one for each of the 9,000 cells.
+async fn nearly_enough_rows(stored: &Stored, handle: &ModelHandle, grid: &Grid) {
     handle
-        .apply(stored.user, vec![fill(&grid, 9_000)])
+        .apply(stored.user, vec![fill(grid, 9_000, 0.0)])
         .await
         .unwrap();
-    handle.apply(stored.user, vec![]).await.unwrap();
-    assert_eq!(checkpoint_seq(&pool, stored.id).await, 0);
+}
 
-    // 1,001 more make 10,003.
-    let outcome = handle
-        .apply(stored.user, vec![fill(&grid, 1_000)])
+/// Applies the edits that make the 10,000th row: 1,001 more.
+async fn enough_rows(stored: &Stored, handle: &ModelHandle, grid: &Grid) -> ApplyOutcome {
+    handle
+        .apply(stored.user, vec![fill(grid, 1_000, 100_000.0)])
         .await
-        .unwrap();
-    // The actor checkpoints after it replies; this empty batch waits behind the checkpoint.
-    handle.apply(stored.user, vec![]).await.unwrap();
+        .unwrap()
+}
+
+fn grid_value(model: &Model, grid: &Grid, cell: usize) -> Value {
+    model
+        .read_cells(
+            grid.value,
+            &[vec![
+                CoordToken::Item(grid.rows[cell / 12]),
+                CoordToken::Period(format!("{} 26", MONTHS[cell % 12])),
+            ]],
+        )
+        .unwrap()
+        .remove(0)
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn checkpoints_after_10000_change_log_rows(pool: PgPool) {
+    let (stored, _registry, handle, grid) = grid_model(&pool).await;
+
+    nearly_enough_rows(&stored, &handle, &grid).await;
+    assert_no_checkpoint_follows(&pool, stored.id, 0).await;
+
+    let outcome = enough_rows(&stored, &handle, &grid).await;
+    wait_for_checkpoint(&pool, stored.id, outcome.seq).await;
     assert_eq!(checkpoint_seq(&pool, stored.id).await, outcome.seq);
     let stored_cells: i64 =
         sqlx::query_scalar("SELECT count(*) FROM line_item_data WHERE model_id = $1")
@@ -1072,37 +1343,452 @@ async fn checkpoints_after_10000_change_log_rows(pool: PgPool) {
 
     // The count starts again: 1,001 rows are not enough.
     let later = handle
-        .apply(stored.user, vec![fill(&grid, 1_000)])
+        .apply(stored.user, vec![fill(&grid, 1_000, 200_000.0)])
         .await
         .unwrap();
-    handle.apply(stored.user, vec![]).await.unwrap();
-    assert_eq!(checkpoint_seq(&pool, stored.id).await, outcome.seq);
+    assert_no_checkpoint_follows(&pool, stored.id, outcome.seq).await;
     assert!(later.seq > outcome.seq);
 }
 
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
-async fn the_row_count_since_the_checkpoint_survives_a_reload(pool: PgPool) {
+async fn cells_that_do_not_change_are_not_counted(pool: PgPool) {
+    let (stored, _registry, handle, grid) = grid_model(&pool).await;
+    nearly_enough_rows(&stored, &handle, &grid).await;
+
+    // The same values again: no cell row is logged, so these batches are 1 row each.
+    for _ in 0..3 {
+        handle
+            .apply(stored.user, vec![fill(&grid, 9_000, 0.0)])
+            .await
+            .unwrap();
+    }
+
+    assert_no_checkpoint_follows(&pool, stored.id, 0).await;
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn the_batches_since_the_checkpoint_count_after_a_reload(pool: PgPool) {
     let stored = insert_model(&pool).await;
     let first = ModelRegistry::new(pool.clone(), LONG);
     let handle = first.get(stored.id).await.unwrap();
-    let (grid, structure) = grid();
-    handle.apply(stored.user, structure).await.unwrap();
-    handle
-        .apply(stored.user, vec![fill(&grid, 9_000)])
-        .await
-        .unwrap();
-    // The process goes away without a checkpoint.
+    // 9,999 batches of nothing in the log, after a checkpoint that is not there yet.
+    sqlx::query(
+        "INSERT INTO change_log (model_id, kind, payload)
+         SELECT $1, 'cells', '[]' FROM generate_series(1, 9999)",
+    )
+    .bind(stored.id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    // The process goes away; the next one counts what the log holds.
     drop((handle, first));
 
     let second = ModelRegistry::new(pool.clone(), LONG);
     let handle = second.get(stored.id).await.unwrap();
-    let outcome = handle
-        .apply(stored.user, vec![fill(&grid, 1_000)])
+    let (_, structure) = plan(1);
+    let outcome = handle.apply(stored.user, structure).await.unwrap();
+
+    wait_for_checkpoint(&pool, stored.id, outcome.seq).await;
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn edits_go_on_while_a_checkpoint_is_written(pool: PgPool) {
+    let (stored, _registry, handle, grid) = grid_model(&pool).await;
+    nearly_enough_rows(&stored, &handle, &grid).await;
+    // The checkpoint writes the structure first; somebody else holds its row.
+    let mut hold = pool.begin().await.unwrap();
+    sqlx::query("SELECT 1 FROM model_structure WHERE model_id = $1 FOR UPDATE")
+        .bind(stored.id)
+        .fetch_one(&mut *hold)
         .await
         .unwrap();
-    handle.apply(stored.user, vec![]).await.unwrap();
 
-    assert_eq!(checkpoint_seq(&pool, stored.id).await, outcome.seq);
+    let crossing = enough_rows(&stored, &handle, &grid).await;
+    let during = timeout(
+        WAIT,
+        handle.apply(stored.user, vec![fill(&grid, 10, 300_000.0)]),
+    )
+    .await
+    .expect("edits wait for the checkpoint")
+    .unwrap();
+
+    assert_eq!(checkpoint_seq(&pool, stored.id).await, 0);
+    hold.rollback().await.unwrap();
+    wait_for_checkpoint(&pool, stored.id, crossing.seq).await;
+    assert_eq!(
+        checkpoint_seq(&pool, stored.id).await,
+        crossing.seq,
+        "the checkpoint is of the model as it was when it began, not of the edit made meanwhile"
+    );
+    // The checkpoint and the edit after it make the live model.
+    let (loaded, seq) = engine_store::load(&pool, stored.id).await.unwrap();
+    assert_eq!(seq, during.seq);
+    let live = handle.snapshot();
+    for cell in [0, 5, 10, 999, 1_000, 8_999] {
+        assert_eq!(
+            grid_value(&loaded, &grid, cell),
+            grid_value(&live, &grid, cell),
+            "cell {cell}"
+        );
+    }
+    assert_eq!(grid_value(&live, &grid, 5), Value::Number(300_006.0));
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn shutdown_saves_the_last_edits_when_a_checkpoint_is_in_flight(pool: PgPool) {
+    let (stored, registry, handle, grid) = grid_model(&pool).await;
+    nearly_enough_rows(&stored, &handle, &grid).await;
+    let mut hold = pool.begin().await.unwrap();
+    sqlx::query("SELECT 1 FROM model_structure WHERE model_id = $1 FOR UPDATE")
+        .bind(stored.id)
+        .fetch_one(&mut *hold)
+        .await
+        .unwrap();
+    enough_rows(&stored, &handle, &grid).await;
+    let last = timeout(
+        WAIT,
+        handle.apply(stored.user, vec![fill(&grid, 10, 300_000.0)]),
+    )
+    .await
+    .expect("edits wait for the checkpoint")
+    .unwrap();
+
+    let shutdown = tokio::spawn({
+        let registry = registry.clone();
+        async move { registry.shutdown().await }
+    });
+    sleep(Duration::from_millis(300)).await;
+    assert!(
+        !shutdown.is_finished(),
+        "the checkpoint in flight is awaited"
+    );
+    hold.rollback().await.unwrap();
+    timeout(WAIT, shutdown)
+        .await
+        .expect("shutdown did not finish")
+        .unwrap();
+
+    assert_eq!(checkpoint_seq(&pool, stored.id).await, last.seq);
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn a_failed_checkpoint_is_tried_again_after_a_thousand_more_rows(pool: PgPool) {
+    let (logs, _guard) = capture_logs();
+    let (stored, _registry, handle, grid) = grid_model(&pool).await;
+    nearly_enough_rows(&stored, &handle, &grid).await;
+    sqlx::query("ALTER TABLE model_structure RENAME TO model_structure_away")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let failure = "failed to checkpoint the model";
+
+    enough_rows(&stored, &handle, &grid).await;
+    wait_for_log(&logs, failure, 1).await;
+
+    // Fewer than a thousand more rows: no new attempt.
+    for base in 0..5 {
+        handle
+            .apply(
+                stored.user,
+                vec![fill(&grid, 10, 400_000.0 + f64::from(base))],
+            )
+            .await
+            .unwrap();
+    }
+    sleep(Duration::from_millis(300)).await;
+    assert_eq!(logs.contents().matches(failure).count(), 1);
+
+    // A thousand more: one.
+    handle
+        .apply(stored.user, vec![fill(&grid, 1_000, 500_000.0)])
+        .await
+        .unwrap();
+    wait_for_log(&logs, failure, 2).await;
+
+    // The table is back and a thousand more rows later the checkpoint is saved.
+    sqlx::query("ALTER TABLE model_structure_away RENAME TO model_structure")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let last = handle
+        .apply(stored.user, vec![fill(&grid, 1_000, 600_000.0)])
+        .await
+        .unwrap();
+    wait_for_checkpoint(&pool, stored.id, last.seq).await;
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn at_most_half_the_pool_checkpoints_at_a_time_when_models_are_stopped(pool: PgPool) {
+    // Two connections: one model at a time.
+    let small = PgPoolOptions::new()
+        .max_connections(2)
+        .connect_with((*pool.connect_options()).clone())
+        .await
+        .unwrap();
+    let registry = ModelRegistry::new(small, LONG);
+    let mut models = Vec::new();
+    for _ in 0..2 {
+        let stored = insert_model(&pool).await;
+        let handle = registry.get(stored.id).await.unwrap();
+        let (plan, structure) = plan(1);
+        handle.apply(stored.user, structure).await.unwrap();
+        models.push((stored, handle, plan));
+    }
+    let mut holds = Vec::new();
+    for (stored, ..) in &models {
+        let mut hold = pool.begin().await.unwrap();
+        sqlx::query("SELECT 1 FROM model_structure WHERE model_id = $1 FOR UPDATE")
+            .bind(stored.id)
+            .fetch_one(&mut *hold)
+            .await
+            .unwrap();
+        holds.push(hold);
+    }
+
+    let shutdown = tokio::spawn({
+        let registry = registry.clone();
+        async move { registry.shutdown().await }
+    });
+    sleep(Duration::from_millis(300)).await;
+
+    // The one that was told to stop is busy writing its checkpoint, which waits for the lock; the
+    // other has not been told yet and goes on working.
+    let mut working = 0;
+    for (stored, handle, plan) in &models {
+        let edit = vec![numbers(plan.units, [(plan.regions[0], 1.0)])];
+        if let Ok(applied) =
+            timeout(Duration::from_millis(300), handle.apply(stored.user, edit)).await
+        {
+            applied.unwrap();
+            working += 1;
+        }
+    }
+    assert_eq!(working, 1);
+    for hold in holds {
+        hold.rollback().await.unwrap();
+    }
+    timeout(WAIT, shutdown)
+        .await
+        .expect("shutdown did not finish")
+        .unwrap();
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn discard_finishes_when_its_caller_goes_away(pool: PgPool) {
+    let Setup {
+        stored,
+        registry,
+        handle,
+        plan,
+    } = setup(&pool, 1).await;
+    let mut events = handle.subscribe();
+    // The actor is stuck in an edit that waits for the model's row, and its mailbox fills up
+    // behind it, so a request to stop has to wait for room.
+    let mut hold = pool.begin().await.unwrap();
+    sqlx::query("SELECT id FROM models WHERE id = $1 FOR UPDATE")
+        .bind(stored.id)
+        .fetch_one(&mut *hold)
+        .await
+        .unwrap();
+    let stuck = tokio::spawn({
+        let handle = handle.clone();
+        let edit = numbers(plan.units, [(plan.regions[0], 1.0)]);
+        async move { handle.apply(stored.user, vec![edit]).await }
+    });
+    sleep(Duration::from_millis(100)).await;
+    let queued: Vec<_> = (0..300)
+        .map(|_| {
+            let handle = handle.clone();
+            tokio::spawn(async move { handle.apply(stored.user, vec![]).await })
+        })
+        .collect();
+    sleep(Duration::from_millis(100)).await;
+
+    // The request that deleted the model gives up while it waits.
+    let dropped = timeout(Duration::from_millis(50), registry.discard(stored.id)).await;
+
+    assert!(dropped.is_err(), "the caller gave up");
+    hold.rollback().await.unwrap();
+    assert_closed(&mut events).await;
+    stuck.await.unwrap().unwrap();
+    for apply in queued {
+        let _ = apply.await.unwrap();
+    }
+}
+
+/// Applies the commands through the actor of the model, taking a handle again each time the one
+/// it reached had stopped.
+async fn apply_until_it_is_taken(
+    registry: &ModelRegistry,
+    model_id: Uuid,
+    user: Uuid,
+    cmds: impl Fn() -> Vec<Command>,
+) -> ApplyOutcome {
+    loop {
+        let handle = registry.get(model_id).await.unwrap();
+        match handle.apply(user, cmds()).await {
+            Ok(outcome) => return outcome,
+            Err(AppError::Internal(error)) if error.to_string().contains("has stopped") => {}
+            Err(other) => panic!("{other:?}"),
+        }
+    }
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn eviction_in_a_loop_keeps_the_chain_of_a_hot_cell_unbroken(pool: PgPool) {
+    let Setup {
+        stored,
+        registry,
+        plan,
+        ..
+    } = setup_with(&pool, 1, Duration::ZERO).await;
+    let region = plan.regions[0];
+    let done = Arc::new(AtomicBool::new(false));
+    let evictor = tokio::spawn({
+        let (registry, done) = (registry.clone(), Arc::clone(&done));
+        async move {
+            while !done.load(Ordering::SeqCst) {
+                registry.evict_idle().await;
+                tokio::task::yield_now().await;
+            }
+        }
+    });
+
+    let workers: Vec<_> = (0..6)
+        .map(|worker| {
+            let registry = registry.clone();
+            let (id, user, units) = (stored.id, stored.user, plan.units);
+            tokio::spawn(async move {
+                let mut written = Vec::new();
+                for round in 0..10 {
+                    let value = f64::from(worker * 100 + round + 1);
+                    let outcome = apply_until_it_is_taken(&registry, id, user, || {
+                        vec![numbers(units, [(region, value)])]
+                    })
+                    .await;
+                    written.push((outcome.seq, value));
+                }
+                written
+            })
+        })
+        .collect();
+    let mut written = Vec::new();
+    for worker in workers {
+        written.extend(worker.await.unwrap());
+    }
+    done.store(true, Ordering::SeqCst);
+    evictor.await.unwrap();
+
+    // Whichever actor took a write, it began from every write before it: the log is one chain
+    // of the writes that were acknowledged, in the order they were acknowledged.
+    written.sort_by_key(|&(seq, _)| seq);
+    let audit: Vec<(Json<serde_json::Value>,)> = sqlx::query_as(
+        "SELECT payload FROM change_log
+         WHERE model_id = $1 AND kind = 'cell' AND line_item_id = $2 ORDER BY seq",
+    )
+    .bind(stored.id)
+    .bind(plan.units.0)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(audit.len(), 60, "a write that failed stored nothing");
+    let mut old = 0.0;
+    for ((Json(change),), (_, value)) in audit.iter().zip(&written) {
+        assert_eq!(change["old"]["v"].as_f64().unwrap(), old);
+        assert_eq!(change["new"]["v"].as_f64().unwrap(), *value);
+        old = *value;
+    }
+    let (replayed, _) = engine_store::load(&pool, stored.id).await.unwrap();
+    assert_eq!(read(&replayed, plan.units, region), Value::Number(old));
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn the_checkpoint_covers_every_acknowledged_write_while_models_are_evicted(pool: PgPool) {
+    let Setup {
+        stored,
+        registry,
+        plan,
+        ..
+    } = setup_with(&pool, 25, Duration::ZERO).await;
+    let mut expected: HashMap<usize, f64> = HashMap::new();
+    let mut acknowledged = 0;
+
+    for round in 0..4_u32 {
+        let handle = registry.get(stored.id).await.unwrap();
+        let done = Arc::new(AtomicBool::new(false));
+        let evictor = tokio::spawn({
+            let (registry, done) = (registry.clone(), Arc::clone(&done));
+            async move {
+                while !done.load(Ordering::SeqCst) {
+                    registry.evict_idle().await;
+                    tokio::task::yield_now().await;
+                }
+            }
+        });
+        // Every write goes through the handle that was taken before the evictions began.
+        let writes: Vec<_> = (0..25_usize)
+            .map(|i| {
+                let handle = handle.clone();
+                let (user, units, region) = (stored.user, plan.units, plan.regions[i]);
+                let value = f64::from(round * 100) + i as f64 + 1.0;
+                tokio::spawn(async move {
+                    for _ in 0..i % 7 {
+                        tokio::task::yield_now().await;
+                    }
+                    (
+                        i,
+                        value,
+                        handle
+                            .apply(user, vec![numbers(units, [(region, value)])])
+                            .await,
+                    )
+                })
+            })
+            .collect();
+        let mut last_acknowledged = 0;
+        for write in writes {
+            let (i, value, result) = write.await.unwrap();
+            match result {
+                Ok(outcome) => {
+                    acknowledged += 1;
+                    last_acknowledged = last_acknowledged.max(outcome.seq);
+                    expected.insert(i, value);
+                }
+                // The actor was unloaded before it took the write.
+                Err(AppError::Internal(error)) if error.to_string().contains("has stopped") => {}
+                Err(other) => panic!("{other:?}"),
+            }
+        }
+        done.store(true, Ordering::SeqCst);
+        evictor.await.unwrap();
+        registry.evict_idle().await;
+
+        assert!(checkpoint_seq(&pool, stored.id).await >= last_acknowledged);
+        // The log replays to what was acknowledged and nothing else...
+        let (replayed, _) = engine_store::load(&pool, stored.id).await.unwrap();
+        for (i, &region) in plan.regions.iter().enumerate() {
+            let value = expected.get(&i).copied().unwrap_or(0.0);
+            assert_eq!(read(&replayed, plan.units, region), Value::Number(value));
+        }
+        // ...and so does the checkpoint alone.
+        sqlx::query(
+            "DELETE FROM change_log
+             WHERE model_id = $1 AND seq > (SELECT checkpoint_seq FROM models WHERE id = $1)",
+        )
+        .bind(stored.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let (checkpointed, _) = engine_store::load(&pool, stored.id).await.unwrap();
+        for (i, &region) in plan.regions.iter().enumerate() {
+            let value = expected.get(&i).copied().unwrap_or(0.0);
+            assert_eq!(
+                read(&checkpointed, plan.units, region),
+                Value::Number(value)
+            );
+        }
+    }
+    assert!(acknowledged > 0);
 }
 
 async fn setup_admin(app: &mut TestApp) -> (String, Uuid) {

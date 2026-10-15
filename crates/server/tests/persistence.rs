@@ -249,11 +249,11 @@ async fn commit(pool: &PgPool, stored: &Stored, model: &mut Model, cmds: Vec<Com
     let previous = previous_values(model, &cmds);
     model.apply_batch(cmds.clone()).unwrap();
     let mut tx = pool.begin().await.unwrap();
-    let seq = engine_store::append(&mut tx, stored.id, Some(stored.user), &cmds, &previous)
+    let appended = engine_store::append(&mut tx, stored.id, Some(stored.user), &cmds, &previous)
         .await
         .unwrap();
     tx.commit().await.unwrap();
-    seq
+    appended.seq
 }
 
 async fn count(pool: &PgPool, table: &str, model_id: Uuid) -> i64 {
@@ -262,6 +262,18 @@ async fn count(pool: &PgPool, table: &str, model_id: Uuid) -> i64 {
         .fetch_one(pool)
         .await
         .unwrap()
+}
+
+/// How many change-log rows of the model satisfy `condition`, which refers to `$2`.
+async fn count_where(pool: &PgPool, model_id: Uuid, condition: &str, bound: i64) -> i64 {
+    sqlx::query_scalar(&format!(
+        "SELECT count(*) FROM change_log WHERE model_id = $1 AND {condition}"
+    ))
+    .bind(model_id)
+    .bind(bound)
+    .fetch_one(pool)
+    .await
+    .unwrap()
 }
 
 async fn setup_admin(app: &mut TestApp) -> String {
@@ -870,17 +882,19 @@ async fn appends_to_one_model_wait_for_each_other(pool: PgPool) {
     let mut tx = pool.begin().await.unwrap();
     let first_seq = engine_store::append(&mut tx, stored.id, None, &first, &[Value::Number(0.0)])
         .await
-        .unwrap();
+        .unwrap()
+        .seq;
     let mut other = tokio::spawn({
         let pool = pool.clone();
         let model_id = stored.id;
         async move {
             let mut tx = pool.begin().await.unwrap();
-            let seq = engine_store::append(&mut tx, model_id, None, &second, &[Value::Number(1.0)])
-                .await
-                .unwrap();
+            let appended =
+                engine_store::append(&mut tx, model_id, None, &second, &[Value::Number(1.0)])
+                    .await
+                    .unwrap();
             tx.commit().await.unwrap();
-            seq
+            appended.seq
         }
     });
 
@@ -895,6 +909,77 @@ async fn appends_to_one_model_wait_for_each_other(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn append_reports_the_rows_it_logged(pool: PgPool) {
+    let (stored, mut model) = stored_model(&pool).await;
+    let (plan, structure) = plan_structure();
+    model.apply_batch(structure.clone()).unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    let appended = engine_store::append(&mut tx, stored.id, None, &structure, &[])
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(appended.rows, 1, "a batch that sets no cell is one row");
+
+    // Of three edits, one leaves a blank cell blank and one sets a cell again: 2 cell rows.
+    let cmds = vec![number_cells(
+        &model,
+        &plan,
+        plan.units,
+        &[(0, 0, 1, 10.0), (1, 2, 1, 0.0), (0, 0, 1, 12.0)],
+    )];
+    let previous = previous_values(&model, &cmds);
+    let mut tx = pool.begin().await.unwrap();
+    let appended = engine_store::append(&mut tx, stored.id, None, &cmds, &previous)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    assert_eq!(appended.rows, 3);
+    assert_eq!(
+        count_where(&pool, stored.id, "seq > $2", appended.seq - 1).await,
+        3
+    );
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn batches_since_the_checkpoint_leave_out_the_cells(pool: PgPool) {
+    let (stored, mut model) = stored_model(&pool).await;
+    let (plan, structure) = plan_structure();
+    commit(&pool, &stored, &mut model, structure).await;
+    let cells = vec![number_cells(
+        &model,
+        &plan,
+        plan.units,
+        &[(0, 0, 1, 10.0), (1, 2, 1, 20.0)],
+    )];
+    let last = commit(&pool, &stored, &mut model, cells).await;
+
+    let counted = engine_store::batches_since_checkpoint(&pool, stored.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        counted,
+        (0, 2),
+        "the structure and the cells, not their 2 cell rows"
+    );
+
+    engine_store::checkpoint(&pool, stored.id, &model, last)
+        .await
+        .unwrap();
+    let counted = engine_store::batches_since_checkpoint(&pool, stored.id)
+        .await
+        .unwrap();
+    assert_eq!(counted, (last, 0));
+
+    let more = vec![number_cells(&model, &plan, plan.units, &[(0, 0, 1, 11.0)])];
+    commit(&pool, &stored, &mut model, more).await;
+    let counted = engine_store::batches_since_checkpoint(&pool, stored.id)
+        .await
+        .unwrap();
+    assert_eq!(counted, (last, 1));
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn unknown_model_is_not_found(pool: PgPool) {
     let id = Uuid::now_v7();
 
@@ -903,8 +988,10 @@ async fn unknown_model_is_not_found(pool: PgPool) {
     let checkpointed = engine_store::checkpoint(&pool, id, &Model::new(calendar()), 0).await;
     let mut tx = pool.begin().await.unwrap();
     let appended = engine_store::append(&mut tx, id, None, &[], &[]).await;
+    let counted = engine_store::batches_since_checkpoint(&pool, id).await;
 
     assert!(matches!(created, Err(AppError::NotFound)));
+    assert!(matches!(counted, Err(AppError::NotFound)));
     assert!(matches!(loaded, Err(AppError::NotFound)));
     assert!(matches!(checkpointed, Err(AppError::NotFound)));
     assert!(matches!(appended, Err(AppError::NotFound)));

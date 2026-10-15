@@ -27,6 +27,13 @@ const BATCHES_SQL: &str = "SELECT seq, payload FROM change_log
      WHERE model_id = $1 AND seq > $2 AND kind <> 'cell'
      ORDER BY seq";
 
+/// The checkpoint of a model and the batches after it: counted in one statement through the
+/// replay index, so what it costs does not grow with what the other models have logged.
+const BATCH_COUNT_SQL: &str = "SELECT m.checkpoint_seq,
+            (SELECT count(*) FROM change_log c
+             WHERE c.model_id = m.id AND c.seq > m.checkpoint_seq AND c.kind <> 'cell')
+     FROM models m WHERE m.id = $1";
+
 /// What `load` reads of a model, in one consistent snapshot of the database.
 struct Stored {
     checkpoint_seq: i64,
@@ -196,6 +203,15 @@ fn edited_cells(cmds: &[Command]) -> impl Iterator<Item = (LineItemId, &CellEdit
         .flat_map(|(line_item, edits)| edits.iter().map(move |edit| (line_item, edit)))
 }
 
+/// What `append` stored.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Appended {
+    /// The sequence number of the batch.
+    pub seq: i64,
+    /// The rows it added to the change log: the batch, and one for each cell it changed.
+    pub rows: u64,
+}
+
 /// What the change log keeps of an edit: the value the cell had and the value it was given.
 #[derive(Serialize)]
 struct CellChange<'a> {
@@ -204,7 +220,7 @@ struct CellChange<'a> {
 }
 
 /// Records a batch of commands that was applied to the model, in the caller's transaction, and
-/// returns its sequence number. The batch is one row of kind `cells` when it only sets cells
+/// returns its sequence number and how many rows it added. The batch is one row of kind `cells` when it only sets cells
 /// and of kind `structure` otherwise, and each cell it sets also gets a row of kind `cell`
 /// with the old and the new value, for the history of the cell.
 ///
@@ -221,7 +237,7 @@ pub async fn append(
     user_id: Option<Uuid>,
     cmds: &[Command],
     previous: &[Value],
-) -> AppResult<i64> {
+) -> AppResult<Appended> {
     let edited: Vec<(LineItemId, &CellEdit)> = edited_cells(cmds).collect();
     if edited.len() != previous.len() {
         return Err(AppError::Internal(anyhow!(
@@ -273,6 +289,7 @@ pub async fn append(
             }));
         }
     }
+    let rows = 1 + changes.len() as u64;
     if !changes.is_empty() {
         sqlx::query(
             "INSERT INTO change_log (model_id, user_id, kind, payload, line_item_id, cell_key)
@@ -287,7 +304,18 @@ pub async fn append(
         .execute(&mut **tx)
         .await?;
     }
-    Ok(seq)
+    Ok(Appended { seq, rows })
+}
+
+/// The sequence number of the last batch in a model's checkpoint, and how many batches the change
+/// log has after it. The cells the batches changed are not counted, so this reads only the rows
+/// that loading the model replays.
+pub async fn batches_since_checkpoint(db: &PgPool, model_id: Uuid) -> AppResult<(i64, u64)> {
+    let (checkpoint_seq, batches) = sqlx::query_as::<_, (i64, i64)>(BATCH_COUNT_SQL)
+        .bind(model_id)
+        .fetch_one(db)
+        .await?;
+    Ok((checkpoint_seq, batches.unsigned_abs()))
 }
 
 /// Saves the model as the checkpoint at `upto_seq`, the sequence number of the last change it
@@ -385,14 +413,13 @@ pub async fn checkpoint(
 mod tests {
     use super::*;
 
-    /// A model's batches are a small part of a change log that is mostly audit rows of cells:
-    /// the replay reads them through the index that leaves those rows out.
-    #[sqlx::test(migrator = "crate::db::MIGRATOR")]
-    async fn replay_reads_the_batches_through_the_partial_index(pool: PgPool) {
+    /// 20 models whose change logs are mostly audit rows of cells, as they are in use. Returns
+    /// one of them.
+    async fn busy_change_log(pool: &PgPool) -> Uuid {
         let workspace = Uuid::now_v7();
         sqlx::query("INSERT INTO workspaces (id, name) VALUES ($1, 'Acme')")
             .bind(workspace)
-            .execute(&pool)
+            .execute(pool)
             .await
             .unwrap();
         sqlx::query(
@@ -400,7 +427,7 @@ mod tests {
              SELECT gen_random_uuid(), $1, 'Model ' || n, '{}' FROM generate_series(1, 20) n",
         )
         .bind(workspace)
-        .execute(&pool)
+        .execute(pool)
         .await
         .unwrap();
         sqlx::query(
@@ -408,31 +435,57 @@ mod tests {
              SELECT m.id, CASE WHEN n % 50 = 0 THEN 'cells' ELSE 'cell' END, '[]'
              FROM models m, generate_series(1, 500) n",
         )
-        .execute(&pool)
+        .execute(pool)
         .await
         .unwrap();
         sqlx::query("ANALYZE change_log")
-            .execute(&pool)
+            .execute(pool)
             .await
             .unwrap();
-        let model_id: Uuid = sqlx::query_scalar("SELECT id FROM models LIMIT 1")
-            .fetch_one(&pool)
+        sqlx::query_scalar("SELECT id FROM models LIMIT 1")
+            .fetch_one(pool)
             .await
-            .unwrap();
+            .unwrap()
+    }
 
+    /// The plan Postgres makes for `sql` with the sequential scan ruled out, so that it names
+    /// the index that serves the query if there is one.
+    async fn plan_of(pool: &PgPool, sql: &str, model_id: Uuid, bind_seq: bool) -> String {
         let mut tx = pool.begin().await.unwrap();
         sqlx::query("SET LOCAL enable_seqscan = off")
             .execute(&mut *tx)
             .await
             .unwrap();
-        let plan: Vec<String> = sqlx::query_scalar(&format!("EXPLAIN {BATCHES_SQL}"))
-            .bind(model_id)
-            .bind(0_i64)
-            .fetch_all(&mut *tx)
-            .await
-            .unwrap();
+        let query = sqlx::query_scalar::<_, String>(sql).bind(model_id);
+        let plan = if bind_seq { query.bind(0_i64) } else { query };
+        plan.fetch_all(&mut *tx).await.unwrap().join("\n")
+    }
 
-        let plan = plan.join("\n");
+    /// A model's batches are a small part of a change log that is mostly audit rows of cells:
+    /// the replay reads them through the index that leaves those rows out.
+    #[sqlx::test(migrator = "crate::db::MIGRATOR")]
+    async fn replay_reads_the_batches_through_the_partial_index(pool: PgPool) {
+        let model_id = busy_change_log(&pool).await;
+
+        let plan = plan_of(&pool, &format!("EXPLAIN {BATCHES_SQL}"), model_id, true).await;
+
+        assert!(plan.contains("change_log_replay_idx"), "{plan}");
+    }
+
+    /// The count a model's actor starts from when it loads is over the same rows and reads
+    /// them through the same index, however much the other models have logged since.
+    #[sqlx::test(migrator = "crate::db::MIGRATOR")]
+    async fn counting_the_batches_since_the_checkpoint_uses_the_partial_index(pool: PgPool) {
+        let model_id = busy_change_log(&pool).await;
+
+        let plan = plan_of(
+            &pool,
+            &format!("EXPLAIN {BATCH_COUNT_SQL}"),
+            model_id,
+            false,
+        )
+        .await;
+
         assert!(plan.contains("change_log_replay_idx"), "{plan}");
     }
 }
