@@ -381,6 +381,44 @@ fn versions_and_time_are_reserved_list_names() {
 }
 
 #[test]
+fn versions_and_time_are_reserved_module_names() {
+    let mut model = model();
+    let existing = new_module(&mut model, "Sales", Vec::new());
+    let before = snapshot(&model);
+    for (name, message) in [
+        ("Versions", "'Versions' is a reserved name."),
+        ("  VERSIONS ", "'Versions' is a reserved name."),
+        ("Time", "'Time' is a reserved name."),
+        ("tIME", "'Time' is a reserved name."),
+    ] {
+        let created = model
+            .apply(Command::CreateModule {
+                id: ModuleId::new(),
+                name: name.to_string(),
+                axes: Vec::new(),
+                functional_area: String::new(),
+            })
+            .unwrap_err();
+        assert_eq!(created.code(), "structure.invalid", "{name}");
+        assert_eq!(created.to_string(), message, "{name}");
+        let renamed = model
+            .apply(Command::UpdateModule {
+                id: existing,
+                name: Some(name.to_string()),
+                axes: None,
+                functional_area: None,
+            })
+            .unwrap_err();
+        assert_eq!(renamed.code(), "structure.invalid", "{name}");
+        assert_eq!(renamed.to_string(), message, "{name}");
+    }
+    assert_eq!(snapshot(&model), before);
+    // Names that merely contain the reserved words are fine.
+    new_module(&mut model, "Time Off", Vec::new());
+    new_module(&mut model, "Versions Archive", Vec::new());
+}
+
+#[test]
 fn upsert_updates_existing_items_and_appends_new_ones_in_order() {
     let mut model = model();
     let products = new_list(&mut model, "Products");

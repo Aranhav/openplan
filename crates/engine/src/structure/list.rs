@@ -7,8 +7,8 @@ use crate::value::Format;
 
 use super::module::{AxisSpec, properties_name};
 use super::{
-    Structure, Subset, already_exists, check_name, clean_name, ensure_unique, fold, in_use,
-    same_name,
+    Structure, Subset, already_exists, check_name, check_not_reserved, clean_name, ensure_unique,
+    fold, in_use, same_name,
 };
 
 /// An ordered set of items such as products or regions.
@@ -598,19 +598,6 @@ impl Structure {
             .get_mut(&id)
             .ok_or_else(|| EngineError::not_found("list", id.0))
     }
-}
-
-/// The built-in dimensions are named in formulas as `Versions` and `Time`, which a list of
-/// that name would make ambiguous.
-fn check_not_reserved(name: &str) -> Result<(), EngineError> {
-    for reserved in ["Versions", "Time"] {
-        if same_name(name, reserved) {
-            return Err(EngineError::invalid(format!(
-                "'{reserved}' is a reserved name."
-            )));
-        }
-    }
-    Ok(())
 }
 
 /// Subset members must be distinct live items of the subset's list.

@@ -8,7 +8,9 @@ use crate::error::EngineError;
 use crate::ids::{LineItemId, ListId, ModuleId, SubsetId, TimeRangeId, VersionId};
 use crate::value::Format;
 
-use super::{Structure, already_exists, check_name, clean_name, ensure_unique, in_use};
+use super::{
+    Structure, already_exists, check_name, check_not_reserved, clean_name, ensure_unique, in_use,
+};
 
 const SYSTEM_AREA: &str = "System";
 
@@ -145,6 +147,7 @@ impl Structure {
             &name,
             self.modules.values().map(|module| module.name.as_str()),
         )?;
+        check_not_reserved(&name)?;
         self.check_axes(&axes, true)?;
         let functional_area = clean_area(&functional_area)?;
         self.modules.insert(
@@ -198,14 +201,16 @@ impl Structure {
         }
         let name = name
             .map(|name| {
-                check_name(
+                let name = check_name(
                     "module",
                     &name,
                     self.modules
                         .values()
                         .filter(|other| other.id != id)
                         .map(|other| other.name.as_str()),
-                )
+                )?;
+                check_not_reserved(&name)?;
+                Ok(name)
             })
             .transpose()?;
         if let Some(axes) = &axes {

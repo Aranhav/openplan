@@ -601,6 +601,19 @@ fn clean_name(what: &str, raw: &str) -> Result<String, EngineError> {
     Ok(name.to_string())
 }
 
+/// The built-in dimensions are named in formulas as `Versions` and `Time`, which a list or a
+/// module of that name would make ambiguous.
+fn check_not_reserved(name: &str) -> Result<(), EngineError> {
+    for reserved in ["Versions", "Time"] {
+        if same_name(name, reserved) {
+            return Err(EngineError::invalid(format!(
+                "'{reserved}' is a reserved name."
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Fails with `NameTaken` when `name` equals one of `others`, ignoring case.
 fn ensure_unique<'a>(
     what: &'static str,
