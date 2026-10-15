@@ -37,7 +37,7 @@ openplan/
 
 ### 2.1 Backend stack
 
-`axum`, `tokio`, `sqlx` (Postgres, compile-time checked queries, migrations in `crates/server/migrations`), `serde`, `thiserror`, `tracing`, `utoipa` + `utoipa-scalar` (OpenAPI at `/api/docs`), `argon2`, `openidconnect`, `aes-gcm`, `calamine` (XLSX read), `rust_xlsxwriter` (XLSX write), `csv`, `rayon` (parallel recalc), `rust-embed` (serve built web assets), `uuid` (v7), `lettre` (SMTP), `reqwest` (AI providers).
+`axum`, `tokio`, `sqlx` (Postgres, runtime-checked `query_as` with `FromRow` so builds never need a database, migrations in `crates/server/migrations`), `serde`, `thiserror`, `tracing`, `utoipa` + `utoipa-scalar` (OpenAPI at `/api/docs`), `argon2`, `openidconnect`, `aes-gcm`, `calamine` (XLSX read), `rust_xlsxwriter` (XLSX write), `csv`, `rayon` (parallel recalc), `rust-embed` (serve built web assets), `uuid` (v7), `lettre` (SMTP), `reqwest` (AI providers).
 
 ### 2.2 Frontend stack
 

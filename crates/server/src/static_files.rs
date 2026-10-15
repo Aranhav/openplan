@@ -1,0 +1,257 @@
+use axum::{
+    body::Bytes,
+    http::{HeaderValue, Method, StatusCode, Uri, header},
+    response::{IntoResponse, Response},
+};
+use rust_embed::RustEmbed;
+use std::{borrow::Cow, path::Path};
+
+use crate::error::AppError;
+
+const IMMUTABLE: &str = "public, max-age=31536000, immutable";
+const NO_CACHE: &str = "no-cache";
+const FRAME_ANCESTORS_NONE: &str = "frame-ancestors 'none'";
+const NOT_BUILT: &str = "Web UI not built. Run `pnpm --dir web build`.";
+
+#[derive(RustEmbed)]
+#[folder = "../../web/dist"]
+#[allow_missing = true]
+struct WebAssets;
+
+pub async fn serve(method: Method, uri: Uri) -> Response {
+    respond::<WebAssets>(&method, uri.path())
+}
+
+/// Whether the last path segment has a file extension, as `robots.txt` does.
+fn names_a_file(path: &str) -> bool {
+    path.rsplit('/')
+        .next()
+        .is_some_and(|segment| Path::new(segment).extension().is_some())
+}
+
+fn respond<A: RustEmbed>(method: &Method, request_path: &str) -> Response {
+    let path = request_path.trim_start_matches('/');
+    if path == "api" || path.starts_with("api/") {
+        return AppError::NotFound.into_response();
+    }
+    if !matches!(*method, Method::GET | Method::HEAD) {
+        let mut response = AppError::MethodNotAllowed.into_response();
+        response
+            .headers_mut()
+            .insert(header::ALLOW, HeaderValue::from_static("GET, HEAD"));
+        return response;
+    }
+    if let Some(file) = A::get(path) {
+        let cache = if path.starts_with("assets/") {
+            IMMUTABLE
+        } else {
+            NO_CACHE
+        };
+        return asset(path, file.data, cache);
+    }
+    if path.starts_with("assets/") || names_a_file(path) {
+        return (StatusCode::NOT_FOUND, "Not found").into_response();
+    }
+    match A::get("index.html") {
+        Some(index) => asset("index.html", index.data, NO_CACHE),
+        None => (StatusCode::NOT_FOUND, NOT_BUILT).into_response(),
+    }
+}
+
+fn asset(name: &str, data: Cow<'static, [u8]>, cache: &'static str) -> Response {
+    let mime = mime_guess::from_path(name).first_or_octet_stream();
+    let body = match data {
+        Cow::Borrowed(bytes) => Bytes::from_static(bytes),
+        Cow::Owned(bytes) => Bytes::from(bytes),
+    };
+    (
+        [
+            (header::CONTENT_TYPE, mime.as_ref()),
+            (header::CACHE_CONTROL, cache),
+            (header::CONTENT_SECURITY_POLICY, FRAME_ANCESTORS_NONE),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::to_bytes;
+    use axum::http::Method;
+
+    #[derive(RustEmbed)]
+    #[folder = "tests/fixtures/web"]
+    struct Built;
+
+    #[derive(RustEmbed)]
+    #[folder = "tests/fixtures/web_no_index"]
+    struct NotBuilt;
+
+    fn get<A: RustEmbed>(path: &str) -> Response {
+        respond::<A>(&Method::GET, path)
+    }
+
+    async fn text(response: Response) -> String {
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    fn header_value(response: &Response, name: header::HeaderName) -> &str {
+        response.headers()[name].to_str().unwrap()
+    }
+
+    #[tokio::test]
+    async fn hashed_assets_are_cached_immutably() {
+        let response = get::<Built>("/assets/app.abc123.js");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(header_value(&response, header::CONTENT_TYPE).contains("javascript"));
+        assert_eq!(header_value(&response, header::CACHE_CONTROL), IMMUTABLE);
+        assert_eq!(text(response).await, "console.log(\"fixture\");\n");
+    }
+
+    #[test]
+    fn other_files_are_served_uncached_with_their_mime_type() {
+        let response = get::<Built>("/favicon.svg");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            header_value(&response, header::CONTENT_TYPE),
+            "image/svg+xml"
+        );
+        assert_eq!(header_value(&response, header::CACHE_CONTROL), NO_CACHE);
+    }
+
+    #[tokio::test]
+    async fn served_files_cannot_be_framed() {
+        for path in [
+            "/",
+            "/models/123/settings",
+            "/favicon.svg",
+            "/assets/app.abc123.js",
+        ] {
+            let response = get::<Built>(path);
+
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            assert_eq!(
+                header_value(&response, header::CONTENT_SECURITY_POLICY),
+                "frame-ancestors 'none'",
+                "{path}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn client_routes_fall_back_to_index_html() {
+        for path in ["/", "/models/123/settings", "/apiary"] {
+            let response = get::<Built>(path);
+
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            assert_eq!(
+                header_value(&response, header::CONTENT_TYPE),
+                "text/html",
+                "{path}"
+            );
+            assert_eq!(
+                header_value(&response, header::CACHE_CONTROL),
+                NO_CACHE,
+                "{path}"
+            );
+            assert!(text(response).await.contains("OpenPlan fixture"), "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn api_paths_never_fall_back_to_index_html() {
+        for path in ["/api", "/api/v1/nope"] {
+            let response = get::<Built>(path);
+
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+            assert_eq!(
+                header_value(&response, header::CONTENT_TYPE),
+                "application/problem+json",
+                "{path}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_assets_are_plain_not_found() {
+        let response = get::<Built>("/assets/missing.js");
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert!(header_value(&response, header::CONTENT_TYPE).starts_with("text/plain"));
+        assert_eq!(text(response).await, "Not found");
+    }
+
+    #[tokio::test]
+    async fn missing_index_explains_how_to_build_the_web_ui() {
+        let response = get::<NotBuilt>("/models");
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(text(response).await, NOT_BUILT);
+    }
+    #[tokio::test]
+    async fn only_get_and_head_are_answered() {
+        for method in [Method::POST, Method::PUT, Method::PATCH, Method::DELETE] {
+            for path in ["/", "/models/123", "/favicon.svg", "/assets/app.abc123.js"] {
+                let response = respond::<Built>(&method, path);
+
+                assert_eq!(
+                    response.status(),
+                    StatusCode::METHOD_NOT_ALLOWED,
+                    "{method} {path}"
+                );
+                assert_eq!(
+                    header_value(&response, header::CONTENT_TYPE),
+                    "application/problem+json",
+                    "{method} {path}"
+                );
+                assert_eq!(header_value(&response, header::ALLOW), "GET, HEAD");
+            }
+        }
+        for path in ["/", "/models/123", "/favicon.svg"] {
+            let response = respond::<Built>(&Method::HEAD, path);
+
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn other_methods_on_api_paths_are_still_not_found() {
+        let response = respond::<Built>(&Method::POST, "/api/v1/nope");
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn missing_files_are_not_found_instead_of_index_html() {
+        for path in [
+            "/robots.txt",
+            "/favicon.png",
+            "/nested/data.json",
+            "/.well-known/security.txt",
+        ] {
+            let response = get::<Built>(path);
+
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+            assert!(
+                header_value(&response, header::CONTENT_TYPE).starts_with("text/plain"),
+                "{path}"
+            );
+            assert_eq!(text(response).await, "Not found", "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn dots_outside_the_last_segment_do_not_make_a_file() {
+        for path in ["/releases/v1.2/notes", "/.hidden", "/models/"] {
+            let response = get::<Built>(path);
+
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            assert!(text(response).await.contains("OpenPlan fixture"), "{path}");
+        }
+    }
+}
