@@ -2,8 +2,8 @@ mod common;
 
 use axum::http::{Method, StatusCode};
 use common::{
-    TestApp, TestResponse, assert_problem, create_member, create_model, create_user, setup_admin,
-    sign_in,
+    TestApp, TestResponse, assert_problem, create_items, create_list, create_member, create_user,
+    id_of, plan, sign_in, url,
 };
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -12,53 +12,10 @@ use uuid::Uuid;
 const PRODUCTION_LOCKED: &str =
     "This model is in production mode. Structural changes arrive through ALM sync.";
 
-/// Signs the admin up to a workspace called Acme, and gives a new model a calendar of the
-/// three years from January 2026, so that the period labels in these tests mean the same
-/// whatever the date they run on.
-async fn plan(pool: &PgPool) -> (TestApp, String, String) {
-    let mut admin = TestApp::new(pool.clone());
-    let workspace = setup_admin(&mut admin).await;
-    let model = create_model(&mut admin, &workspace, "Plan").await;
-    let calendar = admin
-        .request(
-            Method::PUT,
-            &url(&model, "/calendar"),
-            Some(json!({ "fiscal_year_start_month": 1, "first_year": 2026, "years": 3 })),
-        )
-        .await;
-    assert_eq!(calendar.status, StatusCode::OK, "{}", calendar.text);
-    (admin, workspace, model)
-}
-
-fn url(model: &str, rest: &str) -> String {
-    format!("/api/v1/models/{model}{rest}")
-}
-
-fn id_of(json: &Value) -> String {
-    json["id"].as_str().unwrap().to_string()
-}
-
 async fn structure(app: &mut TestApp, model: &str) -> Value {
     let response = app.get(&url(model, "/structure")).await;
     assert_eq!(response.status, StatusCode::OK, "{}", response.text);
     response.json
-}
-
-async fn create_list(app: &mut TestApp, model: &str, body: Value) -> String {
-    let response = app.post(&url(model, "/lists"), Some(body)).await;
-    assert_eq!(response.status, StatusCode::CREATED, "{}", response.text);
-    id_of(&response.json)
-}
-
-async fn create_items(app: &mut TestApp, model: &str, list: &str, items: Value) -> Vec<Value> {
-    let response = app
-        .post(
-            &url(model, &format!("/lists/{list}/items")),
-            Some(json!({ "items": items })),
-        )
-        .await;
-    assert_eq!(response.status, StatusCode::CREATED, "{}", response.text);
-    response.json.as_array().unwrap().clone()
 }
 
 async fn put(app: &mut TestApp, path: &str, body: Value) -> TestResponse {

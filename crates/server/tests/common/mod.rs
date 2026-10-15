@@ -10,7 +10,7 @@ use axum::{
 };
 use openplan_server::{
     app::{AppState, build_router},
-    auth::{CSRF_COOKIE, CSRF_HEADER},
+    auth::{CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE},
     config::Config,
 };
 use serde_json::{Value, json};
@@ -312,4 +312,101 @@ pub fn assert_problem(response: &TestResponse, status: StatusCode, code: &str) {
         "{content_type}"
     );
     assert_eq!(response.json["code"], code, "{}", response.text);
+}
+
+/// The path of a model in the API; `rest` is what follows it.
+pub fn url(model: &str, rest: &str) -> String {
+    format!("/api/v1/models/{model}{rest}")
+}
+
+/// The `id` of a created thing.
+pub fn id_of(json: &Value) -> String {
+    json["id"].as_str().unwrap().to_string()
+}
+
+/// Signs the admin up to a workspace called Acme, and gives a new model a calendar of the three
+/// years from January 2026, so that the period labels in these tests mean the same whatever the
+/// date they run on. Returns the admin, the workspace and the model.
+pub async fn plan(pool: &PgPool) -> (TestApp, String, String) {
+    let mut admin = TestApp::new(pool.clone());
+    let workspace = setup_admin(&mut admin).await;
+    let model = create_model(&mut admin, &workspace, "Plan").await;
+    let calendar = admin
+        .request(
+            Method::PUT,
+            &url(&model, "/calendar"),
+            Some(json!({ "fiscal_year_start_month": 1, "first_year": 2026, "years": 3 })),
+        )
+        .await;
+    assert_eq!(calendar.status, StatusCode::OK, "{}", calendar.text);
+    (admin, workspace, model)
+}
+
+/// A client signed in as `email` on the same server as `app`, which is the same models in memory
+/// (`sign_in` starts a server of its own, and a model has one actor on each).
+pub async fn sign_in_beside(app: &TestApp, email: &str) -> TestApp {
+    let mut other = app.fork();
+    other.forget_cookie(SESSION_COOKIE);
+    other.forget_cookie(CSRF_COOKIE);
+    let response = other
+        .post(
+            "/api/v1/auth/login",
+            Some(json!({ "email": email, "password": PASSWORD })),
+        )
+        .await;
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text);
+    other
+}
+
+/// A Time dimension of months.
+pub fn month() -> Value {
+    json!({ "kind": "time", "level": "month", "range": null })
+}
+
+/// A dimension of a list.
+pub fn list_axis(list: &str) -> Value {
+    json!({ "kind": "list", "list": list })
+}
+
+/// Creates a list from the request `body` and returns its id.
+pub async fn create_list(app: &mut TestApp, model: &str, body: Value) -> String {
+    let response = app.post(&url(model, "/lists"), Some(body)).await;
+    assert_eq!(response.status, StatusCode::CREATED, "{}", response.text);
+    id_of(&response.json)
+}
+
+/// Adds the `items` of the request to a list and returns them as created.
+pub async fn create_items(app: &mut TestApp, model: &str, list: &str, items: Value) -> Vec<Value> {
+    let response = app
+        .post(
+            &url(model, &format!("/lists/{list}/items")),
+            Some(json!({ "items": items })),
+        )
+        .await;
+    assert_eq!(response.status, StatusCode::CREATED, "{}", response.text);
+    response.json.as_array().unwrap().clone()
+}
+
+/// Creates a module with these dimensions and returns its id.
+pub async fn create_module(app: &mut TestApp, model: &str, name: &str, axes: Vec<Value>) -> String {
+    let response = app
+        .post(
+            &url(model, "/modules"),
+            Some(json!({ "name": name, "axes": axes })),
+        )
+        .await;
+    assert_eq!(response.status, StatusCode::CREATED, "{}", response.text);
+    id_of(&response.json)
+}
+
+/// Creates a line item from the request `body` and returns it as created.
+pub async fn create_line_item(app: &mut TestApp, model: &str, module: &str, body: Value) -> Value {
+    let response = app
+        .post(
+            &url(model, &format!("/modules/{module}/line-items")),
+            Some(body),
+        )
+        .await;
+    assert_eq!(response.status, StatusCode::CREATED, "{}", response.text);
+    response.json
 }

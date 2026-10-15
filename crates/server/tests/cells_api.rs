@@ -4,59 +4,12 @@ use std::collections::BTreeMap;
 
 use axum::http::{Method, StatusCode};
 use common::{
-    PASSWORD, TestApp, TestResponse, assert_problem, create_member, create_model, create_user,
-    setup_admin, sign_in,
+    TestApp, TestResponse, assert_problem, create_items, create_list, create_member, create_module,
+    create_user, id_of, list_axis, month, plan, sign_in, sign_in_beside, url,
 };
-use openplan_server::auth::{CSRF_COOKIE, SESSION_COOKIE};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use uuid::Uuid;
-
-/// Signs the admin up to a workspace called Acme, and gives a new model a calendar of the three
-/// years from January 2026, so that the period labels in these tests mean the same whatever the
-/// date they run on.
-async fn plan(pool: &PgPool) -> (TestApp, String, String) {
-    let mut admin = TestApp::new(pool.clone());
-    let workspace = setup_admin(&mut admin).await;
-    let model = create_model(&mut admin, &workspace, "Plan").await;
-    let calendar = admin
-        .request(
-            Method::PUT,
-            &url(&model, "/calendar"),
-            Some(json!({ "fiscal_year_start_month": 1, "first_year": 2026, "years": 3 })),
-        )
-        .await;
-    assert_eq!(calendar.status, StatusCode::OK, "{}", calendar.text);
-    (admin, workspace, model)
-}
-
-/// A client signed in as `email` on the same server as `app`, which is the same models in memory
-/// (`sign_in` starts a server of its own, and a model has one actor on each).
-async fn sign_in_beside(app: &TestApp, email: &str) -> TestApp {
-    let mut other = app.fork();
-    other.forget_cookie(SESSION_COOKIE);
-    other.forget_cookie(CSRF_COOKIE);
-    let response = other
-        .post(
-            "/api/v1/auth/login",
-            Some(json!({ "email": email, "password": PASSWORD })),
-        )
-        .await;
-    assert_eq!(response.status, StatusCode::OK, "{}", response.text);
-    other
-}
-
-fn url(model: &str, rest: &str) -> String {
-    format!("/api/v1/models/{model}{rest}")
-}
-
-fn id_of(json: &Value) -> String {
-    json["id"].as_str().unwrap().to_string()
-}
-
-fn month() -> Value {
-    json!({ "kind": "time", "level": "month", "range": null })
-}
 
 fn quarter() -> Value {
     json!({ "kind": "time", "level": "quarter", "range": null })
@@ -64,10 +17,6 @@ fn quarter() -> Value {
 
 fn versions() -> Value {
     json!({ "kind": "versions" })
-}
-
-fn list_axis(list: &str) -> Value {
-    json!({ "kind": "list", "list": list })
 }
 
 fn percent() -> Value {
@@ -93,49 +42,9 @@ fn edit(line_item: &str, coords: Vec<&str>, value: Value) -> Value {
     json!({ "line_item_id": line_item, "coords": coords, "value": value })
 }
 
-async fn create_list(app: &mut TestApp, model: &str, body: Value) -> String {
-    let response = app.post(&url(model, "/lists"), Some(body)).await;
-    assert_eq!(response.status, StatusCode::CREATED, "{}", response.text);
-    id_of(&response.json)
-}
-
-async fn create_items(app: &mut TestApp, model: &str, list: &str, items: Value) -> Vec<String> {
-    let response = app
-        .post(
-            &url(model, &format!("/lists/{list}/items")),
-            Some(json!({ "items": items })),
-        )
-        .await;
-    assert_eq!(response.status, StatusCode::CREATED, "{}", response.text);
-    response
-        .json
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(id_of)
-        .collect()
-}
-
-async fn create_module(app: &mut TestApp, model: &str, name: &str, axes: Vec<Value>) -> String {
-    let response = app
-        .post(
-            &url(model, "/modules"),
-            Some(json!({ "name": name, "axes": axes })),
-        )
-        .await;
-    assert_eq!(response.status, StatusCode::CREATED, "{}", response.text);
-    id_of(&response.json)
-}
-
+/// Creates a line item and returns its id.
 async fn create_line_item(app: &mut TestApp, model: &str, module: &str, body: Value) -> String {
-    let response = app
-        .post(
-            &url(model, &format!("/modules/{module}/line-items")),
-            Some(body),
-        )
-        .await;
-    assert_eq!(response.status, StatusCode::CREATED, "{}", response.text);
-    id_of(&response.json)
+    id_of(&common::create_line_item(app, model, module, body).await)
 }
 
 async fn version_id(app: &mut TestApp, model: &str, name: &str) -> String {
@@ -276,7 +185,7 @@ async fn geography(app: &mut TestApp, model: &str) -> Geography {
         json!([{ "name": "North America" }, { "name": "Europe" }]),
     )
     .await;
-    let (na, eu) = (areas[0].clone(), areas[1].clone());
+    let (na, eu) = (id_of(&areas[0]), id_of(&areas[1]));
     let nations = create_items(
         app,
         model,
@@ -294,10 +203,10 @@ async fn geography(app: &mut TestApp, model: &str) -> Geography {
         countries,
         na,
         eu,
-        us: nations[0].clone(),
-        ca: nations[1].clone(),
-        de: nations[2].clone(),
-        fr: nations[3].clone(),
+        us: id_of(&nations[0]),
+        ca: id_of(&nations[1]),
+        de: id_of(&nations[2]),
+        fr: id_of(&nations[3]),
     }
 }
 

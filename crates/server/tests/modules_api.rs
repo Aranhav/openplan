@@ -2,8 +2,8 @@ mod common;
 
 use axum::http::{Method, StatusCode};
 use common::{
-    TestApp, TestResponse, assert_problem, create_member, create_model, create_user, setup_admin,
-    sign_in,
+    TestApp, TestResponse, assert_problem, create_line_item, create_list, create_member,
+    create_module, create_user, id_of, list_axis, month, plan, sign_in, url,
 };
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -15,40 +15,6 @@ const SPEC: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../docs/superpowers/specs/2026-10-15-openplan-design.md"
 );
-
-/// Signs the admin up to a workspace called Acme, and gives a new model a calendar of the three
-/// years from January 2026, so that the period labels in these tests mean the same whatever the
-/// date they run on.
-async fn plan(pool: &PgPool) -> (TestApp, String, String) {
-    let mut admin = TestApp::new(pool.clone());
-    let workspace = setup_admin(&mut admin).await;
-    let model = create_model(&mut admin, &workspace, "Plan").await;
-    let calendar = admin
-        .request(
-            Method::PUT,
-            &url(&model, "/calendar"),
-            Some(json!({ "fiscal_year_start_month": 1, "first_year": 2026, "years": 3 })),
-        )
-        .await;
-    assert_eq!(calendar.status, StatusCode::OK, "{}", calendar.text);
-    (admin, workspace, model)
-}
-
-fn url(model: &str, rest: &str) -> String {
-    format!("/api/v1/models/{model}{rest}")
-}
-
-fn id_of(json: &Value) -> String {
-    json["id"].as_str().unwrap().to_string()
-}
-
-fn month() -> Value {
-    json!({ "kind": "time", "level": "month", "range": null })
-}
-
-fn list_axis(list: &str) -> Value {
-    json!({ "kind": "list", "list": list })
-}
 
 fn number_format() -> Value {
     json!({
@@ -63,36 +29,6 @@ fn number_format() -> Value {
 async fn structure(app: &mut TestApp, model: &str) -> Value {
     let response = app.get(&url(model, "/structure")).await;
     assert_eq!(response.status, StatusCode::OK, "{}", response.text);
-    response.json
-}
-
-async fn create_list(app: &mut TestApp, model: &str, name: &str) -> String {
-    let response = app
-        .post(&url(model, "/lists"), Some(json!({ "name": name })))
-        .await;
-    assert_eq!(response.status, StatusCode::CREATED, "{}", response.text);
-    id_of(&response.json)
-}
-
-async fn create_module(app: &mut TestApp, model: &str, name: &str, axes: Vec<Value>) -> String {
-    let response = app
-        .post(
-            &url(model, "/modules"),
-            Some(json!({ "name": name, "axes": axes })),
-        )
-        .await;
-    assert_eq!(response.status, StatusCode::CREATED, "{}", response.text);
-    id_of(&response.json)
-}
-
-async fn create_line_item(app: &mut TestApp, model: &str, module: &str, body: Value) -> Value {
-    let response = app
-        .post(
-            &url(model, &format!("/modules/{module}/line-items")),
-            Some(body),
-        )
-        .await;
-    assert_eq!(response.status, StatusCode::CREATED, "{}", response.text);
     response.json
 }
 
@@ -140,7 +76,7 @@ fn line_item_names(doc: &Value, module: &str) -> Vec<String> {
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn create_module_and_line_items(pool: PgPool) {
     let (mut admin, _, model) = plan(&pool).await;
-    let regions = create_list(&mut admin, &model, "Regions").await;
+    let regions = create_list(&mut admin, &model, json!({ "name": "Regions" })).await;
     let axes = json!([list_axis(&regions), month(), { "kind": "versions" }]);
 
     let created = admin
@@ -345,7 +281,7 @@ async fn create_module_and_line_items(pool: PgPool) {
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn the_structure_is_served_as_the_engine_writes_it(pool: PgPool) {
     let (mut admin, _, model) = plan(&pool).await;
-    let regions = create_list(&mut admin, &model, "Regions").await;
+    let regions = create_list(&mut admin, &model, json!({ "name": "Regions" })).await;
     let countries = admin
         .post(
             &url(&model, "/lists"),
@@ -609,7 +545,7 @@ fn completions_url(model: &str, line_item: &str, prefix: &str) -> String {
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn completions_prefix_and_order(pool: PgPool) {
     let (mut admin, workspace, model) = plan(&pool).await;
-    create_list(&mut admin, &model, "Units of Measure").await;
+    create_list(&mut admin, &model, json!({ "name": "Units of Measure" })).await;
     let plan_module = create_module(&mut admin, &model, "Plan", vec![month()]).await;
     let costs_module = create_module(&mut admin, &model, "Costs", vec![month()]).await;
     create_line_item(&mut admin, &model, &plan_module, json!({ "name": "Units" })).await;
@@ -712,7 +648,7 @@ async fn completions_prefix_and_order(pool: PgPool) {
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn completions_after_a_dot_offer_the_members(pool: PgPool) {
     let (mut admin, _, model) = plan(&pool).await;
-    let countries = create_list(&mut admin, &model, "Countries").await;
+    let countries = create_list(&mut admin, &model, json!({ "name": "Countries" })).await;
     admin
         .post(
             &url(&model, &format!("/lists/{countries}/items")),
@@ -913,7 +849,7 @@ async fn text_fields_have_length_limits(pool: PgPool) {
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn a_list_id_stands_in_for_a_module_id_to_create_list_properties(pool: PgPool) {
     let (mut admin, _, model) = plan(&pool).await;
-    let regions = create_list(&mut admin, &model, "Regions").await;
+    let regions = create_list(&mut admin, &model, json!({ "name": "Regions" })).await;
 
     let created = create_line_item(
         &mut admin,
