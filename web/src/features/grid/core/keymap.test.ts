@@ -261,7 +261,7 @@ describe("resolveKey while an input method is composing", () => {
     expect(navigate("c", { ctrlKey: true, isComposing: true })).toEqual(none)
   })
 
-  it("ignores every key in edit mode, so Enter confirms the composition and does not commit", () => {
+  it("ignores every key in edit mode, so Enter only confirms the composition", () => {
     for (const key of ["a", "Enter", "Tab", "Escape"]) {
       expect(edit(key, { isComposing: true })).toEqual(none)
     }

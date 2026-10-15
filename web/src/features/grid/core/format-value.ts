@@ -5,6 +5,10 @@
  * Numbers are always written in the English notation (1,234.50, 25%), whatever the browser's
  * locale, because `parseInput` reads that same notation: anything shown, edited or copied can be
  * typed or pasted back. Dates follow the browser's locale, since they are only ever shown.
+ *
+ * Nothing here throws, whatever the format holds: decimals are held to 0 to 10, and a currency
+ * code Intl does not accept (one that is not three letters) is shown in front of a plain number
+ * ("US 1,234.50").
  */
 import type { Format, Value } from "./types"
 
@@ -12,7 +16,13 @@ type NumberFormat = Extract<Format, { type: "number" }>
 
 const NUMBER_LOCALE = "en-US"
 
-const numberFormatters = new Map<string, Intl.NumberFormat>()
+// The most decimals a number format shows; the line item form allows 0 to 10.
+const MAX_DECIMALS = 10
+
+// How to write a number: an Intl formatter and any text to put in front of it.
+type NumberWriter = { formatter: Intl.NumberFormat; prefix: string }
+
+const numberWriters = new Map<string, NumberWriter>()
 
 // Every digit of a number and no exponent: the text parseInput reads back to the same number.
 const plainFormatter = new Intl.NumberFormat(NUMBER_LOCALE, {
@@ -92,38 +102,71 @@ function timesHundred(plain: string): string {
   return negative && times !== "0" ? `-${times}` : times
 }
 
-function numberFormatter({ decimals, thousands_sep, unit }: NumberFormat): Intl.NumberFormat {
+function numberWriter({ decimals, thousands_sep, unit }: NumberFormat): NumberWriter {
+  // A format from the server is valid, but a cell must show something whatever it holds.
+  const digits = Number.isNaN(decimals) ? 0 : clamp(Math.trunc(decimals), 0, MAX_DECIMALS)
   const unitKey = unit.type === "currency" ? `currency:${unit.code}` : unit.type
-  const key = `${decimals}|${thousands_sep}|${unitKey}`
-  let formatter = numberFormatters.get(key)
-  if (!formatter) {
-    formatter = new Intl.NumberFormat(NUMBER_LOCALE, {
-      style: unit.type === "none" ? "decimal" : unit.type,
-      currency: unit.type === "currency" ? unit.code : undefined,
-      minimumFractionDigits: decimals,
-      maximumFractionDigits: decimals,
-      useGrouping: thousands_sep,
-      // A negative number that rounds to zero is just zero.
-      signDisplay: "negative",
-    })
-    numberFormatters.set(key, formatter)
+  const key = `${digits}|${thousands_sep}|${unitKey}`
+  let writer = numberWriters.get(key)
+  if (!writer) {
+    writer = createNumberWriter(digits, thousands_sep, unit)
+    numberWriters.set(key, writer)
   }
-  return formatter
+  return writer
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max)
+}
+
+function createNumberWriter(
+  digits: number,
+  grouping: boolean,
+  unit: NumberFormat["unit"],
+): NumberWriter {
+  const options: Intl.NumberFormatOptions = {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+    useGrouping: grouping,
+    // A negative number that rounds to zero is just zero.
+    signDisplay: "negative",
+  }
+  if (unit.type === "currency") {
+    try {
+      const formatter = new Intl.NumberFormat(NUMBER_LOCALE, {
+        ...options,
+        style: "currency",
+        currency: unit.code,
+      })
+      return { formatter, prefix: "" }
+    } catch {
+      // Not a code Intl accepts: put the code itself in front of a plain number.
+      const prefix = unit.code ? `${unit.code} ` : ""
+      return { formatter: new Intl.NumberFormat(NUMBER_LOCALE, options), prefix }
+    }
+  }
+  const style = unit.type === "percent" ? "percent" : "decimal"
+  return { formatter: new Intl.NumberFormat(NUMBER_LOCALE, { ...options, style }), prefix: "" }
 }
 
 function formatNumber(value: number, format: NumberFormat): string {
-  const formatter = numberFormatter(format)
-  if (format.negative === "minus") {
+  const { formatter, prefix } = numberWriter(format)
+  if (prefix === "" && format.negative === "minus") {
     return formatter.format(value)
   }
-  // Intl only writes accounting parentheses for currencies, so take the sign out of the parts.
+  // Take the sign out of the parts, to put it in front of the prefix or inside parentheses
+  // (Intl only writes parentheses for currencies).
   const parts = formatter.formatToParts(value)
   const negative = parts.some((part) => part.type === "minusSign")
   const digits = parts
     .filter((part) => part.type !== "minusSign")
     .map((part) => part.value)
     .join("")
-  return negative ? `(${digits})` : digits
+  const text = prefix + digits
+  if (!negative) {
+    return text
+  }
+  return format.negative === "parens" ? `(${text})` : `-${text}`
 }
 
 function formatDate(iso: string): string {

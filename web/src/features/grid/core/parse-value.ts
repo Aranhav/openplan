@@ -1,6 +1,8 @@
 /**
  * Reads what was typed or pasted into a cell. Numbers use the English notation that
- * `formatValue` writes (1,234.50, (1,234.50), 25%), whatever the browser's locale.
+ * `formatValue` writes (1,234.50, (1,234.50), 25%), whatever the browser's locale, and also
+ * scientific notation (1.23E+15), which Excel writes for large numbers. Nothing here throws:
+ * an entry that cannot be read is refused with a message.
  */
 import type { Format, PeriodLevel, Value } from "./types"
 
@@ -19,8 +21,10 @@ export type ParseResult = { ok: true; value: Value } | { ok: false; message: str
 
 type NumberFormat = Extract<Format, { type: "number" }>
 
-// Digits with optional thousands groups (1,234,567) and an optional fraction.
+// Digits with optional thousands groups (1,234,567) and an optional fraction, or scientific
+// notation (1.23E+15), which has no groups.
 const NUMBER_CORE = /^(?:(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d*)?|\.\d+)$/
+const SCIENTIFIC = /^(?:\d+(?:\.\d*)?|\.\d+)[eE][+-]?\d+$/
 const SIGN = /^[-−+]/
 const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})$/
 const DAY_FIRST_DATE = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/
@@ -32,9 +36,10 @@ const currencyTokens = new Map<string, string[]>()
 
 /**
  * Reads one entry as a value of `format`. An empty entry gives the format's blank value. A
- * currency format also accepts its symbol in front or its code behind (€12, 12 EUR). In a
- * percent format a number is in percent points: 25 and 25% are both 0.25. Anywhere else a
- * percent sign divides by 100 and a bare number is taken as it is.
+ * currency format also accepts its symbol in front or its code behind (€12, 12 EUR), with
+ * parentheses around the whole entry or just the number ($ (1,234.50)). In a percent format a
+ * number is in percent points: 25 and 25% are both 0.25. Anywhere else a percent sign divides
+ * by 100 and a bare number is taken as it is.
  */
 export function parseInput(raw: string, format: Format, ctx: ParseContext): ParseResult {
   switch (format.type) {
@@ -129,12 +134,20 @@ function readNumber(
     }
   }
 
-  if (!NUMBER_CORE.test(text)) {
+  // Parentheses may also close in on just the number, after the symbol: $ (1,234.50).
+  const accounting = /^\(([\s\S]*)\)$/.exec(text)
+  if (accounting && !signed) {
+    text = accounting[1].trim()
+    negative = true
+  }
+
+  if (!NUMBER_CORE.test(text) && !SCIENTIFIC.test(text)) {
     return undefined
   }
-  const digits = text.replaceAll(",", "")
+  const [mantissa, exponent = "0"] = text.replaceAll(",", "").split(/e/i)
   // Shifting the decimal point in the text keeps 33.3% exactly 0.333; dividing by 100 would not.
-  const magnitude = Number(percent || percentPoints ? `${digits}e-2` : digits)
+  const shift = percent || percentPoints ? 2 : 0
+  const magnitude = Number(`${mantissa}e${Number(exponent) - shift}`)
   if (!Number.isFinite(magnitude)) {
     return undefined
   }
@@ -154,19 +167,24 @@ function tokensOfCurrency(code: string): string[] {
   let tokens = currencyTokens.get(code)
   if (!tokens) {
     const names = [currencySymbol(code, "symbol"), currencySymbol(code, "narrowSymbol"), code]
-    tokens = [...new Set(names)].sort((a, b) => b.length - a.length)
+    tokens = [...new Set(names)].filter((name) => name !== "").sort((a, b) => b.length - a.length)
     currencyTokens.set(code, tokens)
   }
   return tokens
 }
 
 function currencySymbol(code: string, currencyDisplay: "symbol" | "narrowSymbol"): string {
-  const parts = new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: code,
-    currencyDisplay,
-  }).formatToParts(0)
-  return parts.find((part) => part.type === "currency")?.value ?? code
+  try {
+    const parts = new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: code,
+      currencyDisplay,
+    }).formatToParts(0)
+    return parts.find((part) => part.type === "currency")?.value ?? code
+  } catch {
+    // Not a code Intl accepts, so the code is the only marker to read.
+    return code
+  }
 }
 
 function parseBoolean(raw: string): ParseResult {

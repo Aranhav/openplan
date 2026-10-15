@@ -85,6 +85,44 @@ describe("parseInput numbers", () => {
     expect(numberOf("−12")).toEqual({ t: "number", v: -12 })
   })
 
+  describe("scientific notation", () => {
+    it("reads an exponent, as Excel writes large numbers", () => {
+      expect(numberOf("1e3")).toEqual({ t: "number", v: 1000 })
+      expect(numberOf("1.23E+15")).toEqual({ t: "number", v: 1.23e15 })
+      expect(numberOf("1E-2")).toEqual({ t: "number", v: 0.01 })
+      expect(numberOf(".5e1")).toEqual({ t: "number", v: 5 })
+      expect(numberOf("5.e1")).toEqual({ t: "number", v: 50 })
+    })
+
+    it("reads a sign, parentheses and a space around it", () => {
+      expect(numberOf("-1.5e3")).toEqual({ t: "number", v: -1500 })
+      expect(numberOf("(1e3)")).toEqual({ t: "number", v: -1000 })
+      expect(numberOf(" 2.5e-3 ")).toEqual({ t: "number", v: 0.0025 })
+    })
+
+    it("divides by one hundred with a percent sign or in a percent format", () => {
+      expect(numberOf("1e2%")).toEqual({ t: "number", v: 1 })
+      expect(numberOf("1E-2%")).toEqual({ t: "number", v: 0.0001 })
+      expect(numberOf("1e2", percent)).toEqual({ t: "number", v: 1 })
+    })
+
+    it("reads a currency symbol around it", () => {
+      expect(numberOf("€1.5e3", eur)).toEqual({ t: "number", v: 1500 })
+    })
+
+    it.each(["e3", "1e", "1e+", "1e3.5", "1e3e3", "1,234e3", "--1e3", "1e3x", "0x1e3", "1e 3"])(
+      "refuses '%s'",
+      (raw) => {
+        expect(parseInput(raw, plain, ctx).ok).toBe(false)
+      },
+    )
+
+    it("refuses an exponent too large to store, and one that is not a number", () => {
+      expect(messageOf("1e400", plain)).toBe("'1e400' isn't a number.")
+      expect(messageOf("1e99999999999999999999", plain)).toMatch(/isn't a number\.$/)
+    })
+  })
+
   it("reads parentheses as a negative number", () => {
     expect(numberOf("(1,234.50)")).toEqual({ t: "number", v: -1234.5 })
     expect(numberOf("(12)")).toEqual({ t: "number", v: -12 })
@@ -186,6 +224,26 @@ describe("parseInput numbers", () => {
       expect(numberOf("(12 EUR)", eur)).toEqual({ t: "number", v: -12 })
     })
 
+    it("accepts accounting style, with the symbol outside the parentheses", () => {
+      expect(numberOf("$ (1,234.50)", usd)).toEqual({ t: "number", v: -1234.5 })
+      expect(numberOf("$(12)", usd)).toEqual({ t: "number", v: -12 })
+      expect(numberOf("€ ( 12 )", eur)).toEqual({ t: "number", v: -12 })
+      expect(numberOf("(12) EUR", eur)).toEqual({ t: "number", v: -12 })
+      expect(numberOf("(12) %", plain)).toEqual({ t: "number", v: -0.12 })
+    })
+
+    it.each(["-$ (12)", "$ ((12))", "$ (-12)", "$ (12", "$ 12)", "$ ()", "$ (12) (3)"])(
+      "refuses '%s'",
+      (raw) => {
+        expect(parseInput(raw, usd, ctx).ok).toBe(false)
+      },
+    )
+
+    it("refuses accounting style with a symbol the format does not use", () => {
+      expect(messageOf("$ (12)", eur)).toBe("'$ (12)' isn't a number.")
+      expect(messageOf("$ (12)", plain)).toBe("'$ (12)' isn't a number.")
+    })
+
     it("accepts a percentage in a currency format", () => {
       expect(numberOf("10%", usd)).toEqual({ t: "number", v: 0.1 })
     })
@@ -235,7 +293,6 @@ describe("parseInput numbers", () => {
       "-",
       "%",
       "()",
-      "1e3",
       "NaN",
       "Infinity",
       "0x10",
@@ -253,6 +310,28 @@ describe("parseInput numbers", () => {
       expect(message.length).toBeLessThan(80)
       expect(message).toBe(`'${"x".repeat(40)}…' isn't a number.`)
     })
+  })
+})
+
+describe("parseInput with a currency code Intl does not accept", () => {
+  const format = numberFormat({ unit: { type: "currency", code: "US" } })
+
+  it("reads the code in front or behind and a plain number", () => {
+    expect(numberOf("US 12", format)).toEqual({ t: "number", v: 12 })
+    expect(numberOf("12 us", format)).toEqual({ t: "number", v: 12 })
+    expect(numberOf("-US 1,234.50", format)).toEqual({ t: "number", v: -1234.5 })
+    expect(numberOf("(US 1,234.50)", format)).toEqual({ t: "number", v: -1234.5 })
+    expect(numberOf("12", format)).toEqual({ t: "number", v: 12 })
+  })
+
+  it("refuses another symbol and does not throw", () => {
+    expect(messageOf("$12", format)).toBe("'$12' isn't a number.")
+  })
+
+  it("reads a plain number when the code is empty", () => {
+    const noCode = numberFormat({ unit: { type: "currency", code: "" } })
+    expect(numberOf("12", noCode)).toEqual({ t: "number", v: 12 })
+    expect(messageOf("abc", noCode)).toBe("'abc' isn't a number.")
   })
 })
 

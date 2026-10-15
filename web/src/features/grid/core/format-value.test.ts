@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { numberFormat } from "@/test/number-format"
 import { copyText, editText, formatValue } from "./format-value"
+import { parseInput } from "./parse-value"
 import type { Format, Value } from "./types"
 
 const num = (v: number): Value => ({ t: "number", v })
@@ -99,6 +100,91 @@ describe("formatValue percent", () => {
   it("writes negative percentages with a minus sign or parentheses", () => {
     expect(formatValue(num(-0.25), percent())).toBe("-25%")
     expect(formatValue(num(-0.25), percent({ negative: "parens" }))).toBe("(25%)")
+  })
+})
+
+describe("formatValue never throws", () => {
+  const unit = (code: string) => ({ type: "currency", code }) as const
+
+  describe("for a currency code Intl does not accept", () => {
+    it.each(["US", "USDX", "12A", "€", "dollars"])("puts %s before a plain number", (code) => {
+      expect(formatValue(num(1234.5), numberFormat({ unit: unit(code) }))).toBe(`${code} 1,234.50`)
+    })
+
+    it("shows a bare number when there is no code at all", () => {
+      expect(formatValue(num(1234.5), numberFormat({ unit: unit("") }))).toBe("1,234.50")
+    })
+
+    it("keeps the decimals, the separator and the negative style", () => {
+      const format = (options: Parameters<typeof numberFormat>[0]) =>
+        numberFormat({ unit: unit("US"), ...options })
+      const bare = format({ decimals: 0, thousands_sep: false })
+      expect(formatValue(num(1234.5), bare)).toBe("US 1235")
+      expect(formatValue(num(-1234.5), format({}))).toBe("-US 1,234.50")
+      expect(formatValue(num(-1234.5), format({ negative: "parens" }))).toBe("(US 1,234.50)")
+      expect(formatValue(num(-0.001), format({}))).toBe("US 0.00")
+    })
+
+    it("is read back by parseInput", () => {
+      const format = numberFormat({ unit: unit("US") })
+      const ctx = { itemsByName: new Map(), itemsByCode: new Map(), periodsByLabel: new Map() }
+      for (const v of [1234.5, -1234.5, 0]) {
+        const shown = formatValue(num(v), format)
+        expect(parseInput(shown, format, ctx)).toEqual({ ok: true, value: num(v) })
+      }
+    })
+  })
+
+  describe("for decimals outside 0 to 10", () => {
+    it("clamps to ten", () => {
+      expect(formatValue(num(1.5), numberFormat({ decimals: 11 }))).toBe("1.5000000000")
+      expect(formatValue(num(1.5), numberFormat({ decimals: 101 }))).toBe("1.5000000000")
+      expect(formatValue(num(1.5), numberFormat({ decimals: Infinity }))).toBe("1.5000000000")
+    })
+
+    it("clamps to none below zero and for something that is not a number", () => {
+      expect(formatValue(num(1234.5), numberFormat({ decimals: -3 }))).toBe("1,235")
+      expect(formatValue(num(1234.5), numberFormat({ decimals: -Infinity }))).toBe("1,235")
+      expect(formatValue(num(1234.5), numberFormat({ decimals: NaN }))).toBe("1,235")
+    })
+
+    it("drops a fraction of a decimal place", () => {
+      expect(formatValue(num(1.23456), numberFormat({ decimals: 2.9 }))).toBe("1.23")
+    })
+
+    it("clamps for percentages and currencies too", () => {
+      const percent = numberFormat({ unit: { type: "percent" }, decimals: 99 })
+      expect(formatValue(num(0.5), percent)).toBe("50.0000000000%")
+      const usd = numberFormat({ unit: unit("USD"), decimals: 99 })
+      expect(formatValue(num(1), usd)).toBe("$1.0000000000")
+    })
+  })
+
+  it("does not throw for any function with any format of the number kinds", () => {
+    const ctx = { itemsByName: new Map(), itemsByCode: new Map(), periodsByLabel: new Map() }
+    const decimals = [-1, 0, 2, 10, 101, NaN, Infinity]
+    const units = [
+      { type: "none" },
+      { type: "percent" },
+      unit("USD"),
+      unit("US"),
+      unit(""),
+    ] as const
+    const values = [0, -0, 1, -1.5, 1e21, 1e-300, 123456.789, Infinity, NaN]
+    for (const d of decimals) {
+      for (const u of units) {
+        for (const negative of ["minus", "parens"] as const) {
+          const format = numberFormat({ decimals: d, unit: u, negative })
+          for (const v of values) {
+            expect(() => formatValue(num(v), format)).not.toThrow()
+            expect(() => editText(num(v), format)).not.toThrow()
+            expect(() => copyText(num(v), format)).not.toThrow()
+          }
+          expect(() => parseInput("1,234.50", format, ctx)).not.toThrow()
+          expect(() => parseInput("", format, ctx)).not.toThrow()
+        }
+      }
+    }
   })
 })
 
