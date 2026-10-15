@@ -85,24 +85,29 @@ function readCookie(name: string): string | undefined {
   return undefined
 }
 
+function addCsrfHeader(request: Request) {
+  if (request.method !== "GET") {
+    const token = readCookie(CSRF_COOKIE)
+    if (token) {
+      request.headers.set(CSRF_HEADER, token)
+    }
+  }
+}
+
+function isAbort(error: unknown): boolean {
+  return isRecord(error) && error.name === "AbortError"
+}
+
 const csrf: Middleware = {
   onRequest({ request }) {
-    if (request.method !== "GET") {
-      const token = readCookie(CSRF_COOKIE)
-      if (token) {
-        request.headers.set(CSRF_HEADER, token)
-      }
-    }
+    addCsrfHeader(request)
     return request
   },
 }
 
 const network: Middleware = {
   onError({ error }) {
-    if (isRecord(error) && error.name === "AbortError") {
-      return undefined
-    }
-    return new ApiError(0, "network", NETWORK_DETAIL)
+    return isAbort(error) ? undefined : new ApiError(0, "network", NETWORK_DETAIL)
   },
 }
 
@@ -122,4 +127,30 @@ export async function unwrap<T>(
     throw toApiError(response, error)
   }
   return data as T
+}
+
+/**
+ * Posts `body` as JSON to an endpoint the generated schema does not describe yet and returns the
+ * JSON answer, with the same CSRF header and `ApiError`s as `api`. A caller that aborts gets the
+ * `AbortError` back.
+ */
+export async function postJson<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
+  const request = new Request(`/api/v1${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+    signal,
+  })
+  addCsrfHeader(request)
+  let response: Response
+  try {
+    response = await globalThis.fetch(request)
+  } catch (error) {
+    throw isAbort(error) ? error : new ApiError(0, "network", NETWORK_DETAIL)
+  }
+  const answer: unknown = await response.json().catch(() => undefined)
+  if (!response.ok) {
+    throw toApiError(response, answer)
+  }
+  return answer as T
 }

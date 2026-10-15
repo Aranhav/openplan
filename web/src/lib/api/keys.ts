@@ -4,6 +4,8 @@ export const queryKeys = {
   members: (id: string) => ["workspaces", id, "members"],
   models: (wsId: string) => ["workspaces", wsId, "models"],
   model: (id: string) => ["models", id],
+  /** Every query of a model starts with this key, so one invalidation reaches them all. */
+  query: (modelId: string, ...rest: unknown[]) => ["models", modelId, "query", ...rest],
   users: ["users"],
 } as const
 

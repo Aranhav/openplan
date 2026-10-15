@@ -1,0 +1,173 @@
+import type { Header, Member, PageMember, ViewDim } from "./view-types"
+
+export const ROW_HEIGHT = 32
+export const HEADER_ROW_HEIGHT = 32
+export const DEFAULT_COLUMN_WIDTH = 120
+const MIN_COLUMN_WIDTH = 48
+const MAX_COLUMN_WIDTH = 640
+/** How far a member is indented for each level of depth in the hierarchy. */
+export const INDENT = 16
+
+// The row headers share this width by default, up to this much for each dimension.
+const ROW_HEADER_BUDGET = 320
+const MAX_ROW_HEADER_DIMENSION_WIDTH = 240
+
+export function defaultRowHeaderWidth(dimensionCount: number): number {
+  return dimensionCount === 0
+    ? 0
+    : Math.min(MAX_ROW_HEADER_DIMENSION_WIDTH, Math.floor(ROW_HEADER_BUDGET / dimensionCount))
+}
+
+export function clampWidth(width: number): number {
+  return Math.min(Math.max(Math.round(width), MIN_COLUMN_WIDTH), MAX_COLUMN_WIDTH)
+}
+
+/** Where a column's width is kept: the keys of its header's members, outermost dimension first. */
+export function columnKey(header: Header): string {
+  return header.members.map((member) => member.key).join("|")
+}
+
+/** A copy of `record` without `key`. */
+export function without<T>(
+  record: Readonly<Record<string | number, T>>,
+  key: string | number,
+): Record<string, T> {
+  return Object.fromEntries(Object.entries(record).filter(([name]) => name !== String(key)))
+}
+
+/** Where each size starts, and the total as the last entry. */
+export function prefixSums(sizes: readonly number[]): number[] {
+  const sums = [0]
+  for (const size of sizes) {
+    sums.push(sums[sums.length - 1] + size)
+  }
+  return sums
+}
+
+/** The column that holds position `x`, counted from where the first column starts. */
+export function columnAt(starts: readonly number[], x: number): number {
+  let low = 0
+  let high = Math.max(starts.length - 2, 0)
+  while (low < high) {
+    const middle = (low + high + 1) >> 1
+    if (starts[middle] <= x) {
+      low = middle
+    } else {
+      high = middle - 1
+    }
+  }
+  return low
+}
+
+/** A header cell over the columns `start` to `end`; `member` is unknown while the header loads. */
+export type Span = { start: number; end: number; member?: Member }
+
+/**
+ * The header cells of one level over the given (ascending) columns. Neighbouring columns share a
+ * cell when they have the same members from the outermost dimension down to `level`, so the same
+ * member under two parents stays two cells.
+ */
+export function columnSpans(
+  indexes: readonly number[],
+  headerAt: (col: number) => Header | undefined,
+  level: number,
+): Span[] {
+  const spans: Span[] = []
+  let previous: Header | undefined
+  for (const col of indexes) {
+    const current = headerAt(col)
+    const last = spans[spans.length - 1]
+    if (last && previous && current && last.end === col - 1 && samePath(previous, current, level)) {
+      last.end = col
+    } else {
+      spans.push({ start: col, end: col, member: current?.members[level] })
+    }
+    previous = current
+  }
+  return spans
+}
+
+/**
+ * Whether `current` is the first row of its group at `level`: the row above does not have the
+ * same members from the outermost dimension down to `level`. Rows whose neighbour is not loaded
+ * count as first.
+ */
+export function startsRowGroup(
+  previous: Header | undefined,
+  current: Header,
+  level: number,
+): boolean {
+  return !previous || !samePath(previous, current, level)
+}
+
+function samePath(a: Header, b: Header, level: number): boolean {
+  for (let i = 0; i <= level; i++) {
+    if (a.members[i]?.key !== b.members[i]?.key) {
+      return false
+    }
+  }
+  return true
+}
+
+/** Where the line item of a cell is named: in a row header, a column header or on a page. */
+export type LineItemSource =
+  | { axis: "row"; level: number }
+  | { axis: "column"; level: number }
+  | { axis: "page"; key: string }
+  | undefined
+
+export function lineItemSource(
+  rowDims: readonly ViewDim[],
+  columnDims: readonly ViewDim[],
+  pages: readonly PageMember[],
+): LineItemSource {
+  const isLineItems = (dim: ViewDim) => dim.kind === "line_items"
+  const row = rowDims.findIndex(isLineItems)
+  if (row >= 0) {
+    return { axis: "row", level: row }
+  }
+  const column = columnDims.findIndex(isLineItems)
+  if (column >= 0) {
+    return { axis: "column", level: column }
+  }
+  const page = pages.find((p) => isLineItems(p.dim))
+  return page && { axis: "page", key: page.member.key }
+}
+
+export function lineItemIdAt(
+  source: LineItemSource,
+  rowHeader: Header | undefined,
+  columnHeader: Header | undefined,
+): string | undefined {
+  switch (source?.axis) {
+    case "row":
+      return rowHeader?.members[source.level]?.key
+    case "column":
+      return columnHeader?.members[source.level]?.key
+    case "page":
+      return source.key
+    default:
+      return undefined
+  }
+}
+
+/**
+ * The scroll position that brings `[start, end)` into view, moving as little as possible.
+ * `inset` is the size of the sticky headers on the leading edge, which cover the first part of
+ * the viewport. A range that does not fit lines up with its start.
+ */
+export function revealOffset(
+  range: { start: number; end: number },
+  scroll: number,
+  viewport: number,
+  inset: number,
+): number {
+  const fits = range.end - range.start <= viewport - inset
+  if (range.start < scroll + inset || !fits) {
+    return Math.max(range.start - inset, 0)
+  }
+  if (range.end > scroll + viewport) {
+    return range.end - viewport
+  }
+  return scroll
+}
