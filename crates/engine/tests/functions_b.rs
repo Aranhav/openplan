@@ -1907,6 +1907,19 @@ fn irr_over_a_long_timeline_ignores_flows_too_small_to_see() {
 }
 
 #[test]
+fn irr_over_a_long_timeline_never_uses_subnormal_weights() {
+    // Over 240 flows the weights of the first flows at the lowest rates of the search go
+    // subnormal and give the wrong sign. The only root is at -97 %, below the lowest rate that
+    // the search scans for 240 flows, so the answer is 0 or that root.
+    let mut book = Book::with_calendar(calendar(1, 2026, 20));
+    let mut flows = vec![-1000.0, 30.0];
+    flows.resize(240, 0.0);
+    book.series("Thirty", &flows);
+    let rate = book.numbers("IRR(Thirty)", 1)[0];
+    assert!(rate == 0.0 || (rate + 0.97).abs() < 1e-6, "{rate}");
+}
+
+#[test]
 fn pmt_pv_fv_match_excel() {
     let mut book = Book::new();
 

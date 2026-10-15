@@ -92,11 +92,16 @@ pub(super) fn eval_irr(
 /// bisection, must be.
 const IRR_STEPS: usize = 100;
 const IRR_TOLERANCE: f64 = 1e-10;
-/// The sign-change search scans the growth factors `1 + rate`, log-spaced from `IRR_LOW` to
-/// `IRR_HIGH`: the rates from -99.999 % to 1000 %, in `IRR_GRID` points.
+/// The sign-change search scans the growth factors `1 + rate`, log-spaced from the lowest growth
+/// (see [`lowest_growth`]) to `IRR_HIGH`, in `IRR_GRID` points. The lowest growth is at most
+/// `IRR_LOW`, the rate of -99.999 %.
 const IRR_LOW: f64 = 1e-5;
 const IRR_HIGH: f64 = 1001.0;
 const IRR_GRID: usize = 1000;
+/// The least weight the search gives the first flow of a series, which is the growth to the power
+/// of the number of flows less one. Below the normal range of a double, from about 2.2e-308, a
+/// weight loses precision and can lose its sign.
+const IRR_LEAST_WEIGHT: f64 = 1e-300;
 
 /// The rate at which the values of `series` have a present value of 0: where Newton's method
 /// from a guess of 10 % settles, or else the first sign change of the present value over the
@@ -131,6 +136,17 @@ fn newton(series: &[f64]) -> Option<f64> {
     None
 }
 
+/// The lowest growth the sign-change search scans for a series of `flows` flows: `IRR_LOW`, or
+/// the growth whose power `flows - 1` is `IRR_LEAST_WEIGHT`, if that is higher. A root below the
+/// lowest growth is not found.
+fn lowest_growth(flows: usize) -> f64 {
+    if flows <= 1 {
+        IRR_LOW
+    } else {
+        IRR_LOW.max(IRR_LEAST_WEIGHT.powf(1.0 / (flows - 1) as f64))
+    }
+}
+
 /// The rate where the present value of `series` first changes sign over the grid, found by
 /// bisection between the two grid points either side of the change. Grid points where it is 0
 /// are skipped. A series whose flows are not of both signs keeps one sign at every rate, so it
@@ -141,10 +157,11 @@ fn first_sign_change(series: &[f64]) -> Option<f64> {
     if !positive || !negative {
         return None;
     }
-    let ratio = (IRR_HIGH / IRR_LOW).powf(1.0 / (IRR_GRID - 1) as f64);
+    let low = lowest_growth(series.len());
+    let ratio = (IRR_HIGH / low).powf(1.0 / (IRR_GRID - 1) as f64);
     let mut previous: Option<(f64, f64)> = None;
     for step in 0..IRR_GRID {
-        let rate = IRR_LOW * ratio.powi(step as i32) - 1.0;
+        let rate = low * ratio.powi(step as i32) - 1.0;
         let value = scaled_value(series, rate);
         if value == 0.0 {
             continue;
@@ -178,9 +195,10 @@ fn bisect(series: &[f64], mut low: f64, mut high: f64, negative_low: bool) -> f6
     (low + high) / 2.0
 }
 
-/// The present value of `series` at `rate`, with its first flow not discounted, multiplied by a
-/// positive factor so that it does not overflow at the lowest rates of the search. It has the
-/// sign of the present value, and is 0 where that is too small to tell from 0.
+/// The present value of `series` at `rate`, with its first flow not discounted, times a positive
+/// factor so that it does not overflow at the lowest rates of the search, where the discounting
+/// would be huge. Below a growth of 1 the weights of the flows are then powers of the growth that
+/// are at most 1. Its sign is the sign of the present value.
 fn scaled_value(series: &[f64], rate: f64) -> f64 {
     let growth = 1.0 + rate;
     let mut factor = 1.0;
