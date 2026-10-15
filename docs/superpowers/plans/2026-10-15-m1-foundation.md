@@ -394,3 +394,20 @@ docker/Dockerfile
 - [ ] **Step 3: Write Dockerfile, compose, CI, README.** Validate YAML (`python3 -c "import yaml,sys;yaml.safe_load(open('.github/workflows/ci.yml'))"`), and if Docker is available run `docker compose build`.
 - [ ] **Step 4: Run full local suite:** cargo fmt/clippy/test, web lint/typecheck/test/build, e2e → PASS. Screenshots exist in `e2e/screenshots/`.
 - [ ] **Step 5: Commit** `feat: docker compose, CI pipeline and end-to-end tests`
+
+### Task 13: Cloud deployment — Vercel (web) + Render (API) + Supabase (Postgres) (Sonnet)
+
+**Context:** The user deploys the hosted demo on free tiers: the SPA on Vercel, the Rust server as a Docker web service on Render (region Singapore), Postgres on Supabase project `openplan` (ref `mhxlltqajwormqbwhusr`, region ap-south-1). The browser only talks to the Vercel origin; Vercel rewrites `/api/*` to the Render service so session cookies stay first-party. Docker Compose self-hosting stays the primary path.
+
+**Files:**
+- Create: `web/vercel.json`, `render.yaml`, `docs/deploy.md`
+- Modify: `README.md` (Deploy section linking `docs/deploy.md`), `crates/server/src/config.rs` + `main.rs` only if needed for the items below
+
+**Interfaces — Produces:**
+- `web/vercel.json`: `{"rewrites": [{"source": "/api/:path*", "destination": "https://openplan-api.onrender.com/api/:path*"}, {"source": "/((?!api/).*)", "destination": "/index.html"}]}`, framework `vite`, build `pnpm build`, output `dist`, install `pnpm install --frozen-lockfile`.
+- `render.yaml` (Blueprint): one `web` service `openplan-api`, `runtime: docker`, `dockerfilePath: ./docker/Dockerfile`, `region: singapore`, `plan: free`, `healthCheckPath: /api/health`, `autoDeploy: true`, env vars `DATABASE_URL` (`sync: false`), `OPENPLAN_PUBLIC_URL` (`sync: false`), `OPENPLAN_LOG=info`. Render injects `PORT`; the server must bind to `0.0.0.0:$PORT` when `PORT` is set and `OPENPLAN_BIND` is not (add to `Config::from_lookup` with a unit test `port_env_used_when_bind_unset`).
+- Supabase compatibility: use the **session pooler** connection string (IPv4, port 5432; prepared statements work) — the transaction pooler (6543) is not supported. Server must connect with TLS: `sqlx` `tls-rustls` already enabled; document `?sslmode=require`.
+- `docs/deploy.md`: step-by-step for the hosted demo: (1) Supabase: Project Settings → Database → reset password → copy *Session pooler* URI, append `?sslmode=require`; (2) Render: New → Blueprint → pick the repo → set `DATABASE_URL` and `OPENPLAN_PUBLIC_URL=https://<vercel-domain>`; (3) Vercel: project with root directory `web` (or the existing project) — note the `/api` rewrite target must match the Render service URL; (4) free-tier caveats: Render sleeps after 15 min idle (first request ~30–60 s), Supabase free pauses after 7 days idle. Also the self-host path (`docker compose up --build`).
+- [ ] **Step 1: Write failing test** `port_env_used_when_bind_unset` (+ `bind_env_wins_over_port`).
+- [ ] **Step 2: Run → FAIL. Step 3: Implement config change + files. Step 4: Run server tests, clippy, fmt → PASS; validate `render.yaml` and `vercel.json` parse (python yaml/json).**
+- [ ] **Step 5: Commit** `feat: Vercel, Render and Supabase deployment configuration`
