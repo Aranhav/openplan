@@ -19,6 +19,7 @@ describe("when the guards cannot reach a working server", () => {
     expect(await screen.findByRole("heading", { name: "Can't load OpenPlan" })).toBeInTheDocument()
     expect(screen.getByRole("alert")).toHaveTextContent("The database is starting up.")
     expect(screen.getByRole("button", { name: "Try again" })).toBeEnabled()
+    expect(document.title).toBe("Can't load OpenPlan")
     expect(router.state.location.pathname).toBe("/")
   })
 
@@ -64,6 +65,7 @@ describe("while the guards are slow", () => {
     renderApp("/")
 
     expect(await screen.findByRole("status", { name: "Loading" }, { timeout: 3000 })).toBeVisible()
+    expect(document.title).toBe("Loading · OpenPlan")
     expect(await screen.findByRole("heading", { name: "Sign in" }, { timeout: 3000 })).toBeVisible()
     expect(screen.queryByRole("status", { name: "Loading" })).not.toBeInTheDocument()
   })
@@ -75,6 +77,7 @@ describe("an unknown address", () => {
 
     expect(await screen.findByRole("heading", { name: "Page not found" })).toBeInTheDocument()
     expect(screen.getByRole("link", { name: "Go home" })).toHaveAttribute("href", "/")
+    expect(document.title).toBe("Page not found · OpenPlan")
   })
 })
 
