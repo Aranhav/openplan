@@ -1,18 +1,25 @@
 import { useNavigate } from "@tanstack/react-router"
 import { Box, Building2, Check, CircleUser, LayoutGrid, UserCog, Users } from "lucide-react"
-import { useEffect } from "react"
+import { type ReactNode, useEffect } from "react"
 import { ErrorState } from "@/components/error-state"
 import { THEME_OPTIONS } from "@/components/theme-options"
 import { useTheme } from "@/components/theme-provider"
 import { Badge } from "@/components/ui/badge"
 import {
-  CommandDialog,
+  Command,
   CommandEmpty,
   CommandGroup,
   CommandInput,
   CommandItem,
   CommandList,
 } from "@/components/ui/command"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useMe } from "@/features/auth/api"
 import { useModels } from "@/features/models/api"
@@ -59,13 +66,11 @@ export function CommandMenu({ open, onOpenChange }: CommandMenuProps) {
 
   // Each item's value is what the search matches, so it spells out where the item leads.
   return (
-    <CommandDialog
-      open={open}
-      onOpenChange={onOpenChange}
-      title="Command palette"
-      description="Search for a page, model or workspace, or change the theme."
-    >
-      <CommandInput placeholder="Search pages, models and workspaces…" />
+    <PaletteDialog open={open} onOpenChange={onOpenChange}>
+      <CommandInput
+        className="text-base md:text-sm"
+        placeholder="Search pages, models and workspaces…"
+      />
       <CommandList className="max-h-[min(24rem,60svh)]">
         <CommandEmpty>No results found.</CommandEmpty>
         <CommandGroup heading="Go to">
@@ -151,7 +156,34 @@ export function CommandMenu({ open, onOpenChange }: CommandMenuProps) {
           ))}
         </CommandGroup>
       </CommandList>
-    </CommandDialog>
+    </PaletteDialog>
+  )
+}
+
+/**
+ * The palette's dialog, put together here rather than with the stock `CommandDialog`, which renders
+ * its title and description outside the dialog's content: a heading on every page, even with the
+ * palette closed. Here they only exist while it is open.
+ */
+function PaletteDialog({
+  open,
+  onOpenChange,
+  children,
+}: CommandMenuProps & { children: ReactNode }) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="overflow-hidden p-0">
+        <DialogHeader className="sr-only">
+          <DialogTitle>Command palette</DialogTitle>
+          <DialogDescription>
+            Search for a page, model or workspace, or change the theme.
+          </DialogDescription>
+        </DialogHeader>
+        <Command className="**:data-[slot=command-input-wrapper]:h-12 [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:text-muted-foreground [&_[cmdk-group]]:px-2 [&_[cmdk-group]:not([hidden])_~[cmdk-group]]:pt-0 [&_[cmdk-input-wrapper]_svg]:h-5 [&_[cmdk-input-wrapper]_svg]:w-5 [&_[cmdk-input]]:h-12 [&_[cmdk-item]]:px-2 [&_[cmdk-item]]:py-3 [&_[cmdk-item]_svg]:h-5 [&_[cmdk-item]_svg]:w-5">
+          {children}
+        </Command>
+      </DialogContent>
+    </Dialog>
   )
 }
 

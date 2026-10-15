@@ -34,6 +34,42 @@ async function openPalette(typist: ReturnType<typeof userEvent.setup>) {
 }
 
 describe("the command palette", () => {
+  it("adds nothing to the page outline while it is closed", async () => {
+    mockSession()
+    mockModels()
+    renderApp(`/w/${workspace.id}`)
+    await screen.findByRole("button", { name: /^Search/ })
+
+    const [first] = screen.getAllByRole("heading")
+    expect(first).toHaveAccessibleName("Models")
+    expect(first.tagName).toBe("H1")
+    expect(screen.queryByRole("heading", { name: "Command palette" })).not.toBeInTheDocument()
+    expect(screen.queryByText(/^Search for a page, model or workspace/)).not.toBeInTheDocument()
+  })
+
+  it("names itself and says what it is for while it is open", async () => {
+    mockSession()
+    mockModels()
+    const typist = userEvent.setup()
+    renderApp(`/w/${workspace.id}`)
+    const palette = await openPalette(typist)
+
+    expect(palette).toHaveAccessibleDescription(
+      "Search for a page, model or workspace, or change the theme.",
+    )
+    expect(within(palette).getByRole("heading", { name: "Command palette" })).toBeInTheDocument()
+  })
+
+  it("keeps its search text at 16px on a phone, so iOS does not zoom in on focus", async () => {
+    mockSession()
+    mockModels()
+    const typist = userEvent.setup()
+    renderApp(`/w/${workspace.id}`)
+    const palette = await openPalette(typist)
+
+    expect(within(palette).getByRole("combobox")).toHaveClass("text-base", "md:text-sm")
+  })
+
   it("opens with Ctrl+K and lists models", async () => {
     mockSession()
     mockModels()
