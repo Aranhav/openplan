@@ -1450,21 +1450,21 @@ fn a_formula_that_does_not_resolve_leaves_the_line_item_in_error() {
 }
 
 #[test]
-fn functions_are_reported_as_not_available_yet() {
+fn a_problem_of_a_call_is_located_at_the_call() {
     let mut fx = Fx::new(1);
-    let module = fx.module("Sales", vec![month_axis()]);
+    let module = fx.module("Sales", Vec::new());
     let units = fx.number(module, "Units");
     let wrapped = fx.calc_number(module, "Wrapped", "1 + CUMULATE(Units)");
-    fx.set_number(units, vec![period("Jan 26")], -4.0);
+    fx.set_number(units, Vec::new(), -4.0);
 
     fx.recalc();
 
-    // The problem is a formula problem, located at the call.
+    // The line item has no Time dimension, which is a formula problem at the call.
     let errors = fx.errors(wrapped);
-    assert_eq!(errors[0].code, "formula.unknown_function");
-    assert_eq!(errors[0].message, "Function CUMULATE is not available yet.");
+    assert_eq!(errors[0].code, "formula.dimension");
+    assert_eq!(errors[0].message, "This function needs a Time dimension.");
     assert_eq!((errors[0].start, errors[0].end), (4, 19));
-    assert_eq!(fx.number_at(wrapped, vec![period("Jan 26")]), 0.0);
+    assert_eq!(fx.number_at(wrapped, Vec::new()), 0.0);
 }
 
 #[test]
@@ -2117,6 +2117,52 @@ fn a_roll_up_that_overflows_reads_zero() {
             .unwrap();
 
     assert_eq!(rolled, Value::Number(0.0));
+}
+
+#[test]
+fn a_scattering_sum_that_overflows_reads_zero_where_it_is_used() {
+    let mut fx = Fx::new(1);
+    let employees = fx.list("Employees", None, None);
+    let [ann, bob, cy] = fx.items(employees, &[("Ann", None), ("Bob", None), ("Cy", None)])[..]
+    else {
+        unreachable!()
+    };
+    let departments = fx.list("Departments", None, None);
+    let [sales, eng] = fx.items(departments, &[("Sales", None), ("Eng", None)])[..] else {
+        unreachable!()
+    };
+    let staff = fx.module("Staff", vec![list_axis(employees), month_axis()]);
+    let salary = fx.number(staff, "Salary");
+    let info = fx.module("Staff Info", vec![list_axis(employees)]);
+    let dept = fx.input(info, "Dept", list_format(departments));
+    let costs = fx.module("Costs", vec![list_axis(departments), month_axis()]);
+    let total = fx.calc_number(costs, "Total", "Salary[SUM: Dept]");
+    let average = fx.calc_number(costs, "Average", "Salary[AVERAGE: Dept]");
+    let shown = fx.calc(costs, "Shown", Format::Text, "\"S=\" & Salary[SUM: Dept]");
+    let large = fx.calc_number(costs, "Large", "IF Salary[SUM: Dept] > 5 THEN 1 ELSE 2");
+    let large_average = fx.calc_number(
+        costs,
+        "Large Average",
+        "IF Salary[AVERAGE: Dept] > 5 THEN 1 ELSE 2",
+    );
+    for (employee, department) in [(ann, sales), (bob, eng), (cy, sales)] {
+        fx.set(dept, vec![item(employee)], Value::Item(Some(department)));
+    }
+    fx.set_number(salary, vec![item(ann), period("Jan 26")], 1.7e308);
+    fx.set_number(salary, vec![item(cy), period("Jan 26")], 1.7e308);
+    fx.set_number(salary, vec![item(bob), period("Jan 26")], 2.0);
+
+    fx.recalc();
+
+    // Two salaries too large to add up come to nothing, as they do anywhere else.
+    let at = |department| vec![item(department), period("Jan 26")];
+    assert_eq!(fx.number_at(total, at(sales)), 0.0);
+    assert_eq!(fx.number_at(average, at(sales)), 0.0);
+    assert_eq!(fx.text_at(shown, at(sales)), "S=0");
+    assert_eq!(fx.number_at(large, at(sales)), 2.0);
+    assert_eq!(fx.number_at(large_average, at(sales)), 2.0);
+    assert_eq!(fx.number_at(total, at(eng)), 2.0);
+    assert_eq!(fx.text_at(shown, at(eng)), "S=2");
 }
 
 #[test]

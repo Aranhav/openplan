@@ -234,7 +234,7 @@ fn text_cells(len: usize, mut write: impl FnMut(usize, &mut String)) -> Column {
 }
 
 /// The cells of `then` where `mask` is true and those of `els` elsewhere.
-pub(super) fn select(mask: &[bool], then: Column, els: Column) -> Result<Column, EngineError> {
+pub(crate) fn select(mask: &[bool], then: Column, els: Column) -> Result<Column, EngineError> {
     fn pick<T: Clone>(mut then: Vec<T>, els: &[T], mask: &[bool]) -> Vec<T> {
         for ((chosen, other), &flag) in then.iter_mut().zip(els).zip(mask) {
             if !flag {

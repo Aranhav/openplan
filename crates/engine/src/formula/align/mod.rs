@@ -156,7 +156,7 @@ impl Mapped {
     }
 }
 
-fn take(data: &Column, idx: &[usize]) -> Column {
+pub(super) fn take(data: &Column, idx: &[usize]) -> Column {
     fn pick<T: Clone>(cells: &[T], idx: &[usize]) -> Vec<T> {
         idx.iter().map(|&i| cells[i].clone()).collect()
     }

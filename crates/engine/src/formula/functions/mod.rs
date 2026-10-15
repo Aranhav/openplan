@@ -1,22 +1,29 @@
 //! The built-in functions of the formula language (spec §4.5): names, arities, argument and
-//! result types, and the one-line documentation the editor shows, and the evaluation of the
-//! calls that have an implementation.
+//! result types, and the one-line documentation the editor shows, and the evaluation of calls.
 
-use crate::error::{EngineError, FormulaError};
+use crate::calendar::TimeLevel;
+use crate::error::EngineError;
 use crate::shape::Shape;
 use crate::structure::same_name;
 use crate::value::Column;
 
-use super::eval::eval;
+use super::align::take;
+use super::eval::{eval, eval_whole};
 use super::{EvalCtx, TExpr};
 
+mod axis;
 mod date;
 mod dimension;
+mod finance;
 mod list;
 mod logic;
 mod math;
+mod period;
+mod rank;
 mod rules;
 mod text;
+mod time;
+mod version;
 
 pub use rules::Word;
 pub(crate) use rules::{ArgType, check};
@@ -631,6 +638,65 @@ pub(crate) fn check_fn(
     match func {
         FuncId::Item => dimension::check_item(ctx, target, args),
         FuncId::IsFirstOccurrence => logic::check_is_first_occurrence(ctx, target, args),
+        FuncId::Previous
+        | FuncId::Next
+        | FuncId::Offset
+        | FuncId::Lag
+        | FuncId::Lead
+        | FuncId::Cumulate
+        | FuncId::MovingSum
+        | FuncId::YearValue
+        | FuncId::QuarterValue
+        | FuncId::HalfYearValue
+        | FuncId::MonthValue
+        | FuncId::TimeSum
+        | FuncId::YearToDate
+        | FuncId::QuarterToDate
+        | FuncId::HalfYearToDate
+        | FuncId::Start
+        | FuncId::End
+        | FuncId::Npv
+        | FuncId::Irr => time::check(func, target),
+        FuncId::CurrentVersion | FuncId::PreviousVersion | FuncId::NextVersion => {
+            version::check(target)
+        }
+        FuncId::Rank => rank::check(target),
+        _ => Ok(()),
+    }
+}
+
+/// The shape over which the arguments of a call to `func` are evaluated, when it is not the
+/// target's own: `YEARVALUE(x)` and its kin evaluate `x` as the line item would be by year,
+/// quarter or month.
+pub(crate) fn arg_target(func: FuncId, ctx: &EvalCtx, target: &Shape) -> Option<Shape> {
+    time::arg_target(func, ctx, target)
+}
+
+/// Works out ahead of the chunks what a call shares between them, for the calls that have
+/// something to share (see [`EvalCtx::memoized`]): those that evaluate through [`shared`] or
+/// keep a column of their own for the whole target. A call missing here still gives the right
+/// values, but the chunks, which run in parallel, then each work it out.
+pub(crate) fn warm_fn(
+    func: FuncId,
+    ctx: &EvalCtx,
+    target: &Shape,
+    args: &[TExpr],
+) -> Result<(), EngineError> {
+    match func {
+        FuncId::IsFirstOccurrence
+        | FuncId::Cumulate
+        | FuncId::MovingSum
+        | FuncId::YearValue
+        | FuncId::QuarterValue
+        | FuncId::HalfYearValue
+        | FuncId::MonthValue
+        | FuncId::TimeSum
+        | FuncId::YearToDate
+        | FuncId::QuarterToDate
+        | FuncId::HalfYearToDate
+        | FuncId::Rank
+        | FuncId::Npv
+        | FuncId::Irr => eval_fn(func, ctx, target, args, &[]).map(|_| ()),
         _ => Ok(()),
     }
 }
@@ -640,7 +706,9 @@ pub(crate) fn check_fn(
 ///
 /// Most functions work on their arguments cell by cell: the arguments are evaluated first and the
 /// function maps over the columns. Those that need more than the values, such as the list an
-/// item belongs to or the cells around the one being calculated, get the expressions.
+/// item belongs to or the cells around the one being calculated, get the expressions. Those
+/// that need cells of other chunks, such as a running total or a rank, work out their result for
+/// the whole target once and the chunks take their cells from it.
 pub(crate) fn eval_fn(
     func: FuncId,
     ctx: &EvalCtx,
@@ -696,13 +764,38 @@ pub(crate) fn eval_fn(
         FuncId::AddYears => cellwise(date::eval_add_years),
         FuncId::Days => cellwise(date::eval_days),
 
-        other => Err(EngineError::Formula(vec![FormulaError {
-            code: "formula.unknown_function",
-            message: format!("Function {} is not available yet.", other.def().name),
-            start: 0,
-            end: 0,
-            suggestion: None,
-        }])),
+        FuncId::Previous => time::eval_previous(ctx, target, args, idx),
+        FuncId::Next => time::eval_next(ctx, target, args, idx),
+        FuncId::Offset | FuncId::Lead => time::eval_shift(1, ctx, target, args, idx),
+        FuncId::Lag => time::eval_shift(-1, ctx, target, args, idx),
+        FuncId::Cumulate => time::eval_cumulate(ctx, target, args, idx),
+        FuncId::MovingSum => time::eval_moving_sum(ctx, target, args, idx),
+        FuncId::YearValue => time::eval_value(TimeLevel::Year, ctx, target, args, idx),
+        FuncId::QuarterValue => time::eval_value(TimeLevel::Quarter, ctx, target, args, idx),
+        FuncId::HalfYearValue => time::eval_value(TimeLevel::HalfYear, ctx, target, args, idx),
+        FuncId::MonthValue => time::eval_value(TimeLevel::Month, ctx, target, args, idx),
+        FuncId::TimeSum => time::eval_time_sum(ctx, target, args, idx),
+        FuncId::YearToDate => time::eval_to_date(TimeLevel::Year, ctx, target, args, idx),
+        FuncId::QuarterToDate => time::eval_to_date(TimeLevel::Quarter, ctx, target, args, idx),
+        FuncId::HalfYearToDate => time::eval_to_date(TimeLevel::HalfYear, ctx, target, args, idx),
+        FuncId::Start => period::eval_bound(ctx, target, idx, false),
+        FuncId::End => period::eval_bound(ctx, target, idx, true),
+        FuncId::InPeriod => period::eval_in_period(ctx, target, args, idx),
+        FuncId::Period => period::eval_period(ctx, target, args, idx),
+        FuncId::CurrentPeriodStart => Ok(period::eval_current(ctx, idx.len(), false)),
+        FuncId::CurrentPeriodEnd => Ok(period::eval_current(ctx, idx.len(), true)),
+
+        FuncId::CurrentVersion => version::eval_current(ctx, target, args, idx),
+        FuncId::PreviousVersion => version::eval_adjacent(-1, ctx, target, args, idx),
+        FuncId::NextVersion => version::eval_adjacent(1, ctx, target, args, idx),
+
+        FuncId::Rank => rank::eval_rank(ctx, target, args, idx),
+
+        FuncId::Npv => finance::eval_npv(ctx, target, args, idx),
+        FuncId::Irr => finance::eval_irr(ctx, target, args, idx),
+        FuncId::Pmt => cellwise(finance::eval_pmt),
+        FuncId::Pv => cellwise(finance::eval_pv),
+        FuncId::Fv => cellwise(finance::eval_fv),
     }
 }
 
@@ -716,6 +809,35 @@ fn eval_args<'a>(
     args.into_iter()
         .map(|arg| eval(ctx, target, arg, idx))
         .collect()
+}
+
+/// What identifies a call among the columns a context keeps for the whole target: where its
+/// arguments are. Every call with an argument has its own, and it does not change while a
+/// formula is evaluated.
+fn call_key(args: &[TExpr]) -> usize {
+    args.as_ptr() as usize
+}
+
+/// The cells `idx` of the column that `compute` works out for the whole of `target`, which it
+/// does once for all the chunks of an evaluation and not once per chunk. This is for the
+/// calls whose result at a cell depends on cells in other chunks.
+fn shared(
+    ctx: &EvalCtx,
+    target: &Shape,
+    args: &[TExpr],
+    idx: &[usize],
+    compute: impl FnOnce() -> Result<Column, EngineError>,
+) -> Result<Column, EngineError> {
+    let whole = ctx.memoized(call_key(args), target, compute)?;
+    Ok(take(&whole, idx))
+}
+
+/// The numbers of the expression `expr` for every cell of `target`.
+fn whole_numbers(ctx: &EvalCtx, target: &Shape, expr: &TExpr) -> Result<Vec<f64>, EngineError> {
+    match eval_whole(ctx, target, expr)? {
+        Column::Number(numbers) => Ok(numbers),
+        _ => Err(mismatch()),
+    }
 }
 
 /// The error for a column that is not of the type its function takes, which the type check of

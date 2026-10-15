@@ -21,7 +21,7 @@ use crate::summary::{LevelSpec, Summary};
 use crate::value::{BLANK_ITEM, Cell, Column, Value, ValueType};
 
 use super::align::{Reader, build_reader};
-use super::functions::{check_fn, eval_fn};
+use super::functions::{arg_target, check_fn, eval_fn, warm_fn};
 use super::{DIMENSION, Span, TExpr, TModifier, UnOp, parse, resolve};
 
 pub(super) mod ops;
@@ -49,12 +49,15 @@ pub(crate) trait ColumnSource: Sync {
 /// restricted Versions axis spans.
 ///
 /// The readers built for the line items a formula reads are kept, so that evaluating chunk
-/// after chunk of the same target builds each one once.
+/// after chunk of the same target builds each one once. So are the columns that calls work
+/// out for the whole target (see [`EvalCtx::memoized`]). Both hold the values of the line items
+/// as they were when the context was made, so a context serves one evaluation and no more.
 pub(crate) struct EvalCtx<'a> {
     pub structure: &'a Structure,
     pub columns: &'a dyn ColumnSource,
     pub layout: &'a Layout,
     readers: RwLock<Vec<CachedReader>>,
+    memos: RwLock<Vec<Memo>>,
 }
 
 struct CachedReader {
@@ -62,6 +65,13 @@ struct CachedReader {
     src: LineItemId,
     modifiers: Vec<TModifier>,
     reader: Arc<Reader>,
+}
+
+/// A column worked out once for a whole target, and the call it belongs to.
+struct Memo {
+    key: usize,
+    target: Shape,
+    column: Arc<Column>,
 }
 
 impl<'a> EvalCtx<'a> {
@@ -75,7 +85,44 @@ impl<'a> EvalCtx<'a> {
             columns,
             layout,
             readers: RwLock::new(Vec::new()),
+            memos: RwLock::new(Vec::new()),
         }
+    }
+
+    /// The column that `compute` works out for every cell of `target` for the call identified by
+    /// `key`, worked out on first use and shared from then on.
+    ///
+    /// A call whose result at a cell depends on cells outside the chunk being evaluated, such as
+    /// a running total or a rank, would otherwise evaluate its arguments over the whole target
+    /// again for every chunk. `compute` runs without any lock held, so it may evaluate
+    /// expressions that use this context in turn; [`eval_all`] runs it for every such call
+    /// before the chunks start, so that they find it done.
+    pub(crate) fn memoized(
+        &self,
+        key: usize,
+        target: &Shape,
+        compute: impl FnOnce() -> Result<Column, EngineError>,
+    ) -> Result<Arc<Column>, EngineError> {
+        let cached = |memos: &[Memo]| {
+            memos
+                .iter()
+                .find(|memo| memo.key == key && memo.target == *target)
+                .map(|memo| Arc::clone(&memo.column))
+        };
+        if let Some(column) = cached(&self.memos.read().unwrap_or_else(PoisonError::into_inner)) {
+            return Ok(column);
+        }
+        let column = Arc::new(compute()?);
+        let mut memos = self.memos.write().unwrap_or_else(PoisonError::into_inner);
+        if let Some(raced) = cached(&memos) {
+            return Ok(raced);
+        }
+        memos.push(Memo {
+            key,
+            target: target.clone(),
+            column: Arc::clone(&column),
+        });
+        Ok(column)
     }
 
     /// The reader of `src` with `modifiers` for cells of `target`, built on first use.
@@ -144,6 +191,16 @@ pub(crate) fn eval_all(ctx: &EvalCtx, target: &Shape, expr: &TExpr) -> Result<Co
         problems.sort_by_key(|problem| (problem.start, problem.end));
         return Err(EngineError::Formula(problems));
     }
+    eval_whole(ctx, target, expr)
+}
+
+/// Evaluates `expr` for every cell of `target`, in chunks that run in parallel, without
+/// checking it first. The result is what [`eval_all`] gives.
+pub(crate) fn eval_whole(
+    ctx: &EvalCtx,
+    target: &Shape,
+    expr: &TExpr,
+) -> Result<Column, EngineError> {
     let size = target.size();
     let run = |start: usize| {
         let idx: Vec<usize> = (start..(start + CHUNK).min(size)).collect();
@@ -169,8 +226,10 @@ pub(crate) fn eval_all(ctx: &EvalCtx, target: &Shape, expr: &TExpr) -> Result<Co
     Ok(column)
 }
 
-/// Builds the readers of every line item `expr` reads, before the chunks that share them run,
-/// and collects what is wrong with the ones that cannot be built.
+/// Gets everything the chunks share ready before they run: builds the readers of every line
+/// item `expr` reads, checks the calls against the structure and works out what calls share
+/// between chunks. Collects what is wrong with the readers that cannot be built and the calls
+/// that cannot be evaluated; once something is wrong nothing more is worked out.
 fn prepare(ctx: &EvalCtx, target: &Shape, expr: &TExpr, problems: &mut Vec<FormulaError>) {
     match expr {
         TExpr::LineItem {
@@ -198,11 +257,18 @@ fn prepare(ctx: &EvalCtx, target: &Shape, expr: &TExpr, problems: &mut Vec<Formu
         TExpr::Call {
             func, args, span, ..
         } => {
-            if let Err(error) = check_fn(*func, ctx, target, args) {
-                problems.extend(locate(error, *span));
-            }
+            let inner = arg_target(*func, ctx, target);
             for arg in args {
-                prepare(ctx, target, arg, problems);
+                prepare(ctx, inner.as_ref().unwrap_or(target), arg, problems);
+            }
+            match check_fn(*func, ctx, target, args) {
+                Err(error) => problems.extend(locate(error, *span)),
+                Ok(()) if problems.is_empty() => {
+                    if let Err(error) = warm_fn(*func, ctx, target, args) {
+                        problems.extend(locate(error, *span));
+                    }
+                }
+                Ok(()) => {}
             }
         }
         TExpr::Const { .. }

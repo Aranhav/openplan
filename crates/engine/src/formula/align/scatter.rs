@@ -12,7 +12,7 @@ use crate::ids::LineItemId;
 use crate::shape::{Axis, Shape};
 use crate::structure::LineItem;
 use crate::summary::with_actual_before_switchover;
-use crate::value::{Column, ValueType};
+use crate::value::{Column, ValueType, sanitize_number};
 
 use super::{Builder, Driver, NONE, Work, dimension, invalid, list_of, not_found};
 
@@ -205,6 +205,8 @@ fn combine(
     }
 }
 
+/// The numbers of `values` combined per target. As in arithmetic, a sum that overflows is 0 at
+/// once, so that no infinity reaches a comparison or a text through the modifier.
 fn numbers(kind: ModifierKind, values: &[f64], targets: &[usize], size: usize) -> Vec<f64> {
     let mut out = vec![0.0; size];
     let mut counts = vec![0u32; size];
@@ -217,7 +219,9 @@ fn numbers(kind: ModifierKind, values: &[f64], targets: &[usize], size: usize) -
             ModifierKind::Max if counts[target] == 0 || value > out[target] => {
                 out[target] = value;
             }
-            ModifierKind::Sum | ModifierKind::Average => out[target] += value,
+            ModifierKind::Sum | ModifierKind::Average => {
+                out[target] = sanitize_number(out[target] + value);
+            }
             _ => {}
         }
         counts[target] += 1;

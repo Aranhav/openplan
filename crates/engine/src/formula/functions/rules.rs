@@ -156,7 +156,7 @@ pub fn keyword_choice(words: &[Word]) -> String {
 }
 
 /// `a, b or c`
-fn join_choice(items: &[&str]) -> String {
+pub(super) fn join_choice(items: &[&str]) -> String {
     match items {
         [] => String::new(),
         [only] => (*only).to_string(),

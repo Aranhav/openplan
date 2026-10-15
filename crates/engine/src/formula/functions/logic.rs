@@ -1,18 +1,20 @@
 //! `ISBLANK`, `ISNOTBLANK`, `ISANCESTOR` and `ISFIRSTOCCURRENCE`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::hash::Hash;
 
 use crate::error::EngineError;
 use crate::shape::{Axis, Shape};
 use crate::value::{BLANK_DATE, BLANK_ITEM, BLANK_PERIOD, Column, ValueType};
 
-use crate::formula::eval::eval;
+use crate::formula::align::take;
+use crate::formula::eval::{eval, eval_whole};
 use crate::formula::{EvalCtx, TExpr};
 
+use super::axis::Lines;
 use super::dimension::list_axis;
 use super::list::ancestor_in;
-use super::{items_of, mismatch};
+use super::{items_of, mismatch, shared};
 
 /// Whether each cell is blank: empty text, a date, list item or period that is not set, or a
 /// Boolean that is `FALSE`. A number is never blank, not even 0.
@@ -97,9 +99,9 @@ fn occurrence_axis(ctx: &EvalCtx, target: &Shape, args: &[TExpr]) -> Result<usiz
 /// coordinates being the same, has the same value of `x`. A blank is a value like any other, and
 /// a deleted item is no occurrence.
 ///
-/// A cell depends on the cells before it on the axis, which are not in the batch. For each line
-/// of cells along the axis that the batch touches, `x` is evaluated from the start of the line
-/// to the last cell the batch wants, one line at a time.
+/// A cell depends on the cells before it on the axis, which are not in the batch. The flags of
+/// the whole target are worked out once, from `x` evaluated over all of it, and shared by the
+/// chunks.
 pub(super) fn eval_is_first_occurrence(
     ctx: &EvalCtx,
     target: &Shape,
@@ -107,29 +109,22 @@ pub(super) fn eval_is_first_occurrence(
     idx: &[usize],
 ) -> Result<Column, EngineError> {
     let axis = occurrence_axis(ctx, target, args)?;
-    let (stride, len) = (target.strides[axis], target.lens[axis] as usize);
-    let position = |i: usize| i / stride % len;
-
-    // The first cell of each line, with the results that the line is to give: the place of each
-    // in the answer and its position along the axis.
-    let mut lines: HashMap<usize, Vec<(usize, usize)>> = HashMap::new();
-    for (slot, &i) in idx.iter().enumerate() {
-        let origin = i - position(i) * stride;
-        lines.entry(origin).or_default().push((slot, position(i)));
-    }
-    let deleted = deleted_positions(ctx, target, axis);
-    let mut flags = vec![false; idx.len()];
-    for (origin, wanted) in lines {
-        let last = wanted.iter().map(|&(_, position)| position).max();
-        let cells: Vec<usize> = (0..=last.unwrap_or_default())
-            .map(|position| origin + position * stride)
-            .collect();
-        let first = first_flags(&eval(ctx, target, &args[0], &cells)?, &deleted);
-        for (slot, position) in wanted {
-            flags[slot] = first[position];
+    shared(ctx, target, args, idx, || {
+        let values = eval_whole(ctx, target, &args[0])?;
+        let lines = Lines::new(target, axis);
+        let deleted = deleted_positions(ctx, target, axis);
+        let mut flags = vec![false; values.len()];
+        for origin in lines.origins() {
+            let cells: Vec<usize> = (0..lines.len)
+                .map(|position| lines.cell(origin, position))
+                .collect();
+            let first = first_flags(&take(&values, &cells), &deleted);
+            for (&cell, flag) in cells.iter().zip(first) {
+                flags[cell] = flag;
+            }
         }
-    }
-    Ok(Column::Boolean(flags))
+        Ok(Column::Boolean(flags))
+    })
 }
 
 /// Which positions of the axis are deleted items of the list.
