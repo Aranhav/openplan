@@ -679,7 +679,8 @@ impl Alignment {
                 (source, source_versions),
                 (target_layout, target),
                 &matched,
-            ),
+            )
+            .ok()?,
             None => None,
         };
         let free = (0..target.axes.len())
@@ -792,22 +793,23 @@ impl Alignment {
 impl Switchover {
     /// The periods of each version of `target` that show the actual version, if any, for a
     /// source whose Versions axis is the axis `source_versions` of `source` and whose axes
-    /// are those `matched` of the target.
+    /// are those `matched` of the target. An error means the periods cannot be worked out,
+    /// which is different from there being none.
     fn of(
         structure: &Structure,
         (source, source_versions): (&Shape, usize),
         (target_layout, target): (&Layout, &Shape),
         matched: &[usize],
-    ) -> Option<Switchover> {
-        let target_time = target.time_pos()?;
+    ) -> Result<Option<Switchover>, EngineError> {
+        let Some(target_time) = target.time_pos() else {
+            return Ok(None);
+        };
         let target_versions = matched[source_versions];
         let Axis::Time { level, range } = target.axes[target_time] else {
-            return None;
+            return Ok(None);
         };
-        let keys = structure
-            .axis_keys(&Axis::Versions, target_layout.restriction.as_deref())
-            .ok()?;
-        let cutoff = cutoffs(structure, level, range, &keys).ok()?;
+        let keys = structure.axis_keys(&Axis::Versions, target_layout.restriction.as_deref())?;
+        let cutoff = cutoffs(structure, level, range, &keys)?;
         let actual = structure
             .versions()
             .iter()
@@ -815,19 +817,18 @@ impl Switchover {
             .and_then(|version| {
                 keys.iter()
                     .position(|key| *key == Some(version.id.0.as_u128()))
-            })?;
-        let source_time = source.time_pos();
-        cutoff
-            .iter()
-            .any(|&periods| periods > 0)
-            .then_some(Switchover {
-                source_versions,
-                target_versions,
-                target_time,
-                source_time,
-                actual,
-                cutoff,
-            })
+            });
+        let (Some(actual), true) = (actual, cutoff.iter().any(|&periods| periods > 0)) else {
+            return Ok(None);
+        };
+        Ok(Some(Switchover {
+            source_versions,
+            target_versions,
+            target_time,
+            source_time: source.time_pos(),
+            actual,
+            cutoff,
+        }))
     }
 }
 
@@ -835,6 +836,7 @@ impl Switchover {
 mod tests {
     use super::*;
     use crate::calendar::TimeLevel;
+    use crate::ids::TimeRangeId;
 
     fn shape(axes: &[(Axis, u32)]) -> Shape {
         Shape::new(
@@ -855,6 +857,46 @@ mod tests {
             current_month: None,
         });
         Alignment::between(&structure, (&layout, source), (&layout, target)).unwrap()
+    }
+
+    /// A structure whose Forecast shows the Actual version before month 6, and the alignment of
+    /// a grid over `time` and the versions with itself.
+    fn switched_alignment(time: Axis) -> Option<Alignment> {
+        let mut structure = Structure::new(crate::calendar::Calendar {
+            fiscal_year_start_month: 1,
+            first_year: 2026,
+            years: 1,
+            current_month: None,
+        });
+        let forecast = structure.version_by_name("Forecast").unwrap().id;
+        structure
+            .apply(crate::command::Command::UpsertVersion {
+                id: forecast,
+                name: "Forecast".to_string(),
+                is_actual: false,
+                is_current: false,
+                switchover: Some(6),
+            })
+            .unwrap();
+        let layout = Layout {
+            axes: Vec::new(),
+            restriction: None,
+        };
+        let grid = shape(&[(time, 12), (Axis::Versions, 3)]);
+        Alignment::between(&structure, (&layout, &grid), (&layout, &grid))
+    }
+
+    #[test]
+    fn a_switchover_that_cannot_be_worked_out_leaves_no_alignment_to_read_cell_by_cell() {
+        let month = |range| Axis::Time {
+            level: TimeLevel::Month,
+            range,
+        };
+
+        let aligned = switched_alignment(month(None)).unwrap();
+        assert!(aligned.switchover.is_some());
+
+        assert!(switched_alignment(month(Some(TimeRangeId::new()))).is_none());
     }
 
     #[test]
