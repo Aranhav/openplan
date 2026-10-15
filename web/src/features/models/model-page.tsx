@@ -93,7 +93,9 @@ function ModelDetails({ model }: { model: components["schemas"]["ModelDto"] }) {
       <div className="flex max-w-2xl flex-col gap-6">
         <Card>
           <CardHeader>
-            <CardTitle>Model settings</CardTitle>
+            <CardTitle role="heading" aria-level={2}>
+              Model settings
+            </CardTitle>
             <CardDescription>
               {canEdit
                 ? "Change the name, description and mode of this model."
@@ -105,7 +107,9 @@ function ModelDetails({ model }: { model: components["schemas"]["ModelDto"] }) {
         {canEdit && (
           <Card className="border-destructive/50">
             <CardHeader>
-              <CardTitle>Danger zone</CardTitle>
+              <CardTitle role="heading" aria-level={2}>
+                Danger zone
+              </CardTitle>
               <CardDescription>
                 Deleting a model removes it and all its data for good.
               </CardDescription>

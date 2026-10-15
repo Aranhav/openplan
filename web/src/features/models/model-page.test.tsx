@@ -54,6 +54,18 @@ describe("the model page", () => {
     ).toBeVisible()
   })
 
+  it("outlines the page: the model's name, then a heading for each card", async () => {
+    mockSession()
+    serveModels([model])
+    renderApp(`/m/${model.id}`)
+    await screen.findByRole("heading", { level: 1, name: "Revenue plan" })
+
+    expect(screen.getAllByRole("heading", { level: 2 }).map((card) => card.textContent)).toEqual([
+      "Model settings",
+      "Danger zone",
+    ])
+  })
+
   it("shows a production model's mode", async () => {
     mockSession()
     serveModels([{ ...model, mode: "prod" }])
