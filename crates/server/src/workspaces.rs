@@ -86,6 +86,17 @@ fn member_exists() -> AppError {
     }
 }
 
+/// A duplicate membership is `workspace.member_exists`. A missing workspace or
+/// user is `not_found`: the workspace can be deleted after the caller was
+/// authorized for it.
+fn map_member_insert_error(err: sqlx::Error) -> AppError {
+    match err {
+        sqlx::Error::Database(db_err) if db_err.is_unique_violation() => member_exists(),
+        sqlx::Error::Database(db_err) if db_err.is_foreign_key_violation() => AppError::NotFound,
+        other => other.into(),
+    }
+}
+
 fn email_not_found() -> AppError {
     AppError::CodedNotFound {
         code: "user.not_found",
@@ -337,10 +348,7 @@ pub(crate) async fn add_member(
         .bind(body.role)
         .execute(&state.db)
         .await
-        .map_err(|err| match err {
-            sqlx::Error::Database(db_err) if db_err.is_unique_violation() => member_exists(),
-            other => other.into(),
-        })?;
+        .map_err(map_member_insert_error)?;
     let member = MemberDto {
         user_id,
         email,
@@ -428,4 +436,94 @@ pub(crate) async fn remove_member(
         .await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{error::Error as StdError, fmt};
+
+    use sqlx::error::{DatabaseError, ErrorKind};
+
+    use super::*;
+
+    #[derive(Debug)]
+    enum Violation {
+        Unique,
+        ForeignKey,
+        Other,
+    }
+
+    /// A database error of a fixed kind, standing in for one Postgres reports.
+    #[derive(Debug)]
+    struct FakeDatabaseError(Violation);
+
+    impl fmt::Display for FakeDatabaseError {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("fake database error")
+        }
+    }
+
+    impl StdError for FakeDatabaseError {}
+
+    impl DatabaseError for FakeDatabaseError {
+        fn message(&self) -> &str {
+            "fake database error"
+        }
+
+        fn as_error(&self) -> &(dyn StdError + Send + Sync + 'static) {
+            self
+        }
+
+        fn as_error_mut(&mut self) -> &mut (dyn StdError + Send + Sync + 'static) {
+            self
+        }
+
+        fn into_error(self: Box<Self>) -> Box<dyn StdError + Send + Sync + 'static> {
+            self
+        }
+
+        fn kind(&self) -> ErrorKind {
+            match self.0 {
+                Violation::Unique => ErrorKind::UniqueViolation,
+                Violation::ForeignKey => ErrorKind::ForeignKeyViolation,
+                Violation::Other => ErrorKind::Other,
+            }
+        }
+    }
+
+    fn database_error(violation: Violation) -> sqlx::Error {
+        sqlx::Error::Database(Box::new(FakeDatabaseError(violation)))
+    }
+
+    #[test]
+    fn member_insert_maps_unique_violation_to_member_exists() {
+        assert!(matches!(
+            map_member_insert_error(database_error(Violation::Unique)),
+            AppError::Conflict {
+                code: "workspace.member_exists",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn member_insert_maps_foreign_key_violation_to_not_found() {
+        // The workspace was deleted after the caller was authorized for it.
+        assert!(matches!(
+            map_member_insert_error(database_error(Violation::ForeignKey)),
+            AppError::NotFound
+        ));
+    }
+
+    #[test]
+    fn other_member_insert_errors_stay_internal() {
+        assert!(matches!(
+            map_member_insert_error(database_error(Violation::Other)),
+            AppError::Internal(_)
+        ));
+        assert!(matches!(
+            map_member_insert_error(sqlx::Error::PoolTimedOut),
+            AppError::Internal(_)
+        ));
+    }
 }

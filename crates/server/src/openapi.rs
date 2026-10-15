@@ -10,6 +10,7 @@ use crate::{
         },
     },
     authz::WorkspaceRole,
+    models::{Calendar, CreateModelRequest, ModelDto, ModelMode, UpdateModelRequest},
     users::{CreateUserRequest, UpdateUserRequest, UserDto},
     workspaces::{
         AddMemberRequest, ChangeRoleRequest, MemberDto, WorkspaceNameRequest, WorkspaceSummary,
@@ -39,6 +40,11 @@ use crate::{
         crate::workspaces::add_member,
         crate::workspaces::change_member_role,
         crate::workspaces::remove_member,
+        crate::models::list_models,
+        crate::models::create_model,
+        crate::models::get_model,
+        crate::models::update_model,
+        crate::models::delete_model,
     ),
     components(schemas(
         HealthResponse,
@@ -60,6 +66,11 @@ use crate::{
         WorkspaceNameRequest,
         AddMemberRequest,
         ChangeRoleRequest,
+        Calendar,
+        ModelMode,
+        ModelDto,
+        CreateModelRequest,
+        UpdateModelRequest,
     ))
 )]
 pub struct ApiDoc;
