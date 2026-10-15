@@ -1336,8 +1336,18 @@ fn changing_calendar_clears_time_dimensioned_inputs_only() {
     let monthly = new_number(&mut model, monthly_module, "Revenue");
     let flat_module = new_module(&mut model, "Flat", Vec::new());
     let flat = new_number(&mut model, flat_module, "Rate");
+    let start = add_line_item(
+        &mut model,
+        flat_module,
+        "Start",
+        Format::TimePeriod {
+            level: TimeLevel::Quarter,
+        },
+    );
+    let fifth_quarter = Value::Period(Some((TimeLevel::Quarter, 5)));
     set_cell(&mut model, monthly, vec![period("Jan 26")], num(1.0)).unwrap();
     set_cell(&mut model, flat, Vec::new(), num(2.0)).unwrap();
+    set_cell(&mut model, start, Vec::new(), fifth_quarter.clone()).unwrap();
 
     let renamed = Calendar {
         first_year: 2030,
@@ -1350,6 +1360,7 @@ fn changing_calendar_clears_time_dimensioned_inputs_only() {
     assert!(changes.structure_changed);
     assert!(changes.changed_line_items.is_empty());
     assert_eq!(read_one(&model, monthly, vec![period("Jan 30")]), num(1.0));
+    assert_eq!(read_one(&model, start, Vec::new()), fifth_quarter);
     assert_eq!(model.structure().calendar, renamed);
 
     let longer = Calendar {
@@ -1359,15 +1370,19 @@ fn changing_calendar_clears_time_dimensioned_inputs_only() {
     let changes = model
         .apply(Command::SetCalendar { calendar: longer })
         .unwrap();
-    assert_eq!(changes.changed_line_items, vec![monthly]);
+    assert_eq!(changes.changed_line_items.len(), 2);
+    assert!(changes.changed_line_items.contains(&monthly));
+    assert!(changes.changed_line_items.contains(&start));
     assert_eq!(
         model.structure().line_item_shape(monthly).unwrap().lens,
         vec![36]
     );
     assert_eq!(read_one(&model, monthly, vec![period("Jan 30")]), num(0.0));
+    assert_eq!(read_one(&model, start, Vec::new()), Value::Period(None));
     assert_eq!(read_one(&model, flat, Vec::new()), num(2.0));
 
     set_cell(&mut model, monthly, vec![period("Jan 30")], num(5.0)).unwrap();
+    set_cell(&mut model, start, Vec::new(), fifth_quarter).unwrap();
     let april = Calendar {
         fiscal_year_start_month: 4,
         ..longer
@@ -1376,6 +1391,8 @@ fn changing_calendar_clears_time_dimensioned_inputs_only() {
         .apply(Command::SetCalendar { calendar: april })
         .unwrap();
     assert_eq!(read_one(&model, monthly, vec![period("Apr 29")]), num(0.0));
+    assert_eq!(read_one(&model, start, Vec::new()), Value::Period(None));
+    assert_eq!(read_one(&model, flat, Vec::new()), num(2.0));
 }
 
 #[test]
@@ -2381,4 +2398,221 @@ fn model_clone_is_independent() {
     assert_eq!(read_one(&model, value, Vec::new()), num(2.0));
     assert_eq!(copy.structure().lists().count(), 0);
     assert_eq!(copy.generation(), 3);
+}
+
+#[test]
+fn time_scale_cannot_be_finer_than_the_module() {
+    let mut model = model();
+    let module = new_module(
+        &mut model,
+        "Quarterly",
+        vec![AxisSpec::Time {
+            level: TimeLevel::Quarter,
+            range: None,
+        }],
+    );
+    let with_scale = |scale: TimeScale| {
+        let mut li = line_item(module, &format!("LI {scale:?}"), Format::number());
+        li.time_scale = scale;
+        li
+    };
+    let too_fine = model.apply(Command::CreateLineItem(with_scale(TimeScale::Level(
+        TimeLevel::Month,
+    ))));
+    assert_eq!(error_code(too_fine), "structure.invalid");
+    for scale in [
+        TimeScale::Level(TimeLevel::Quarter),
+        TimeScale::Level(TimeLevel::Year),
+        TimeScale::Level(TimeLevel::All),
+        TimeScale::None,
+        TimeScale::Module,
+    ] {
+        model
+            .apply(Command::CreateLineItem(with_scale(scale)))
+            .unwrap();
+    }
+
+    let quarterly = model
+        .structure()
+        .line_item_by_name(Some(module), "LI Level(Quarter)")
+        .unwrap()
+        .id;
+    let patch_too_fine = model.apply(Command::UpdateLineItem {
+        id: quarterly,
+        patch: LineItemPatch {
+            time_scale: Some(TimeScale::Level(TimeLevel::Month)),
+            ..LineItemPatch::default()
+        },
+    });
+    assert_eq!(error_code(patch_too_fine), "structure.invalid");
+
+    let coarser_module = model.apply(Command::UpdateModule {
+        id: module,
+        name: None,
+        axes: Some(vec![AxisSpec::Time {
+            level: TimeLevel::Year,
+            range: None,
+        }]),
+        functional_area: None,
+    });
+    assert_eq!(error_code(coarser_module), "structure.invalid");
+    assert_eq!(
+        model.structure().module(module).unwrap().axes,
+        vec![AxisSpec::Time {
+            level: TimeLevel::Quarter,
+            range: None
+        }]
+    );
+}
+
+#[test]
+fn modules_and_lists_cannot_share_ids() {
+    let mut model = model();
+    let products = new_list(&mut model, "Products");
+    let module = new_module(&mut model, "Sales", Vec::new());
+
+    let module_with_list_id = model.apply(Command::CreateModule {
+        id: ModuleId::for_list_properties(products),
+        name: "Imposter".to_string(),
+        axes: Vec::new(),
+        functional_area: String::new(),
+    });
+    assert_eq!(error_code(module_with_list_id), "structure.invalid");
+    let list_with_module_id = model.apply(Command::CreateList {
+        id: ListId(module.0),
+        name: "Imposter".to_string(),
+        parent: None,
+        top_level_name: None,
+        numbered: false,
+        production_data: false,
+    });
+    assert_eq!(error_code(list_with_module_id), "structure.invalid");
+    assert_eq!(model.structure().modules().count(), 1);
+    assert_eq!(model.structure().lists().count(), 1);
+
+    let salary = line_item(
+        ModuleId::for_list_properties(products),
+        "Salary",
+        Format::number(),
+    );
+    assert!(model.apply(Command::CreateLineItem(salary)).is_ok());
+}
+
+#[test]
+fn line_item_cannot_refer_to_itself() {
+    let mut model = model();
+    let module = new_module(&mut model, "Sales", Vec::new());
+    let other = new_number(&mut model, module, "Other");
+
+    let make = |change: &dyn Fn(&mut LineItem, LineItemId)| {
+        let mut li = line_item(module, "Self", Format::number());
+        let id = li.id;
+        change(&mut li, id);
+        li
+    };
+    let cases: Vec<(&str, LineItem)> = vec![
+        (
+            "read driver",
+            make(&|li, id| li.read_access_driver = Some(id)),
+        ),
+        (
+            "write driver",
+            make(&|li, id| li.write_access_driver = Some(id)),
+        ),
+        (
+            "ratio numerator",
+            make(&|li, id| {
+                li.summary = SummaryMethod::Ratio {
+                    numerator: id,
+                    denominator: other,
+                }
+            }),
+        ),
+        (
+            "ratio denominator",
+            make(&|li, id| {
+                li.summary = SummaryMethod::Ratio {
+                    numerator: other,
+                    denominator: id,
+                }
+            }),
+        ),
+        (
+            "time summary ratio",
+            make(&|li, id| {
+                li.time_summary = Some(SummaryMethod::Ratio {
+                    numerator: id,
+                    denominator: other,
+                })
+            }),
+        ),
+    ];
+    for (name, li) in cases {
+        let result = model.apply(Command::CreateLineItem(li));
+        assert_eq!(error_code(result), "structure.invalid", "{name}");
+    }
+    assert_eq!(model.structure().line_items_in(module).count(), 1);
+
+    let own_id = other;
+    let patched = model.apply(Command::UpdateLineItem {
+        id: own_id,
+        patch: LineItemPatch {
+            read_access_driver: Some(Some(own_id)),
+            ..LineItemPatch::default()
+        },
+    });
+    assert_eq!(error_code(patched), "structure.invalid");
+    let ratio_patch = model.apply(Command::UpdateLineItem {
+        id: own_id,
+        patch: LineItemPatch {
+            summary: Some(SummaryMethod::Ratio {
+                numerator: own_id,
+                denominator: own_id,
+            }),
+            ..LineItemPatch::default()
+        },
+    });
+    assert_eq!(error_code(ratio_patch), "structure.invalid");
+}
+
+#[test]
+fn blank_item_codes_become_none() {
+    let mut model = model();
+    let products = new_list(&mut model, "Products");
+    let coded = |code: Option<&str>, name: &str| ItemSpec {
+        code: code.map(str::to_string),
+        ..item_spec(name)
+    };
+    let first = coded(Some("  "), "A");
+    let second = coded(Some(""), "B");
+    let third = coded(Some(" X1 "), "C");
+    let ids = [first.id, second.id, third.id];
+    model
+        .apply(Command::UpsertListItems {
+            list: products,
+            items: vec![first, second, third],
+        })
+        .unwrap();
+    let list = model.structure().list(products).unwrap();
+    let codes: Vec<_> = list.items().map(|(_, item)| item.code.as_deref()).collect();
+    assert_eq!(codes, [None, None, Some("X1")]);
+
+    model
+        .apply(Command::UpsertListItems {
+            list: products,
+            items: vec![ItemSpec {
+                id: ids[2],
+                ..coded(Some("   "), "C")
+            }],
+        })
+        .unwrap();
+    let list = model.structure().list(products).unwrap();
+    assert_eq!(list.item(2).code, None);
+    assert_eq!(list.find("X1"), None);
+    model
+        .apply(Command::UpsertListItems {
+            list: products,
+            items: vec![coded(Some("X1"), "D")],
+        })
+        .unwrap();
 }

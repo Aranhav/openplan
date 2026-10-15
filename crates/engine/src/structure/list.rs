@@ -131,6 +131,9 @@ impl Structure {
         if self.lists.contains_key(&id) {
             return Err(already_exists("list", id.0));
         }
+        if self.modules.contains_key(&ModuleId(id.0)) {
+            return Err(invalid("A list cannot have the id of a module."));
+        }
         let name = check_name("list", &name, self.lists.values().map(|l| l.name.as_str()))?;
         if let Some(parent) = parent {
             if parent == id {
@@ -309,15 +312,8 @@ impl Structure {
             let name = clean_name("item", &spec.name)?;
             let code = spec
                 .code
-                .map(|code| {
-                    let code = code.trim().to_string();
-                    if code.is_empty() {
-                        Err(invalid("An item code cannot be empty."))
-                    } else {
-                        Ok(code)
-                    }
-                })
-                .transpose()?;
+                .map(|code| code.trim().to_string())
+                .filter(|code| !code.is_empty());
             if !list.numbered && names.insert(fold(&name), spec.id).is_some() {
                 return Err(EngineError::NameTaken { what: "item", name });
             }

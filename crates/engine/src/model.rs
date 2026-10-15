@@ -157,8 +157,9 @@ impl Model {
 
     /// Brings the stored input columns in line with the structure after a change from `old`:
     /// creates columns for new input line items, drops those of deleted or calculated ones,
-    /// clears columns whose axes, type or time scale changed, and lays the rest out again
-    /// by coordinate when items, subset members or versions came or went.
+    /// clears columns whose axes, type or time scale changed (and, when the calendar's years
+    /// or fiscal start month changed, those with a Time axis or period values), and lays the
+    /// rest out again by coordinate when items, subset members or versions came or went.
     fn reconcile_inputs(
         &mut self,
         old: &Structure,
@@ -197,9 +198,11 @@ impl Model {
                 None => Column::new_blank(&ty, shape.size()),
                 Some((column, old_line_item)) => {
                     let old_layout = old.layout(old_line_item)?;
+                    let reinterpreted = time_changed
+                        && (shape.time_pos().is_some() || matches!(ty, ValueType::Period(_)));
                     let cleared = old_line_item.format.value_type() != ty
                         || old_layout != layout
-                        || (time_changed && shape.time_pos().is_some());
+                        || reinterpreted;
                     if cleared {
                         Column::new_blank(&ty, shape.size())
                     } else {
@@ -315,7 +318,8 @@ fn missing_line_item(id: LineItemId) -> EngineError {
 /// For one axis: where each position of the old layout lands in the new one.
 struct AxisMap {
     positions: Vec<Option<u32>>,
-    /// Every position stays where it is and none is added.
+    /// The axis holds the same items, versions or periods in the same places, tombstones
+    /// of deleted items included.
     identity: bool,
 }
 
@@ -356,11 +360,7 @@ impl<'a> AxisMaps<'a> {
             .iter()
             .map(|key| key.and_then(|key| new_positions.get(&key).copied()))
             .collect();
-        let identity = old_keys.len() == new_keys.len()
-            && positions
-                .iter()
-                .enumerate()
-                .all(|(position, mapped)| *mapped == Some(position as u32));
+        let identity = old_keys == new_keys;
         let map = Rc::new(AxisMap {
             positions,
             identity,
@@ -457,5 +457,109 @@ fn blank_value(ty: &ValueType) -> Value {
         ValueType::Date => Value::Date(None),
         ValueType::Item(_) => Value::Item(None),
         ValueType::Period(_) => Value::Period(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::command::ItemSpec;
+    use crate::ids::{ItemId, ModuleId};
+    use crate::structure::{AxisSpec, LineItem, SummaryMethod, TimeScale, VersionsScope};
+
+    fn calendar() -> Calendar {
+        Calendar {
+            fiscal_year_start_month: 1,
+            first_year: 2026,
+            years: 1,
+            current_month: None,
+        }
+    }
+
+    #[test]
+    fn unrelated_commands_leave_columns_of_lists_with_deleted_items_alone() {
+        let mut model = Model::new(calendar());
+        let products = ListId::new();
+        let module = ModuleId::new();
+        let units = LineItemId::new();
+        let items: Vec<ItemId> = (0..3).map(|_| ItemId::new()).collect();
+        model
+            .apply_batch(vec![
+                Command::CreateList {
+                    id: products,
+                    name: "Products".to_string(),
+                    parent: None,
+                    top_level_name: None,
+                    numbered: false,
+                    production_data: false,
+                },
+                Command::UpsertListItems {
+                    list: products,
+                    items: items
+                        .iter()
+                        .enumerate()
+                        .map(|(position, id)| ItemSpec {
+                            id: *id,
+                            code: None,
+                            name: format!("P{position}"),
+                            parent: None,
+                        })
+                        .collect(),
+                },
+                Command::CreateModule {
+                    id: module,
+                    name: "Sales".to_string(),
+                    axes: vec![AxisSpec::List { list: products }],
+                    functional_area: String::new(),
+                },
+                Command::CreateLineItem(LineItem {
+                    id: units,
+                    module,
+                    name: "Units".to_string(),
+                    ordinal: 0,
+                    format: Format::number(),
+                    formula: None,
+                    summary: SummaryMethod::Sum,
+                    time_summary: None,
+                    applies_to: None,
+                    time_scale: TimeScale::Module,
+                    versions: VersionsScope::Module,
+                    notes: String::new(),
+                    code: None,
+                    read_access_driver: None,
+                    write_access_driver: None,
+                }),
+            ])
+            .unwrap();
+        model
+            .apply(Command::SetCells {
+                line_item: units,
+                edits: vec![CellEdit {
+                    coords: vec![CoordToken::Item(items[2])],
+                    value: Value::Number(3.0),
+                }],
+            })
+            .unwrap();
+        let deletion = model
+            .apply(Command::DeleteListItems {
+                list: products,
+                ids: vec![items[1]],
+            })
+            .unwrap();
+        assert_eq!(deletion.changed_line_items, vec![units]);
+
+        let before = Arc::clone(&model.inputs[&units]);
+        let changes = model
+            .apply(Command::CreateList {
+                id: ListId::new(),
+                name: "Regions".to_string(),
+                parent: None,
+                top_level_name: None,
+                numbered: false,
+                production_data: false,
+            })
+            .unwrap();
+        assert!(changes.changed_line_items.is_empty());
+        assert!(Arc::ptr_eq(&before, &model.inputs[&units]));
     }
 }

@@ -8,6 +8,7 @@ use crate::command::Command;
 use crate::error::EngineError;
 use crate::ids::{ItemId, LineItemId, ListId, ModuleId, SubsetId, TimeRangeId, VersionId};
 
+mod layout;
 mod list;
 mod module;
 
@@ -156,7 +157,7 @@ impl Structure {
             .filter(move |li| li.module == module)
     }
 
-    /// Applies a structural command; cell edits do not touch the structure.
+    /// Applies a structural command; `Model` applies `SetCells` itself and never passes it on.
     ///
     /// Rejected commands leave the structure unchanged.
     pub(crate) fn apply(&mut self, command: Command) -> Result<(), EngineError> {
@@ -219,7 +220,7 @@ impl Structure {
             Command::CreateLineItem(line_item) => self.create_line_item(line_item),
             Command::UpdateLineItem { id, patch } => self.update_line_item(id, patch),
             Command::DeleteLineItem { id } => self.delete_line_item(id),
-            Command::SetCells { .. } => Ok(()),
+            Command::SetCells { .. } => unreachable!("SetCells is handled by Model"),
         }
     }
 
@@ -385,6 +386,16 @@ impl Structure {
             current_month: None,
             ..self.calendar
         })
+    }
+
+    fn require_list(&self, id: ListId) -> Result<&List, EngineError> {
+        self.lists.get(&id).ok_or_else(|| not_found("list", id.0))
+    }
+
+    fn require_subset(&self, id: SubsetId) -> Result<&Subset, EngineError> {
+        self.subsets
+            .get(&id)
+            .ok_or_else(|| not_found("subset", id.0))
     }
 
     /// `Module.Line item`, for messages.
