@@ -1,10 +1,11 @@
 import { Check, Lock } from "lucide-react"
-import { memo } from "react"
+import { type ReactNode, memo } from "react"
 import { Skeleton } from "@/components/ui/skeleton"
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { conditionalStyle, styleClassName } from "./conditional-format"
+import { cellId, errorNoteId, switchoverNoteId } from "./cell-notes"
 import { formatValue } from "./core/format-value"
 import type { Format } from "./core/types"
+import { measureTextWidth } from "./measure-text"
 import type { Cell, CellFlag, ConditionalFormat, LineItemInfo } from "./view-types"
 
 // Cells are built by the hundred as the grid scrolls, so their classes are joined from parts that
@@ -12,7 +13,14 @@ import type { Cell, CellFlag, ConditionalFormat, LineItemInfo } from "./view-typ
 const BASE =
   "group/cell absolute top-0 box-border flex h-full select-none items-center border-r border-b text-sm"
 
+// The horizontal padding of a cell (px-2) and its right border.
+const CELL_PADDING = 17
+
 const TEXT_FORMAT: Format = { type: "text" }
+
+// A diagonal hatch in the border colour of the theme: "not applicable", unlike an empty value.
+const HATCH =
+  "bg-[repeating-linear-gradient(135deg,color-mix(in_oklab,var(--muted-foreground)_18%,transparent)_0_1px,transparent_1px_6px)]"
 
 function has(flags: readonly CellFlag[], flag: CellFlag): boolean {
   return flags.includes(flag)
@@ -20,17 +28,19 @@ function has(flags: readonly CellFlag[], flag: CellFlag): boolean {
 
 function surfaceClass(flags: readonly CellFlag[]): string {
   if (has(flags, "na")) {
-    return "bg-muted/60"
+    return HATCH
   }
   if (has(flags, "summary")) {
-    return "bg-muted/40 font-semibold"
+    return "bg-muted font-semibold"
   }
   if (has(flags, "calculated") || has(flags, "switchover") || has(flags, "error")) {
-    return "bg-muted/30"
+    return "bg-muted/60"
   }
   return "bg-background"
 }
 
+// The look of components/ui/checkbox.tsx, drawn as a span: a Radix Checkbox per cell is too heavy
+// for the hundreds of cells of a screen. Keep the two in step when the shadcn one changes.
 function CheckGlyph({ checked, toggles }: { checked: boolean; toggles: boolean }) {
   return (
     <span
@@ -48,7 +58,8 @@ function CheckGlyph({ checked, toggles }: { checked: boolean; toggles: boolean }
 }
 
 type GridCellProps = {
-  id: string
+  /** Makes the ids of the cell and of the notes it points to. */
+  gridId: string
   row: number
   col: number
   /** The column's 1-based number in the grid, the row headers' columns included. */
@@ -69,7 +80,7 @@ type GridCellProps = {
  * when its own value, style or selected state changes.
  */
 export const GridCell = memo(function GridCell({
-  id,
+  gridId,
   row,
   col,
   colIndex,
@@ -82,7 +93,7 @@ export const GridCell = memo(function GridCell({
   gridReadOnly,
 }: GridCellProps) {
   const position = {
-    id,
+    id: cellId(gridId, row, col),
     role: "gridcell",
     "data-row": row,
     "data-col": col,
@@ -101,56 +112,71 @@ export const GridCell = memo(function GridCell({
 
   const { flags } = cell
   const na = has(flags, "na")
+  const error = has(flags, "error")
   const readonly = na || has(flags, "readonly")
-  const blank = na || has(flags, "error")
+  const blank = na || error
   const format = lineItem?.format ?? TEXT_FORMAT
   const style = lineItem && !blank ? conditionalStyle(rules, lineItem, cell) : undefined
+  const bold = style ? style.bold : has(flags, "summary")
 
-  const align =
-    format.type === "number"
-      ? "justify-end tabular-nums"
-      : format.type === "boolean"
-        ? "justify-center"
-        : "justify-start"
+  const rightAligned = format.type === "number"
+  const align = rightAligned
+    ? "justify-end tabular-nums"
+    : format.type === "boolean"
+      ? "justify-center"
+      : "justify-start"
   const cursor = na ? "cursor-default" : readonly ? "cursor-not-allowed" : "cursor-cell"
   const surface = style
     ? `${styleClassName(style)}${has(flags, "summary") && !style.bold ? " font-semibold" : ""}`
     : `${surfaceClass(flags)} text-foreground`
 
-  const isBoolean = format.type === "boolean" && cell.value.t === "boolean" && !blank
-  const content = isBoolean ? (
-    <CheckGlyph
-      checked={cell.value.t === "boolean" && cell.value.v}
-      toggles={!readonly && !gridReadOnly}
-    />
-  ) : blank ? null : (
-    <span className="truncate">{formatValue(cell.value, format, cell.text)}</span>
-  )
+  const note = error
+    ? lineItem && errorNoteId(gridId, lineItem.id)
+    : has(flags, "switchover")
+      ? switchoverNoteId(gridId)
+      : undefined
 
-  const element = (
+  let content: ReactNode
+  let full: string | undefined
+  if (na) {
+    content = <span className="sr-only">Not applicable</span>
+  } else if (error) {
+    content = <span className="sr-only">Error</span>
+  } else if (format.type === "boolean" && cell.value.t === "boolean") {
+    content = (
+      <>
+        <CheckGlyph checked={cell.value.v} toggles={!readonly && !gridReadOnly} />
+        <span className="sr-only">{cell.value.v ? "Checked" : "Not checked"}</span>
+      </>
+    )
+  } else {
+    const text = formatValue(cell.value, format, cell.text)
+    // A number that is cut off reads as another number, so a column too narrow for it shows ###,
+    // like a spreadsheet, and the number itself is the label and the title.
+    const fits = !rightAligned || measureTextWidth(text, bold) <= width - CELL_PADDING
+    full = fits ? undefined : text
+    content = <span className="truncate">{fits ? text : "###"}</span>
+  }
+
+  return (
     <div
       {...position}
+      data-note={error ? "error" : has(flags, "switchover") ? "switchover" : undefined}
       aria-readonly={readonly || undefined}
-      aria-checked={isBoolean && cell.value.t === "boolean" ? cell.value.v : undefined}
+      aria-describedby={note}
+      aria-label={full}
+      title={full}
       className={`${BASE} ${align} ${cursor} ${surface} px-2`}
     >
       {readonly && !na && (
         <Lock
           aria-hidden
-          className="absolute left-1.5 size-3 text-muted-foreground opacity-0 group-hover/cell:opacity-100"
+          className={`absolute size-3 text-muted-foreground opacity-0 group-hover/cell:opacity-100 ${
+            rightAligned ? "left-1.5" : "right-1.5"
+          }`}
         />
       )}
       {content}
     </div>
-  )
-
-  if (!has(flags, "switchover")) {
-    return element
-  }
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>{element}</TooltipTrigger>
-      <TooltipContent>Before the switchover: showing Actual.</TooltipContent>
-    </Tooltip>
   )
 })

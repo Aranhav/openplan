@@ -2,8 +2,9 @@ import { QueryClientProvider } from "@tanstack/react-query"
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { HttpResponse, http } from "msw"
-import { useState } from "react"
+import { useCallback, useMemo, useState } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { QUERY_STALE_TIME } from "@/lib/query-client"
 import { createTestQueryClient } from "@/test/render"
 import { server } from "@/test/server"
 import {
@@ -21,11 +22,22 @@ import {
   salesQuery,
   salesView,
   serveViewQuery,
+  serveViewQueryBy,
 } from "@/test/view-query"
 import type { ViewFixture } from "@/test/view-query"
 import { mockViewport } from "@/test/viewport"
 import { Grid } from "./grid"
-import type { Cell, ConditionalFormat, GridQuery, ViewDim } from "./view-types"
+import type {
+  Cell,
+  ConditionalFormat,
+  GridQuery,
+  MemberRef,
+  ViewDim,
+  ViewQuery,
+} from "./view-types"
+
+// jsdom has no canvas: every character is 8 px wide.
+vi.mock("./measure-text", () => ({ measureTextWidth: (text: string) => text.length * 8 }))
 
 // Each test loads blocks through msw into jsdom, which is slow while the whole suite runs at once.
 vi.setConfig({ testTimeout: 20_000 })
@@ -40,7 +52,7 @@ const regionsList: ViewDim = { kind: "list", list: "list-regions" }
 type GridProps = Parameters<typeof Grid>[0]
 
 function renderGrid(props: Partial<GridProps> = {}) {
-  const queryClient = createTestQueryClient()
+  const queryClient = createTestQueryClient({ staleTime: QUERY_STALE_TIME })
   const view = render(
     <QueryClientProvider client={queryClient}>
       <Grid modelId={MODEL_ID} query={salesQuery} {...props} />
@@ -66,6 +78,10 @@ function cellAt(grid: HTMLElement, row: number, col: number): HTMLElement {
     throw new Error(`No cell rendered at row ${row}, column ${col}`)
   }
   return cell
+}
+
+function handles(grid: HTMLElement, kind: "column" | "row-header") {
+  return Array.from(grid.querySelectorAll<HTMLElement>(`[data-resize="${kind}"]`))
 }
 
 function windows(requests: { window: { row_offset: number; col_offset: number } }[]) {
@@ -261,31 +277,10 @@ describe("headers and cells", () => {
 })
 
 describe("hierarchy", () => {
-  const regionTree = [
-    member("top", "All Regions", { is_summary: true, has_children: true }),
-    member("emea", "EMEA", { depth: 1, has_children: true, collapsed: true }),
-    member("uk", "United Kingdom", { depth: 2 }),
-  ]
-  const months = [
-    member("Jan 26", "Jan 26"),
-    member("Feb 26", "Feb 26"),
-    member("Q1 FY26", "Q1 FY26", { depth: 1, is_summary: true, has_children: true }),
-  ]
-
-  function hierarchyView() {
-    return salesView({
-      rowDims: [regionsList],
-      columnDims: [timeDim],
-      pages: [{ dim: lineItemsDim, member: member("li-0", "Revenue") }],
-      lineItems: [lineItem("li-0", "Revenue")],
-      totalRows: 3,
-      totalColumns: 3,
-      rowHeader: (row) => header(regionTree[row]),
-      columnHeader: (col) => header(months[col]),
-      cell: (row, col) => numberCell(row * 10 + col),
-    })
-  }
-
+  const top = member("top", "All Regions", { is_summary: true, has_children: true })
+  const uk = member("uk", "United Kingdom", { depth: 2 })
+  const jan = member("Jan 26", "Jan 26")
+  const feb = member("Feb 26", "Feb 26")
   const query: GridQuery = {
     module: MODULE_ID,
     rows: [regionsList],
@@ -293,8 +288,65 @@ describe("hierarchy", () => {
     pages: [{ dim: lineItemsDim, key: "li-0" }],
   }
 
+  /** The regions and months of the query, with the members it collapses left out of the view. */
+  function hierarchyFor(q: { collapsed?: MemberRef[] }): ViewFixture {
+    const collapsed = new Set((q.collapsed ?? []).map((m) => m.key))
+    const emea = member("emea", "EMEA", {
+      depth: 1,
+      has_children: true,
+      collapsed: collapsed.has("emea"),
+    })
+    const quarter = member("Q1 FY26", "Q1 FY26", {
+      depth: 1,
+      is_summary: true,
+      has_children: true,
+      collapsed: collapsed.has("Q1 FY26"),
+    })
+    const rows = collapsed.has("emea") ? [top, emea] : [top, emea, uk]
+    const columns = collapsed.has("Q1 FY26") ? [quarter] : [jan, feb, quarter]
+    return salesView({
+      rowDims: [regionsList],
+      columnDims: [timeDim],
+      pages: [{ dim: lineItemsDim, member: member("li-0", "Revenue") }],
+      lineItems: [lineItem("li-0", "Revenue")],
+      totalRows: rows.length,
+      totalColumns: columns.length,
+      rowHeader: (row) => header(rows[row]),
+      columnHeader: (col) => header(columns[col]),
+      cell: (row, col) => numberCell(row * 10 + col),
+    })
+  }
+
+  /** A grid whose parent collapses what is toggled, as the module screen will. */
+  function Collapsing({ onToggle }: { onToggle?: (member: MemberRef) => void }) {
+    const [collapsed, setCollapsed] = useState<MemberRef[]>([])
+    const toggle = useCallback(
+      (target: MemberRef) => {
+        onToggle?.(target)
+        setCollapsed((now) =>
+          now.some((m) => m.key === target.key)
+            ? now.filter((m) => m.key !== target.key)
+            : [...now, target],
+        )
+      },
+      [onToggle],
+    )
+    const current = useMemo(() => ({ ...query, collapsed }), [collapsed])
+    return <Grid modelId={MODEL_ID} query={current} onToggleCollapse={toggle} />
+  }
+
+  function renderCollapsing(onToggle?: (member: MemberRef) => void) {
+    serveViewQueryBy(hierarchyFor)
+    render(
+      <QueryClientProvider client={createTestQueryClient({ staleTime: QUERY_STALE_TIME })}>
+        <Collapsing onToggle={onToggle} />
+      </QueryClientProvider>,
+    )
+    return loadedGrid()
+  }
+
   it("indents each level of depth by 16 px", async () => {
-    serveViewQuery(hierarchyView())
+    serveViewQuery(hierarchyFor(query))
     renderGrid({ query })
     const grid = await loadedGrid()
 
@@ -304,18 +356,87 @@ describe("hierarchy", () => {
     expect(indent("United Kingdom") - indent("EMEA")).toBe(16)
   })
 
-  it("toggles collapse from a chevron on a row header", async () => {
-    serveViewQuery(hierarchyView())
-    const onToggleCollapse = vi.fn()
-    renderGrid({ query, onToggleCollapse })
+  it("draws headers on the page background, summaries on the muted one", async () => {
+    serveViewQuery(hierarchyFor(query))
+    renderGrid({ query })
     const grid = await loadedGrid()
 
-    await userEvent.click(within(grid).getByRole("button", { name: "Collapse All Regions" }))
+    const summaryRow = within(grid).getByRole("rowheader", { name: "All Regions" })
+    expect(summaryRow).toHaveClass("bg-muted", "font-semibold", "text-foreground")
+    const plainRow = within(grid).getByRole("rowheader", { name: "United Kingdom" })
+    expect(plainRow).toHaveClass("bg-background", "font-medium")
+    const month = within(grid).getByRole("columnheader", { name: "Jan 26" })
+    expect(month).toHaveClass("bg-background", "font-medium", "text-muted-foreground")
+    const quarter = within(grid).getByRole("columnheader", { name: "Q1 FY26" })
+    expect(quarter).toHaveClass("bg-muted", "font-semibold", "text-foreground")
+  })
+
+  it("says in the header whether a member with children is expanded", async () => {
+    serveViewQuery(hierarchyFor(query))
+    renderGrid({ query })
+    const grid = await loadedGrid()
+
+    expect(within(grid).getByRole("rowheader", { name: "All Regions" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    )
+    expect(within(grid).getByRole("rowheader", { name: "EMEA" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    )
+    expect(within(grid).getByRole("columnheader", { name: "Q1 FY26" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    )
+    expect(within(grid).getByRole("rowheader", { name: "United Kingdom" })).not.toHaveAttribute(
+      "aria-expanded",
+    )
+    expect(within(grid).getByRole("columnheader", { name: "Jan 26" })).not.toHaveAttribute(
+      "aria-expanded",
+    )
+  })
+
+  it("collapses a row member from its chevron and shows it collapsed", async () => {
+    const onToggle = vi.fn()
+    const grid = await renderCollapsing(onToggle)
+
+    await userEvent.click(within(grid).getByRole("button", { name: "Collapse EMEA" }))
+
+    expect(onToggle).toHaveBeenCalledExactlyOnceWith({ dim: regionsList, key: "emea" })
+    await waitFor(() =>
+      expect(
+        within(grid).queryByRole("rowheader", { name: "United Kingdom" }),
+      ).not.toBeInTheDocument(),
+    )
+    expect(within(grid).getByRole("rowheader", { name: "EMEA" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    )
+    expect(within(grid).getByRole("button", { name: "Expand EMEA" })).toBeInTheDocument()
+    expect(screen.getByText("Collapsed EMEA")).toBeInTheDocument()
+
     await userEvent.click(within(grid).getByRole("button", { name: "Expand EMEA" }))
 
-    expect(onToggleCollapse).toHaveBeenNthCalledWith(1, { dim: regionsList, key: "top" })
-    expect(onToggleCollapse).toHaveBeenNthCalledWith(2, { dim: regionsList, key: "emea" })
-    expect(within(grid).queryByRole("button", { name: /United Kingdom/ })).not.toBeInTheDocument()
+    expect(
+      await within(grid).findByRole("rowheader", { name: "United Kingdom" }),
+    ).toBeInTheDocument()
+    expect(screen.getByText("Expanded EMEA")).toBeInTheDocument()
+  })
+
+  it("collapses a time column member from its chevron", async () => {
+    const onToggle = vi.fn()
+    const grid = await renderCollapsing(onToggle)
+
+    await userEvent.click(within(grid).getByRole("button", { name: "Collapse Q1 FY26" }))
+
+    expect(onToggle).toHaveBeenCalledExactlyOnceWith({ dim: timeDim, key: "Q1 FY26" })
+    await waitFor(() =>
+      expect(within(grid).queryByRole("columnheader", { name: "Jan 26" })).not.toBeInTheDocument(),
+    )
+    expect(within(grid).getByRole("columnheader", { name: "Q1 FY26" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    )
   })
 
   it("draws the chevron of an outer row label on the first row of its group only", async () => {
@@ -347,27 +468,99 @@ describe("hierarchy", () => {
     expect(within(grid).getAllByRole("button", { name: "Collapse EMEA" })).toHaveLength(1)
   })
 
-  it("toggles collapse from a chevron on a time column header", async () => {
-    serveViewQuery(hierarchyView())
-    const onToggleCollapse = vi.fn()
-    renderGrid({ query, onToggleCollapse })
-    const grid = await loadedGrid()
-
-    const quarter = within(grid).getByRole("columnheader", { name: /Q1 FY26/ })
-    await userEvent.click(within(quarter).getByRole("button", { name: "Collapse Q1 FY26" }))
-
-    expect(onToggleCollapse).toHaveBeenCalledExactlyOnceWith({ dim: timeDim, key: "Q1 FY26" })
-    expect(within(grid).queryByRole("button", { name: /Jan 26/ })).not.toBeInTheDocument()
-  })
-
   it("keeps the keyboard on the grid after a chevron is clicked", async () => {
-    serveViewQuery(hierarchyView())
-    renderGrid({ query, onToggleCollapse: vi.fn() })
-    const grid = await loadedGrid()
+    const grid = await renderCollapsing()
 
     await userEvent.click(within(grid).getByRole("button", { name: "Collapse All Regions" }))
 
     expect(grid).toHaveFocus()
+  })
+
+  describe("from the keyboard", () => {
+    const altShift = (key: string) => `{Alt>}{Shift>}{${key}}{/Shift}{/Alt}`
+
+    it("collapses and expands the member of the active row with Alt+Shift+Left and Right", async () => {
+      const onToggle = vi.fn()
+      const grid = await renderCollapsing(onToggle)
+      grid.focus()
+      await userEvent.keyboard("{ArrowDown}")
+
+      await userEvent.keyboard(altShift("ArrowLeft"))
+
+      expect(onToggle).toHaveBeenLastCalledWith({ dim: regionsList, key: "emea" })
+      await waitFor(() =>
+        expect(
+          within(grid).queryByRole("rowheader", { name: "United Kingdom" }),
+        ).not.toBeInTheDocument(),
+      )
+      expect(screen.getByText("Collapsed EMEA")).toBeInTheDocument()
+      expect(grid).toHaveAttribute("aria-activedescendant", cellAt(grid, 1, 0).id)
+
+      await userEvent.keyboard(altShift("ArrowRight"))
+
+      expect(
+        await within(grid).findByRole("rowheader", { name: "United Kingdom" }),
+      ).toBeInTheDocument()
+      expect(screen.getByText("Expanded EMEA")).toBeInTheDocument()
+    })
+
+    it("collapses the member of the active column with Alt+Shift+Up", async () => {
+      const onToggle = vi.fn()
+      const grid = await renderCollapsing(onToggle)
+      grid.focus()
+      await userEvent.keyboard("{ArrowRight}{ArrowRight}")
+
+      await userEvent.keyboard(altShift("ArrowUp"))
+
+      expect(onToggle).toHaveBeenLastCalledWith({ dim: timeDim, key: "Q1 FY26" })
+      await waitFor(() =>
+        expect(
+          within(grid).queryByRole("columnheader", { name: "Jan 26" }),
+        ).not.toBeInTheDocument(),
+      )
+      expect(screen.getByText("Collapsed Q1 FY26")).toBeInTheDocument()
+
+      await userEvent.keyboard(altShift("ArrowDown"))
+
+      expect(await within(grid).findByRole("columnheader", { name: "Jan 26" })).toBeInTheDocument()
+      expect(screen.getByText("Expanded Q1 FY26")).toBeInTheDocument()
+    })
+
+    it("leaves a member that is already in the asked state alone", async () => {
+      const onToggle = vi.fn()
+      const grid = await renderCollapsing(onToggle)
+      grid.focus()
+      await userEvent.keyboard("{ArrowDown}")
+
+      await userEvent.keyboard(altShift("ArrowRight"))
+
+      expect(onToggle).not.toHaveBeenCalled()
+      expect(screen.queryByText(/^(Collapsed|Expanded)/)).not.toBeInTheDocument()
+    })
+
+    it("does nothing on a row or column whose members have no children", async () => {
+      const onToggle = vi.fn()
+      const grid = await renderCollapsing(onToggle)
+      grid.focus()
+      await userEvent.keyboard("{ArrowDown}{ArrowDown}{ArrowRight}")
+
+      await userEvent.keyboard(altShift("ArrowLeft") + altShift("ArrowUp"))
+
+      expect(onToggle).not.toHaveBeenCalled()
+    })
+
+    it("does nothing when the grid cannot collapse", async () => {
+      serveViewQuery(hierarchyFor(query))
+      renderGrid({ query })
+      const grid = await loadedGrid()
+      grid.focus()
+      await userEvent.keyboard("{ArrowDown}")
+
+      await userEvent.keyboard(altShift("ArrowLeft"))
+
+      expect(within(grid).getByRole("rowheader", { name: "United Kingdom" })).toBeInTheDocument()
+      expect(screen.queryByText(/^Collapsed/)).not.toBeInTheDocument()
+    })
   })
 })
 
@@ -417,7 +610,7 @@ describe("cell styling", () => {
     const grid = await renderFlags()
 
     const cell = cellAt(grid, 0, 1)
-    expect(cell).toHaveClass("bg-muted/30", "text-foreground", "cursor-not-allowed", "group/cell")
+    expect(cell).toHaveClass("bg-muted/60", "text-foreground", "cursor-not-allowed", "group/cell")
     expect(cell).toHaveAttribute("aria-readonly", "true")
     expect(cell.querySelector(".lucide-lock")).toHaveClass(
       "opacity-0",
@@ -426,39 +619,144 @@ describe("cell styling", () => {
     expect(cellAt(grid, 0, 0).querySelector(".lucide-lock")).toBeNull()
   })
 
-  it("makes summary cells bold with a stronger tint", async () => {
-    const grid = await renderFlags()
+  it("puts the lock at the end of the cell the text is not at", async () => {
+    serveViewQuery(
+      salesView({
+        cell: (row, col) =>
+          col === 4
+            ? { value: { t: "text", v: "Locked note" }, flags: ["calculated", "readonly"] }
+            : numberCell(row, col === 5 ? ["calculated", "readonly"] : ["input"]),
+      }),
+    )
+    renderGrid()
+    const grid = await loadedGrid()
 
-    expect(cellAt(grid, 0, 2)).toHaveClass("font-semibold", "bg-muted/40", "cursor-not-allowed")
+    expect(cellAt(grid, 0, 5).querySelector(".lucide-lock")).toHaveClass("left-1.5")
+    expect(cellAt(grid, 0, 4).querySelector(".lucide-lock")).toHaveClass("right-1.5")
   })
 
-  it("leaves a cell that does not apply empty and darker", async () => {
+  it("makes summary cells bold on the muted surface", async () => {
+    const grid = await renderFlags()
+
+    expect(cellAt(grid, 0, 2)).toHaveClass("font-semibold", "bg-muted", "cursor-not-allowed")
+    expect(cellAt(grid, 0, 2)).not.toHaveClass("bg-muted/60")
+  })
+
+  it("hatches a cell that does not apply, leaves it empty and says so to a screen reader", async () => {
     const grid = await renderFlags()
 
     const cell = cellAt(grid, 0, 3)
-    expect(cell).toHaveClass("bg-muted/60")
-    expect(cell).toHaveTextContent("")
+    expect(cell.className).toContain("repeating-linear-gradient(135deg")
+    expect(cell.className).toContain("color-mix(in_oklab,var(--muted-foreground)_18%,transparent)")
+    expect(cell).not.toHaveClass("bg-muted/60")
+    expect(cell).toHaveTextContent("Not applicable")
+    expect(within(cell).getByText("Not applicable")).toHaveClass("sr-only")
     expect(cell).toHaveAttribute("aria-readonly", "true")
     expect(cell.querySelector(".lucide-lock")).toBeNull()
   })
 
-  it("explains a cell that shows the actual before the switchover", async () => {
+  it("explains a cell that shows the actual before the switchover, to the pointer and to a screen reader", async () => {
     const grid = await renderFlags()
 
     const cell = cellAt(grid, 0, 4)
-    expect(cell).toHaveClass("bg-muted/30")
+    expect(cell).toHaveClass("bg-muted/60")
+    expect(cell).toHaveAccessibleDescription("Before the switchover: showing Actual.")
     await userEvent.hover(cell)
 
     expect(await screen.findByRole("tooltip")).toHaveTextContent(
       "Before the switchover: showing Actual.",
     )
+    expect(screen.getAllByRole("tooltip")).toHaveLength(1)
   })
 
-  it("leaves a cell in error blank", async () => {
+  it("leaves a cell in error blank and says so", async () => {
     const grid = await renderFlags()
 
-    expect(cellAt(grid, 0, 5)).toHaveTextContent("")
-    expect(cellAt(grid, 0, 5)).toHaveAttribute("aria-readonly", "true")
+    const cell = cellAt(grid, 0, 5)
+    expect(cell).toHaveTextContent("Error")
+    expect(within(cell).getByText("Error")).toHaveClass("sr-only")
+    expect(cell).toHaveClass("bg-muted/60")
+    expect(cell).toHaveAttribute("aria-readonly", "true")
+  })
+
+  it("gives the first formula error of a line item as the description of its blank cells", async () => {
+    const view = flagsView()
+    view.lineItems[5] = lineItem("li-5", "Line item 5", {
+      errors: [
+        {
+          code: "formula.unknown_name",
+          message: "Unknown name 'Pricee'.",
+          start: 0,
+          end: 6,
+          suggestion: null,
+        },
+      ],
+    })
+    serveViewQuery(view)
+    renderGrid({ query: flagsQuery })
+    const grid = await loadedGrid()
+
+    expect(cellAt(grid, 0, 5)).toHaveAccessibleDescription("Unknown name 'Pricee'.")
+    expect(
+      within(grid).getByRole("columnheader", { name: "Line item 5" }),
+    ).toHaveAccessibleDescription("Unknown name 'Pricee'.")
+    expect(cellAt(grid, 0, 0)).not.toHaveAttribute("aria-describedby")
+    await userEvent.hover(cellAt(grid, 0, 5))
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Unknown name 'Pricee'.")
+  })
+
+  it("shows the note of the active cell in the one tooltip while the grid has focus", async () => {
+    const grid = await renderFlags()
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument()
+
+    grid.focus()
+    await userEvent.keyboard("{ArrowRight}{ArrowRight}{ArrowRight}")
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument()
+    await userEvent.keyboard("{ArrowRight}")
+
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "Before the switchover: showing Actual.",
+    )
+    expect(screen.getAllByRole("tooltip")).toHaveLength(1)
+
+    await userEvent.keyboard("{ArrowLeft}")
+    await waitFor(() => expect(screen.queryByRole("tooltip")).not.toBeInTheDocument())
+  })
+
+  it("hides the tooltip when the grid loses focus", async () => {
+    const grid = await renderFlags()
+    grid.focus()
+    await userEvent.keyboard("{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}")
+    await screen.findByRole("tooltip")
+
+    grid.blur()
+
+    await waitFor(() => expect(screen.queryByRole("tooltip")).not.toBeInTheDocument())
+  })
+
+  it("keeps the tooltip while the grid scrolls to the active cell", async () => {
+    const grid = await renderFlags()
+    grid.focus()
+    await userEvent.keyboard("{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}")
+    await screen.findByRole("tooltip")
+
+    fireEvent.scroll(grid)
+    fireEvent.scroll(window)
+
+    expect(screen.getByRole("tooltip")).toBeInTheDocument()
+  })
+
+  it("dismisses the tooltip with Escape and shows it again for the next cell", async () => {
+    const grid = await renderFlags()
+    grid.focus()
+    await userEvent.keyboard("{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}")
+    await screen.findByRole("tooltip")
+
+    await userEvent.keyboard("{Escape}")
+
+    await waitFor(() => expect(screen.queryByRole("tooltip")).not.toBeInTheDocument())
+    await userEvent.keyboard("{ArrowRight}")
+    expect(await screen.findByRole("tooltip")).toBeInTheDocument()
   })
 
   it("right-aligns numbers in tabular figures", async () => {
@@ -466,6 +764,29 @@ describe("cell styling", () => {
 
     expect(cellAt(grid, 0, 0)).toHaveClass("justify-end", "tabular-nums")
     expect(cellAt(grid, 0, 0)).toHaveTextContent("1,234")
+  })
+
+  it("shows ### for a number that does not fit its column, and the number as its label and title", async () => {
+    serveViewQuery()
+    renderGrid({ columnWidths: { "v0|li-0": 48, "v0|li-4": 48 } })
+    const grid = await loadedGrid()
+
+    const narrow = cellAt(grid, 2, 0)
+    expect(narrow).toHaveTextContent("###")
+    expect(narrow).toHaveAttribute("title", "2,000")
+    expect(narrow).toHaveAccessibleName("2,000")
+    expect(cellAt(grid, 2, 1)).toHaveTextContent("$2,001.00")
+    expect(cellAt(grid, 2, 1)).not.toHaveAttribute("title")
+    // Text is clipped with an ellipsis instead, however narrow.
+    expect(cellAt(grid, 2, 4)).toHaveTextContent("Note 2")
+  })
+
+  it("fits a number again when its column is wide enough", async () => {
+    serveViewQuery()
+    renderGrid({ columnWidths: { "v0|li-0": 60 } })
+    const grid = await loadedGrid()
+
+    expect(cellAt(grid, 2, 0)).toHaveTextContent("2,000")
   })
 
   it("marks a line item in error in its header, with the first message as a tooltip", async () => {
@@ -486,7 +807,7 @@ describe("cell styling", () => {
     renderGrid({ query: flagsQuery })
     const grid = await loadedGrid()
 
-    const header = within(grid).getByRole("columnheader", { name: /Line item 1/ })
+    const header = within(grid).getByRole("columnheader", { name: "Line item 1" })
     const icon = within(header).getByRole("img", { name: "Unknown name 'Pricee'." })
     expect(icon).toHaveClass("text-destructive")
     expect(within(grid).getByRole("columnheader", { name: "Line item 0" })).toBeInTheDocument()
@@ -514,10 +835,10 @@ describe("cell styling", () => {
     renderGrid({ query: flagsQuery, conditionalFormats })
     const grid = await loadedGrid()
 
-    expect(cellAt(grid, 2, 0)).toHaveClass("bg-green-500/15", "text-green-700", "font-bold")
+    expect(cellAt(grid, 2, 0)).toHaveClass("bg-green-500/15", "text-green-800", "font-bold")
     expect(cellAt(grid, 2, 0)).not.toHaveClass("bg-background", "text-foreground")
     expect(cellAt(grid, 0, 0)).toHaveClass("bg-blue-500/15", "dark:text-blue-300")
-    expect(cellAt(grid, 0, 3)).toHaveClass("bg-muted/60")
+    expect(cellAt(grid, 0, 3).className).not.toContain("bg-blue")
   })
 
   it("colours a muted rule with the muted tokens", async () => {
@@ -535,7 +856,8 @@ describe("cell styling", () => {
     })
     const grid = await loadedGrid()
 
-    expect(cellAt(grid, 0, 0)).toHaveClass("bg-muted", "text-muted-foreground")
+    expect(cellAt(grid, 0, 0)).toHaveClass("bg-neutral-500/15", "text-neutral-700")
+    expect(cellAt(grid, 0, 0)).not.toHaveClass("bg-muted")
   })
 })
 
@@ -549,8 +871,9 @@ describe("boolean cells", () => {
 
     const checked = cellAt(grid, 0, booleanColumn)
     const unchecked = cellAt(grid, 1, booleanColumn)
-    expect(checked).toHaveAttribute("aria-checked", "true")
-    expect(unchecked).toHaveAttribute("aria-checked", "false")
+    expect(checked).not.toHaveAttribute("aria-checked")
+    expect(within(checked).getByText("Checked")).toHaveClass("sr-only")
+    expect(within(unchecked).getByText("Not checked")).toHaveClass("sr-only")
     expect(checked.querySelector(".lucide-check")).not.toBeNull()
     expect(unchecked.querySelector(".lucide-check")).toBeNull()
     expect(checked).toHaveClass("justify-center")
@@ -884,9 +1207,11 @@ describe("data loading", () => {
     const served = serveViewQuery()
     renderGrid()
     await loadedGrid()
-    await waitFor(() => expect(served.requests.length).toBeGreaterThanOrEqual(4))
+    await waitFor(() => expect(served.requests).toHaveLength(4))
+    await new Promise((resolve) => setTimeout(resolve, 250))
 
-    expect(new Set(windows(served.requests))).toEqual(new Set(["0,0", "0,1", "1,0", "1,1"]))
+    // Each block once, and nothing else, even after the neighbours have settled.
+    expect(windows(served.requests).sort()).toEqual(["0,0", "0,1", "1,0", "1,1"])
     expect(served.requests.every((r) => r.module === MODULE_ID)).toBe(true)
     expect(
       served.requests.every((r) => r.window.row_limit === 100 && r.window.col_limit === 40),
@@ -942,7 +1267,7 @@ describe("column widths", () => {
 
   function renderControlled(onChange = vi.fn()) {
     render(
-      <QueryClientProvider client={createTestQueryClient()}>
+      <QueryClientProvider client={createTestQueryClient({ staleTime: QUERY_STALE_TIME })}>
         <Controlled onChange={onChange} />
       </QueryClientProvider>,
     )
@@ -962,7 +1287,7 @@ describe("column widths", () => {
     serveViewQuery()
     const onChange = renderControlled()
     const grid = await loadedGrid()
-    const [handle] = within(grid).getAllByRole("separator", { name: "Resize column" })
+    const [handle] = handles(grid, "column")
 
     fireEvent.pointerDown(handle, { clientX: 300, pointerId: 1 })
     fireEvent.pointerMove(handle, { clientX: 350, pointerId: 1 })
@@ -980,7 +1305,7 @@ describe("column widths", () => {
     serveViewQuery()
     const onChange = renderControlled()
     const grid = await loadedGrid()
-    const [handle] = within(grid).getAllByRole("separator", { name: "Resize column" })
+    const [handle] = handles(grid, "column")
 
     fireEvent.pointerDown(handle, { clientX: 300, pointerId: 1 })
     fireEvent.pointerMove(handle, { clientX: 0, pointerId: 1 })
@@ -997,11 +1322,78 @@ describe("column widths", () => {
     serveViewQuery()
     const onChange = renderControlled()
     const grid = await loadedGrid()
-    const [handle] = within(grid).getAllByRole("separator", { name: "Resize column" })
+    const [handle] = handles(grid, "column")
 
     fireEvent.pointerDown(handle, { clientX: 300, pointerId: 1 })
     fireEvent.pointerUp(handle, { clientX: 300, pointerId: 1 })
 
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it("keeps the resize handles out of the accessibility tree", async () => {
+    serveViewQuery()
+    renderControlled()
+    const grid = await loadedGrid()
+
+    expect(handles(grid, "column").length).toBeGreaterThan(3)
+    expect(handles(grid, "row-header")).toHaveLength(1)
+    for (const handle of [...handles(grid, "column"), ...handles(grid, "row-header")]) {
+      expect(handle).toHaveAttribute("aria-hidden", "true")
+      expect(handle).not.toHaveAttribute("role")
+    }
+    expect(within(grid).queryAllByRole("separator")).toHaveLength(0)
+  })
+
+  it("puts a column back when the browser takes the pointer from the drag", async () => {
+    serveViewQuery()
+    const onChange = renderControlled()
+    const grid = await loadedGrid()
+    const [handle] = handles(grid, "column")
+
+    fireEvent.pointerDown(handle, { clientX: 300, pointerId: 1 })
+    fireEvent.pointerMove(handle, { clientX: 380, pointerId: 1 })
+    expect(cellAt(grid, 0, 0)).toHaveStyle({ width: "200px" })
+    fireEvent.pointerCancel(handle, { pointerId: 1 })
+
+    expect(cellAt(grid, 0, 0)).toHaveStyle({ width: "120px" })
+    fireEvent.pointerMove(handle, { clientX: 420, pointerId: 1 })
+    fireEvent.pointerUp(handle, { clientX: 420, pointerId: 1 })
+    expect(cellAt(grid, 0, 0)).toHaveStyle({ width: "120px" })
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it("puts a column back when the drag loses the pointer capture", async () => {
+    serveViewQuery()
+    const onChange = renderControlled()
+    const grid = await loadedGrid()
+    const [handle] = handles(grid, "column")
+
+    fireEvent.pointerDown(handle, { clientX: 300, pointerId: 1 })
+    fireEvent.pointerMove(handle, { clientX: 380, pointerId: 1 })
+    fireEvent.lostPointerCapture(handle, { pointerId: 1 })
+
+    expect(cellAt(grid, 0, 0)).toHaveStyle({ width: "120px" })
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it("cancels a drag with Escape, whichever header it is on", async () => {
+    serveViewQuery()
+    const onChange = renderControlled()
+    const grid = await loadedGrid()
+    const [column] = handles(grid, "column")
+    const [rowHeader] = handles(grid, "row-header")
+
+    fireEvent.pointerDown(column, { clientX: 300, pointerId: 1 })
+    fireEvent.pointerMove(column, { clientX: 380, pointerId: 1 })
+    await userEvent.keyboard("{Escape}")
+    expect(cellAt(grid, 0, 0)).toHaveStyle({ width: "120px" })
+    fireEvent.pointerUp(column, { clientX: 380, pointerId: 1 })
+
+    fireEvent.pointerDown(rowHeader, { clientX: 200, pointerId: 1 })
+    fireEvent.pointerMove(rowHeader, { clientX: 260, pointerId: 1 })
+    expect(cellAt(grid, 0, 0)).toHaveStyle({ left: "300px" })
+    await userEvent.keyboard("{Escape}")
+    expect(cellAt(grid, 0, 0)).toHaveStyle({ left: "240px" })
     expect(onChange).not.toHaveBeenCalled()
   })
 
@@ -1010,7 +1402,7 @@ describe("column widths", () => {
     const onChange = vi.fn()
     renderGrid({ columnWidths: { [key]: 200, other: 90 }, onColumnWidthsChange: onChange })
     const grid = await loadedGrid()
-    const [handle] = within(grid).getAllByRole("separator", { name: "Resize column" })
+    const [handle] = handles(grid, "column")
 
     fireEvent.doubleClick(handle)
 
@@ -1021,7 +1413,7 @@ describe("column widths", () => {
     serveViewQuery()
     renderGrid()
     const grid = await loadedGrid()
-    const [handle] = within(grid).getAllByRole("separator", { name: "Resize row headers" })
+    const [handle] = handles(grid, "row-header")
 
     fireEvent.pointerDown(handle, { clientX: 200, pointerId: 1 })
     fireEvent.pointerMove(handle, { clientX: 260, pointerId: 1 })
@@ -1037,5 +1429,188 @@ describe("column widths", () => {
     expect(within(grid).getByRole("rowheader", { name: "Product 1" })).toHaveStyle({
       width: "240px",
     })
+  })
+})
+
+describe("keyboard", () => {
+  it("keeps the browser from scrolling the grid for any key the grid takes", async () => {
+    serveViewQuery()
+    renderGrid()
+    const grid = await loadedGrid()
+    grid.focus()
+
+    // Space, typing, Enter, Delete and Escape are for the editor to come, but not for the page.
+    for (const key of [
+      " ",
+      "a",
+      "Enter",
+      "Delete",
+      "Escape",
+      "F2",
+      "PageDown",
+      "ArrowDown",
+      "Tab",
+    ]) {
+      expect(
+        fireEvent.keyDown(grid, { key }),
+        `${JSON.stringify(key)} was left to the browser`,
+      ).toBe(false)
+    }
+    expect(fireEvent.keyDown(grid, { key: "c", ctrlKey: true })).toBe(false)
+    expect(fireEvent.keyDown(grid, { key: "z", ctrlKey: true })).toBe(false)
+  })
+
+  it("leaves the keys that are not the grid's to the browser", async () => {
+    serveViewQuery()
+    renderGrid()
+    const grid = await loadedGrid()
+
+    expect(fireEvent.keyDown(grid, { key: "F5" })).toBe(true)
+    expect(fireEvent.keyDown(grid, { key: "ArrowLeft", altKey: true })).toBe(true)
+    expect(fireEvent.keyDown(grid, { key: "Shift", shiftKey: true })).toBe(true)
+  })
+
+  it("announces how many cells a range holds as it grows", async () => {
+    serveViewQuery()
+    renderGrid()
+    const grid = await loadedGrid()
+    grid.focus()
+    expect(screen.queryByText(/selected$/)).not.toBeInTheDocument()
+
+    await userEvent.keyboard("{Shift>}{ArrowDown}{ArrowRight}{ArrowRight}{/Shift}")
+    expect(screen.getByText("2 rows by 3 columns selected")).toBeInTheDocument()
+
+    await userEvent.keyboard("{Shift>}{ArrowUp}{ArrowLeft}{ArrowLeft}{/Shift}")
+    expect(screen.queryByText(/selected$/)).not.toBeInTheDocument()
+
+    await userEvent.keyboard("{Shift>}{ArrowRight}{/Shift}")
+    expect(screen.getByText("1 row by 2 columns selected")).toBeInTheDocument()
+  })
+
+  it("is a polite status region that a screen reader reads without moving focus", async () => {
+    serveViewQuery()
+    renderGrid()
+    await loadedGrid()
+
+    const regions = screen.getAllByRole("status")
+    expect(regions.length).toBeGreaterThanOrEqual(2)
+    for (const region of regions) {
+      expect(region).toHaveClass("sr-only")
+    }
+  })
+})
+
+describe("scrolling to the active cell", () => {
+  it("scrolls again when headers that arrive late change where the active column is", async () => {
+    // Column 45 of the second block of columns has a custom width, and its headers come late.
+    server.use(
+      http.post("/api/v1/models/:id/query", async ({ request }) => {
+        const query = (await request.json()) as ViewQuery
+        if (query.window.col_offset > 0) {
+          await new Promise((resolve) => setTimeout(resolve, 300))
+        }
+        return HttpResponse.json(answer(salesView(), query))
+      }),
+    )
+    renderGrid({ columnWidths: { "v1|li-20": 300 } })
+    const grid = await loadedGrid()
+    grid.focus()
+
+    await userEvent.keyboard("{Control>}{ArrowRight}{/Control}")
+
+    // Judged by the 120 px every column has until its header is known.
+    expect(grid.scrollLeft).toBe(240 + 50 * 120 - VIEWPORT.width)
+    await waitFor(() => expect(grid.scrollLeft).toBe(240 + 50 * 120 + 180 - VIEWPORT.width), {
+      timeout: 3000,
+    })
+  })
+
+  it("does not pull the grid back to the active cell once it has been scrolled away", async () => {
+    server.use(
+      http.post("/api/v1/models/:id/query", async ({ request }) => {
+        const query = (await request.json()) as ViewQuery
+        return HttpResponse.json(answer(salesView(), query))
+      }),
+    )
+    const { rerender, queryClient } = renderGrid({ columnWidths: {} })
+    const grid = await loadedGrid()
+    grid.focus()
+    await userEvent.keyboard("{Control>}{ArrowRight}{/Control}")
+    await new Promise((resolve) => setTimeout(resolve, 1100))
+    grid.scrollLeft = 0
+
+    rerender(
+      <QueryClientProvider client={queryClient}>
+        <Grid modelId={MODEL_ID} query={salesQuery} columnWidths={{ "v0|li-3": 200 }} />
+      </QueryClientProvider>,
+    )
+    await new Promise((resolve) => setTimeout(resolve, 100))
+
+    expect(grid.scrollLeft).toBe(0)
+  })
+})
+
+describe("views without a dimension on an axis", () => {
+  it("draws a view with no column dimension as one column without a header", async () => {
+    serveViewQuery(
+      salesView({
+        rowDims: [lineItemsDim],
+        columnDims: [],
+        totalRows: 3,
+        totalColumns: 1,
+        lineItems: [lineItem("li-a", "Units"), lineItem("li-b", "Price"), lineItem("li-c", "Cost")],
+        rowHeader: (row) => header(member(`li-${"abc"[row]}`, ["Units", "Price", "Cost"][row])),
+        columnHeader: () => header(),
+        cell: (row) => numberCell((row + 1) * 100),
+      }),
+    )
+    renderGrid({ query: { ...salesQuery, rows: [lineItemsDim], columns: [] } })
+    const grid = await loadedGrid()
+
+    expect(within(grid).queryAllByRole("columnheader")).toHaveLength(0)
+    expect(grid).toHaveAttribute("aria-rowcount", "3")
+    expect(grid).toHaveAttribute("aria-colcount", "2")
+    expect(cellAt(grid, 1, 0)).toHaveTextContent("200")
+    expect(cellAt(grid, 1, 0).closest("[role='row']")).toHaveAttribute("aria-rowindex", "2")
+    expect(within(grid).getByRole("rowheader", { name: "Cost" })).toBeInTheDocument()
+  })
+
+  it("draws a view with no row dimension as one row without headers", async () => {
+    serveViewQuery(
+      salesView({
+        rowDims: [],
+        columnDims: [lineItemsDim],
+        totalRows: 1,
+        totalColumns: 3,
+        lineItems: [lineItem("li-a", "Units"), lineItem("li-b", "Price"), lineItem("li-c", "Cost")],
+        rowHeader: () => header(),
+        columnHeader: (col) => header(member(`li-${"abc"[col]}`, ["Units", "Price", "Cost"][col])),
+        cell: (_, col) => numberCell((col + 1) * 100),
+      }),
+    )
+    renderGrid({ query: { ...salesQuery, rows: [], columns: [lineItemsDim] } })
+    const grid = await loadedGrid()
+
+    expect(within(grid).queryAllByRole("rowheader")).toHaveLength(0)
+    expect(grid).toHaveAttribute("aria-rowcount", "2")
+    expect(grid).toHaveAttribute("aria-colcount", "3")
+    expect(cellAt(grid, 0, 2)).toHaveTextContent("300")
+    expect(cellAt(grid, 0, 0)).toHaveStyle({ left: "0px" })
+    expect(within(grid).getByRole("columnheader", { name: "Price" })).toBeInTheDocument()
+  })
+})
+
+describe("forced colours", () => {
+  it("keeps the selection visible when box shadows are not drawn", async () => {
+    serveViewQuery()
+    renderGrid()
+    const grid = await loadedGrid()
+    grid.focus()
+    await userEvent.keyboard("{Shift>}{ArrowDown}{/Shift}")
+
+    const active = grid.querySelector('[data-selection="active"]')
+    const range = grid.querySelector('[data-selection="range"]')
+    expect(active?.className).toContain("forced-colors:outline-2")
+    expect(range?.className).toContain("forced-colors:outline")
   })
 })

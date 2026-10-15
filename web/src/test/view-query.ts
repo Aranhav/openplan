@@ -177,6 +177,22 @@ export function serveViewQuery(fixture: ViewFixture = salesView()): ServedView {
   return served
 }
 
+/**
+ * Like `serveViewQuery`, for a view that depends on the query: `fixtureFor` builds the fixture
+ * of each query it is asked, so a test can collapse or hide members and see the answer change.
+ */
+export function serveViewQueryBy(fixtureFor: (query: ViewQuery) => ViewFixture) {
+  const requests: ViewQuery[] = []
+  server.use(
+    http.post("/api/v1/models/:id/query", async ({ request }) => {
+      const query = (await request.json()) as ViewQuery
+      requests.push(query)
+      return HttpResponse.json(answer(fixtureFor(query), query))
+    }),
+  )
+  return { requests }
+}
+
 /** Makes the query endpoint refuse every request. */
 export function failViewQuery(detail = "The query is not valid.") {
   server.use(http.post("/api/v1/models/:id/query", () => problem(422, "structure.invalid", detail)))

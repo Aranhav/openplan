@@ -17,9 +17,10 @@ import { EmptyState } from "@/components/empty-state"
 import { ErrorState } from "@/components/error-state"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
-import { TooltipProvider } from "@/components/ui/tooltip"
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
-import { resolveKey } from "./core/keymap"
+import { SWITCHOVER_NOTE, cellId, errorNoteId, noteOf, switchoverNoteId } from "./cell-notes"
+import { type GridCommand, resolveKey } from "./core/keymap"
 import { type CellRange, type Pos, rangeOf } from "./core/selection"
 import { GridCell } from "./grid-cell"
 import { ColumnHeaders, type HeaderCallbacks, RowHeaders } from "./grid-headers"
@@ -27,19 +28,24 @@ import {
   DEFAULT_COLUMN_WIDTH,
   HEADER_ROW_HEIGHT,
   ROW_HEIGHT,
-  clampWidth,
   columnAt,
-  columnKey,
-  defaultRowHeaderWidth,
   lineItemIdAt,
   lineItemSource,
-  prefixSums,
   revealOffset,
-  without,
 } from "./grid-layout"
+import { useColumnWidths } from "./use-column-widths"
+import { cellOf, useDragSelect } from "./use-drag-select"
 import { sameSelection, useGridSelection } from "./use-grid-selection"
+import { useHoveredNote } from "./use-hovered-note"
 import { useViewData } from "./use-view-data"
-import type { ConditionalFormat, GridQuery, LineItemInfo, MemberRef } from "./view-types"
+import type {
+  ConditionalFormat,
+  GridQuery,
+  LineItemInfo,
+  Member,
+  MemberRef,
+  ViewDim,
+} from "./view-types"
 
 const NO_RULES: readonly ConditionalFormat[] = []
 const NO_WIDTHS: Readonly<Record<string, number>> = {}
@@ -98,13 +104,17 @@ function GridSkeleton() {
   )
 }
 
-type RowHeaderWidths = { count: number; widths: Readonly<Record<number, number>> }
+// How long after the active cell moves that headers arriving late may still move the grid to it.
+const LATE_HEADERS_MS = 1000
 
-/** The cell a pointer event is over, if it is over one. */
-function cellOf(target: EventTarget | null): Pos | undefined {
-  const cell =
-    target instanceof Element ? target.closest<HTMLElement>("[data-row][data-col]") : null
-  return cell ? { row: Number(cell.dataset.row), col: Number(cell.dataset.col) } : undefined
+/** How many cells a range holds, in words, or nothing for a single cell. */
+function selectionMessage(range: CellRange): string {
+  const rows = range.rowEnd - range.rowStart + 1
+  const cols = range.colEnd - range.colStart + 1
+  if (rows === 1 && cols === 1) {
+    return ""
+  }
+  return `${rows} ${rows === 1 ? "row" : "rows"} by ${cols} ${cols === 1 ? "column" : "columns"} selected`
 }
 
 /**
@@ -132,37 +142,17 @@ export function Grid({
   const { rowDims, columnDims, totalRows, totalColumns, rowHeaders, colHeaders } = data
 
   const { selection, select, run } = useGridSelection({ rows: totalRows, cols: totalColumns })
+  const startDrag = useDragSelect(select)
 
-  // Widths: the row header columns are the grid's own; the columns' come from the parent.
-  const [dragged, setDragged] = useState<{ key: string; width: number } | null>(null)
-  const [rowHeaderOverrides, setRowHeaderOverrides] = useState<RowHeaderWidths>({
-    count: 0,
-    widths: {},
+  const { rowHeaderWidths, rowHeaderWidth, colWidths, colStarts, callbacks } = useColumnWidths({
+    rowDimCount: rowDims.length,
+    totalColumns,
+    colHeaders,
+    columnWidths,
+    onColumnWidthsChange,
   })
   const rowDimCount = rowDims.length
-  const rowHeaderWidths = useMemo(() => {
-    const fallback = defaultRowHeaderWidth(rowDimCount)
-    const overrides = rowHeaderOverrides.count === rowDimCount ? rowHeaderOverrides.widths : {}
-    return Array.from({ length: rowDimCount }, (_, level) => overrides[level] ?? fallback)
-  }, [rowDimCount, rowHeaderOverrides])
-  const rowHeaderWidth = rowHeaderWidths.reduce((sum, width) => sum + width, 0)
   const headerHeight = columnDims.length * HEADER_ROW_HEIGHT
-
-  const colWidths = useMemo(
-    () =>
-      Array.from({ length: totalColumns }, (_, col) => {
-        const header = colHeaders(col)
-        if (!header) {
-          return DEFAULT_COLUMN_WIDTH
-        }
-        const key = columnKey(header)
-        return dragged?.key === key
-          ? dragged.width
-          : clampWidth(columnWidths[key] ?? DEFAULT_COLUMN_WIDTH)
-      }),
-    [totalColumns, colHeaders, columnWidths, dragged],
-  )
-  const colStarts = useMemo(() => prefixSums(colWidths), [colWidths])
   const contentWidth = rowHeaderWidth + colStarts[colStarts.length - 1]
   const contentHeight = headerHeight + totalRows * ROW_HEIGHT
 
@@ -208,6 +198,7 @@ export function Grid({
     onChange: trackColumns,
   })
 
+  // One object for each line item, and where a cell finds its line item.
   const lineItems = useMemo(
     () => new Map<string, LineItemInfo>(data.lineItems.map((lineItem) => [lineItem.id, lineItem])),
     [data.lineItems],
@@ -216,12 +207,10 @@ export function Grid({
     () => lineItemSource(rowDims, columnDims, data.pages),
     [rowDims, columnDims, data.pages],
   )
+  const lineItemIdOf = (row: number, col: number) =>
+    lineItemIdAt(lineItemSourceOfCells, rowHeaders(row), colHeaders(col))
 
-  const activeLineItemId = lineItemIdAt(
-    lineItemSourceOfCells,
-    rowHeaders(selection.anchor.row),
-    colHeaders(selection.anchor.col),
-  )
+  const activeLineItemId = lineItemIdOf(selection.anchor.row, selection.anchor.col)
   const reportLineItem = useEffectEvent((id: string) => onSelectLineItem?.(id))
   useEffect(() => {
     if (activeLineItemId !== undefined) {
@@ -229,7 +218,9 @@ export function Grid({
     }
   }, [activeLineItemId])
 
-  // Keep the end of the range that moves in view, clear of the sticky headers.
+  // Keep the end of the range that moves in view, clear of the sticky headers. Columns whose
+  // headers have not loaded count as the default width, so when headers arrive soon after the
+  // active cell has moved, its place has moved too, and the grid goes to it again.
   const reveal = useEffectEvent((cell: Pos) => {
     const element = scrollRef.current
     if (!element || cell.row >= totalRows || cell.col >= totalColumns) {
@@ -251,50 +242,70 @@ export function Grid({
     )
   })
   const { row: focusRow, col: focusCol } = selection.focus
+  const focusStart = colStarts[focusCol]
+  const revealed = useRef<{ row: number; col: number; until: number } | null>(null)
   useEffect(() => {
-    reveal({ row: focusRow, col: focusCol })
-  }, [focusRow, focusCol])
+    const previous = revealed.current
+    const moved = previous?.row !== focusRow || previous.col !== focusCol
+    const until = moved ? Date.now() + LATE_HEADERS_MS : (previous?.until ?? 0)
+    revealed.current = { row: focusRow, col: focusCol, until }
+    if (moved || Date.now() < until) {
+      reveal({ row: focusRow, col: focusCol })
+    }
+  }, [focusRow, focusCol, focusStart])
 
-  const dragAbort = useRef<AbortController | null>(null)
-  useEffect(() => () => dragAbort.current?.abort(), [])
-
-  const toggleCollapse = useMemo(
+  const [announcement, setAnnouncement] = useState("")
+  const toggleMember = useMemo(
     () =>
       onToggleCollapse &&
-      ((member: MemberRef) => {
-        onToggleCollapse(member)
+      ((dim: ViewDim, member: Member) => {
+        onToggleCollapse({ dim, key: member.key })
         scrollRef.current?.focus({ preventScroll: true })
+        setAnnouncement(`${member.collapsed ? "Expanded" : "Collapsed"} ${member.label}`)
       }),
     [onToggleCollapse],
   )
+  const headerCallbacks: HeaderCallbacks = { ...callbacks, onToggleCollapse: toggleMember }
 
-  const headerCallbacks: HeaderCallbacks = {
-    onToggleCollapse: toggleCollapse,
-    columns: onColumnWidthsChange && {
-      onResize: (key, width) => setDragged({ key, width }),
-      onResizeEnd: (key, width) => {
-        onColumnWidthsChange({ ...columnWidths, [key]: width })
-        setDragged(null)
-      },
-      onReset: (key) => onColumnWidthsChange(without(columnWidths, key)),
-    },
-    onRowHeaderResize: (level, width) =>
-      setRowHeaderOverrides((previous) => ({
-        count: rowDimCount,
-        widths: {
-          ...(previous.count === rowDimCount ? previous.widths : {}),
-          [level]: width,
-        },
-      })),
-    onRowHeaderResizeReset: (level) =>
-      setRowHeaderOverrides((previous) => ({
-        count: rowDimCount,
-        widths: without(previous.count === rowDimCount ? previous.widths : {}, level),
-      })),
+  // The notes: what a switchover or error cell cannot say by its value, in one tooltip that
+  // follows the pointer, or the active cell while the grid has focus.
+  const [focused, setFocused] = useState(false)
+  const { hovered, onPointerOver, onPointerLeave } = useHoveredNote()
+  const active = selection.anchor
+  const tipCell = hovered ?? (focused ? active : null)
+  const tipKey = tipCell ? `${tipCell.row}:${tipCell.col}` : ""
+  const tipNote = tipCell
+    ? noteOf(
+        data.cell(tipCell.row, tipCell.col),
+        lineItems.get(lineItemIdOf(tipCell.row, tipCell.col) ?? ""),
+      )
+    : undefined
+  const [dismissed, setDismissed] = useState("")
+  if (dismissed !== "" && dismissed !== tipKey) {
+    setDismissed("")
   }
 
   function pageRows(element: HTMLElement): number {
     return Math.floor((element.clientHeight - headerHeight) / ROW_HEIGHT)
+  }
+
+  /** Collapses or expands the member with children in the header of the active row or column. */
+  function collapseActive(command: Extract<GridCommand, { type: "collapse" }>) {
+    const header = command.axis === "row" ? rowHeaders(active.row) : colHeaders(active.col)
+    const dims = command.axis === "row" ? rowDims : columnDims
+    if (!toggleMember || !header) {
+      return
+    }
+    for (let level = header.members.length - 1; level >= 0; level--) {
+      const member = header.members[level]
+      if (member.has_children) {
+        // Only a member that is not in the state asked for changes.
+        if (member.collapsed === command.expand) {
+          toggleMember(dims[level], member)
+        }
+        return
+      }
+    }
   }
 
   function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
@@ -302,14 +313,20 @@ export function Grid({
     if (event.target !== event.currentTarget) {
       return
     }
-    const next = run(resolveKey(event.nativeEvent, "navigate"), pageRows(event.currentTarget))
-    if (!next) {
+    const command = resolveKey(event.nativeEvent, "navigate")
+    if (command.type === "none") {
       return
     }
-    // Tab on the last cell, or Shift+Tab on the first, goes on to the next control.
-    if (event.key === "Tab" && sameSelection(next, selection)) {
-      return
+    if (command.type === "collapse") {
+      collapseActive(command)
+    } else {
+      const next = run(command, pageRows(event.currentTarget))
+      // Tab on the last cell, or Shift+Tab on the first, goes on to the next control.
+      if (next && event.key === "Tab" && sameSelection(next, selection)) {
+        return
+      }
     }
+    // What the grid takes, the browser does not do as well: no scrolling by Space, for one.
     event.preventDefault()
   }
 
@@ -336,25 +353,7 @@ export function Grid({
     const element = event.currentTarget
     element.focus({ preventScroll: true })
     select(cell, event.shiftKey)
-
-    dragAbort.current?.abort()
-    const abort = new AbortController()
-    dragAbort.current = abort
-    let last = cell
-    window.addEventListener(
-      "pointermove",
-      (move) => {
-        const over = cellNear(move, element)
-        if (over && (over.row !== last.row || over.col !== last.col)) {
-          last = over
-          select(over, true)
-        }
-      },
-      { signal: abort.signal },
-    )
-    const end = () => abort.abort()
-    window.addEventListener("pointerup", end, { signal: abort.signal })
-    window.addEventListener("pointercancel", end, { signal: abort.signal })
+    startDrag(cell, (move) => cellNear(move, element))
   }
 
   function handleClick(event: ReactMouseEvent<HTMLDivElement>) {
@@ -398,8 +397,7 @@ export function Grid({
   const columnItems = columnVirtualizer.getVirtualItems()
   const cols = columnItems.map((item) => item.index)
   const range = rangeOf(selection)
-  const active = selection.anchor
-  const activeId = `${gridId}-r${active.row}c${active.col}`
+  const activeId = cellId(gridId, active.row, active.col)
   const activeRendered =
     rowItems.some((item) => item.index === active.row) && cols.includes(active.col)
 
@@ -410,11 +408,12 @@ export function Grid({
     width: colStarts[colEnd + 1] - colStarts[colStart],
   })
   const multiple = range.rowStart !== range.rowEnd || range.colStart !== range.colEnd
+  const anchor = tipCell ?? active
 
   return (
     <Frame className={className}>
       {data.error && <ErrorState error={data.error} onRetry={() => void data.refetch()} />}
-      <div className="relative min-h-0 flex-1 overflow-hidden rounded-md border bg-background has-[:focus-visible]:border-ring has-[:focus-visible]:ring-[3px] has-[:focus-visible]:ring-ring/50">
+      <div className="relative min-h-0 flex-1 overflow-hidden rounded-md border bg-background has-[:focus-visible]:border-ring has-[:focus-visible]:ring-[3px] has-[:focus-visible]:ring-ring/50 forced-colors:has-[:focus-visible]:outline-2">
         <TooltipProvider delayDuration={300}>
           <div
             ref={scrollRef}
@@ -430,10 +429,15 @@ export function Grid({
             className="group/grid h-full overflow-auto overscroll-contain bg-background outline-none"
             onKeyDown={handleKeyDown}
             onPointerDown={handlePointerDown}
+            onPointerOver={onPointerOver}
+            onPointerLeave={onPointerLeave}
             onClick={handleClick}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setFocused(false)}
           >
             <div className="relative" style={{ width: contentWidth, height: contentHeight }}>
               <ColumnHeaders
+                gridId={gridId}
                 columnDims={columnDims}
                 cols={cols}
                 colStarts={colStarts}
@@ -455,12 +459,13 @@ export function Grid({
                     style={{ top: rowItem.start, height: ROW_HEIGHT, width: contentWidth }}
                   >
                     <RowHeaders
+                      gridId={gridId}
                       header={rowHeader}
                       previous={rowHeaders(row - 1)}
                       rowDims={rowDims}
                       widths={rowHeaderWidths}
                       lineItems={lineItems}
-                      onToggleCollapse={toggleCollapse}
+                      onToggleCollapse={toggleMember}
                     />
                     {cols.map((col) => {
                       const lineItemId = lineItemIdAt(
@@ -471,7 +476,7 @@ export function Grid({
                       return (
                         <GridCell
                           key={col}
-                          id={`${gridId}-r${row}c${col}`}
+                          gridId={gridId}
                           row={row}
                           col={col}
                           colIndex={rowDimCount + col + 1}
@@ -498,18 +503,50 @@ export function Grid({
               {multiple && (
                 <div
                   aria-hidden
-                  className="pointer-events-none absolute z-5 bg-primary/10 ring-1 ring-primary ring-inset"
+                  data-selection="range"
+                  className="pointer-events-none absolute z-5 bg-primary/10 ring-1 ring-primary ring-inset forced-colors:outline-1 forced-colors:-outline-offset-1"
                   style={rect(range.rowStart, range.rowEnd, range.colStart, range.colEnd)}
                 />
               )}
               <div
                 aria-hidden
-                className="pointer-events-none absolute z-5 ring-2 ring-primary/40 ring-inset group-focus/grid:ring-primary"
+                data-selection="active"
+                className="pointer-events-none absolute z-5 ring-2 ring-primary/40 ring-inset group-focus/grid:ring-primary forced-colors:outline-2 forced-colors:-outline-offset-2"
                 style={rect(active.row, active.row, active.col, active.col)}
               />
+              {/* Radix closes a tooltip when anything that holds its trigger scrolls, and the grid
+                  scrolls to the active cell as the keys move it; only Escape dismisses this one. */}
+              <Tooltip open={tipNote !== undefined && dismissed !== tipKey}>
+                <TooltipTrigger asChild>
+                  <div
+                    aria-hidden
+                    className="pointer-events-none absolute"
+                    style={rect(anchor.row, anchor.row, anchor.col, anchor.col)}
+                  />
+                </TooltipTrigger>
+                <TooltipContent onEscapeKeyDown={() => setDismissed(tipKey)}>
+                  {tipNote}
+                </TooltipContent>
+              </Tooltip>
             </div>
           </div>
         </TooltipProvider>
+      </div>
+      <div hidden>
+        <span id={switchoverNoteId(gridId)}>{SWITCHOVER_NOTE}</span>
+        {data.lineItems
+          .filter((lineItem) => lineItem.errors.length > 0)
+          .map((lineItem) => (
+            <span key={lineItem.id} id={errorNoteId(gridId, lineItem.id)}>
+              {lineItem.errors[0].message}
+            </span>
+          ))}
+      </div>
+      <div role="status" className="sr-only">
+        {announcement}
+      </div>
+      <div role="status" className="sr-only">
+        {selectionMessage(range)}
       </div>
     </Frame>
   )
