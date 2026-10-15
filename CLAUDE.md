@@ -81,3 +81,18 @@ docker compose up --build   # OpenPlan on http://localhost:8080 with Postgres
 - UX rules: every mutation button is disabled and shows `Loader2` spinner while pending; forms use react-hook-form + zod + shadcn `Form` with inline field errors; success and failure feedback via `sonner` toasts; every data view has a `Skeleton` loading state, an empty state (icon, one sentence, primary action) and an error state (`Alert variant="destructive"` with Retry). Copy is sentence case; buttons start with a verb.
 - Code hygiene: no commented-out code, no unused code, no TODO placeholders.
 - Commits: conventional commit subject; every commit message ends with the `Co-Authored-By: <model> <noreply@anthropic.com>` and `Claude-Session: <session url>` trailers.
+
+## Agent model policy (this project only)
+
+OpenPlan is built by a controller session acting as architect, plus subagents. To keep cost down, every subagent dispatch names its model explicitly; no subagent inherits the controller's model.
+
+| Role | Model | Use for |
+|---|---|---|
+| Architect / controller | Opus | Specs, implementation plans, rulings, dispatch, reading review verdicts. Never writes product code. |
+| Implementer, complex | Sonnet | Engine algorithms (evaluator, recalc, functions with tricky semantics), concurrency and persistence (actors, checkpoints), security-sensitive server code, UI screens where UX polish matters, E2E suites. |
+| Implementer, mechanical | Haiku | CRUD endpoints that copy an existing pattern, config and deploy files (Docker, CI, render.yaml, vercel.json), docs and README, test-only additions, small single-file fixes. |
+| First review of a task | Sonnet | Spec compliance + code quality gate for every task. |
+| Scoped re-review of a small fix | Haiku | Fix diffs under ~40 KB that touch a few files; Sonnet when the fix restructures logic. |
+| Final whole-milestone review | Sonnet | One pass per milestone before merging to `main`. |
+
+Rules: implementers never spawn subagents; fixes are new commits (never amend); stage files by explicit path; the implementer writes its report to the file named in its dispatch.
