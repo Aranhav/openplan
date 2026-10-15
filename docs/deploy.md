@@ -15,7 +15,7 @@ The browser only talks to the Vercel origin. Vercel rewrites `/api/*` to the Ren
 2. Reset the database password and save it somewhere safe.
 3. Copy the **Session pooler** URI. Its port is 5432. The transaction pooler (port 6543) is not supported.
 4. Append `?sslmode=require` to the URI. The server connects with TLS.
-5. Percent-encode the password in the URI. An unencoded `#`, `?` or `/` ends the address early, which shows up as a URL parse error (for example an invalid port) or a connection to the wrong host — not as a rejected password. Percent-encode every reserved character, including `%` itself. Percent-encode every reserved character (`: / ? # [ ] @ ! $ & ' ( ) * + , ; =`), and `%` and spaces too. For example, `@` becomes `%40`.
+5. Percent-encode the password in the URI. An unencoded `#`, `?` or `/` ends the address early, which shows up as a URL parse error (for example an invalid port) or a connection to the wrong host — not as a rejected password. Percent-encode every reserved character (`: / ? # [ ] @ ! $ & ' ( ) * + , ; =`), and `%` and spaces too. For example, `@` becomes `%40`.
 6. Turn off the Data API (Project Settings → Data API), or confirm it exposes nothing. OpenPlan reaches the database only through the connection string, never through the Data API. The migrations enable row level security on every table, so the Data API could not read them without a policy, but it should not be on at all.
 
 ### 2. Render (API)
@@ -34,6 +34,7 @@ The browser only talks to the Vercel origin. Vercel rewrites `/api/*` to the Ren
 1. Import this repository as a Vercel project and set the root directory to `web`. The framework, install, build and output settings come from `web/vercel.json`.
 2. `web/vercel.json` rewrites `/api/*` to `https://openplan-api.onrender.com/api/*`. If your Render service has a different URL, change the rewrite destination to match it, then redeploy.
 3. Deploy and note the Vercel domain. Then open `openplan-api` → Environment in Render, set `OPENPLAN_PUBLIC_URL` to `https://<vercel-domain>`, and save. Render redeploys.
+4. Open `https://<vercel-domain>` and complete setup immediately after the first deploy. The first visitor to the setup screen becomes the instance admin, and until that happens anyone who finds the URL can take the instance.
 
 ### Free-tier caveats
 
@@ -72,7 +73,7 @@ Render's URL is public, so a caller can reach the API without going through Verc
 
 To bound guessing, every email also has a ceiling of 50 login attempts per 15 minutes from any address. The ceiling is always on, including self-hosted Docker Compose, whatever `OPENPLAN_TRUSTED_PROXY_HOPS` is set to. It is a sliding window: each allowed attempt counts for 15 minutes, and blocked attempts are not counted. Attempts beyond the ceiling return 429, even with the correct password. Both limits live in server memory, so a restart (or a second instance) starts them from zero.
 
-The ceiling has a cost: anyone can lock out a specific account. An attacker who keeps sending at least about 3.3 failed sign-ins a minute (50 per 15 minutes, the rate at which the window frees a slot) keeps the account locked for as long as they continue. A successful sign-in clears the counter, so each success gives an attacker a fresh 50 attempts. The ceiling therefore limits guessing to about 200 guesses per hour per account while nobody signs in successfully — each successful sign-in (including the owner's) resets the count. It does not cap the total.
+The ceiling has a cost: anyone can lock out a specific account. An attacker who keeps sending at least about 3.3 failed sign-ins a minute (50 per 15 minutes, the rate at which the window frees a slot) keeps the account locked for as long as they continue. A successful sign-in clears the counter, so each success gives an attacker a fresh 50 attempts. The ceiling therefore limits guessing to about 200 guesses per hour per account while nobody signs in successfully — each successful sign-in (including the owner's) resets the count. It does not cap the total. If an account is locked out and you cannot wait for the window to pass, restart the Render service to clear an in-memory login lock-out.
 
 ## Self-hosting with Docker Compose
 
