@@ -39,8 +39,6 @@ use crate::{
     validate,
 };
 
-/// How many completions the editor is offered at most.
-const MAX_COMPLETIONS: usize = 50;
 /// The most decimals a number format shows.
 const MAX_DECIMALS: u8 = 10;
 
@@ -169,7 +167,9 @@ pub struct CheckFormulaResponse {
 pub struct CompletionsQuery {
     /// The line item the formula is for.
     line_item_id: Uuid,
-    /// What has been typed so far, matched without regard to case.
+    /// The name being typed, matched without regard to case. A name followed by a dot, such as
+    /// `Plan.Un`, `'Profit & Loss'.`, `Countries.Fr`, `Versions.` or `Time.`, asks for the members
+    /// of that module, list, `Versions` or `Time`.
     #[serde(default)]
     prefix: String,
 }
@@ -182,6 +182,12 @@ pub enum CompletionKindDto {
     List,
     Function,
     Keyword,
+    /// An item of a list, offered after the name of the list.
+    Item,
+    /// A version, offered after `Versions`.
+    Version,
+    /// A period of the calendar at any level, offered after `Time`.
+    Period,
 }
 
 /// Something the formula editor offers at the cursor.
@@ -218,6 +224,9 @@ impl From<Completion> for CompletionDto {
                 CompletionKind::List => CompletionKindDto::List,
                 CompletionKind::Function => CompletionKindDto::Function,
                 CompletionKind::Keyword => CompletionKindDto::Keyword,
+                CompletionKind::Item => CompletionKindDto::Item,
+                CompletionKind::Version => CompletionKindDto::Version,
+                CompletionKind::Period => CompletionKindDto::Period,
             },
             detail: completion.detail,
         }
@@ -840,7 +849,7 @@ pub(crate) async fn check_formula(
     tag = "modules",
     params(("id" = Uuid, Path, description = "The model's id"), CompletionsQuery),
     responses(
-        (status = 200, description = "What can be typed after the prefix, at most 50: the line items of the line item's module first, then those of other modules, lists, functions and keywords", body = [CompletionDto]),
+        (status = 200, description = "What can be typed after the prefix, at most 50. Without a dot: the line items of the line item's module first, then those of other modules, lists, functions and keywords. After a dot: the members of the module, list, Versions or Time before it (line items, items, versions, periods).", body = [CompletionDto]),
         (status = 401, description = "Not signed in (auth.unauthenticated)"),
         (status = 404, description = "No such model, or the caller is not a member of its workspace (not_found)"),
         (status = 422, description = "The line item is missing or does not exist (validation, structure.invalid)"),
@@ -865,7 +874,6 @@ pub(crate) async fn completions(
         model
             .completions(id, &query.prefix)
             .into_iter()
-            .take(MAX_COMPLETIONS)
             .map(CompletionDto::from)
             .collect(),
     ))

@@ -709,6 +709,79 @@ async fn completions_prefix_and_order(pool: PgPool) {
     assert_eq!(unknown.json["errors"][0]["field"], "line_item_id");
 }
 
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn completions_after_a_dot_offer_the_members(pool: PgPool) {
+    let (mut admin, _, model) = plan(&pool).await;
+    let countries = create_list(&mut admin, &model, "Countries").await;
+    admin
+        .post(
+            &url(&model, &format!("/lists/{countries}/items")),
+            Some(json!({ "items": [{ "name": "France" }, { "name": "Germany" }] })),
+        )
+        .await;
+    let plan_module = create_module(&mut admin, &model, "Plan", vec![month()]).await;
+    let loss_module = create_module(&mut admin, &model, "Profit & Loss", vec![month()]).await;
+    let units = id_of(
+        &create_line_item(&mut admin, &model, &plan_module, json!({ "name": "Units" })).await,
+    );
+    create_line_item(
+        &mut admin,
+        &model,
+        &loss_module,
+        json!({ "name": "Gross Margin" }),
+    )
+    .await;
+
+    let own = admin.get(&completions_url(&model, &units, "Plan.U")).await;
+    assert_eq!(labels(&own), ["Plan.Units"]);
+    assert_eq!(
+        own.json[0],
+        json!({ "label": "Plan.Units", "kind": "line_item", "detail": "Number" })
+    );
+    let quoted = admin
+        .get(&completions_url(
+            &model,
+            &units,
+            "%27Profit%20%26%20Loss%27.Gr",
+        ))
+        .await;
+    assert_eq!(labels(&quoted), ["'Profit & Loss'.Gross Margin"]);
+    assert_eq!(quoted.json[0]["detail"], "Number in Profit & Loss");
+    let items = admin
+        .get(&completions_url(&model, &units, "Countries."))
+        .await;
+    assert_eq!(labels(&items), ["Countries.France", "Countries.Germany"]);
+    assert_eq!(
+        items.json[0],
+        json!({ "label": "Countries.France", "kind": "item", "detail": "Item of Countries" })
+    );
+    let versions = admin
+        .get(&completions_url(&model, &units, "Versions.b"))
+        .await;
+    assert_eq!(
+        versions.json,
+        json!([{ "label": "Versions.Budget", "kind": "version", "detail": "Version" }])
+    );
+    let periods = admin
+        .get(&completions_url(&model, &units, "Time.%27q1"))
+        .await;
+    assert_eq!(
+        labels(&periods),
+        ["Time.'Q1 FY26'", "Time.'Q1 FY27'", "Time.'Q1 FY28'"]
+    );
+    assert_eq!(periods.json[0]["kind"], "period");
+    assert_eq!(periods.json[0]["detail"], "Period");
+    let rounding = admin.get(&completions_url(&model, &units, "near")).await;
+    assert_eq!(
+        rounding.json,
+        json!([{ "label": "NEAREST", "kind": "keyword", "detail": "ROUND mode" }])
+    );
+    let nothing = admin
+        .get(&completions_url(&model, &units, "Nowhere."))
+        .await;
+    assert_eq!(nothing.json, json!([]));
+}
+
 /// The function names of the table in §4.5 of the design spec: every uppercase word outside the
 /// brackets and parentheses of a row.
 fn spec_function_names() -> Vec<String> {

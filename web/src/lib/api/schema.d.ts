@@ -764,7 +764,7 @@ export interface components {
          * @description What kind of thing a completion is.
          * @enum {string}
          */
-        CompletionKindDto: "line_item" | "list" | "function" | "keyword";
+        CompletionKindDto: "line_item" | "list" | "function" | "keyword" | "item" | "version" | "period";
         CreateItemsRequest: {
             /** @description At least one item. */
             items: components["schemas"]["ItemInput"][];
@@ -2229,7 +2229,11 @@ export interface operations {
             query: {
                 /** @description The line item the formula is for. */
                 line_item_id: string;
-                /** @description What has been typed so far, matched without regard to case. */
+                /**
+                 * @description The name being typed, matched without regard to case. A name followed by a dot, such as
+                 *     `Plan.Un`, `'Profit & Loss'.`, `Countries.Fr`, `Versions.` or `Time.`, asks for the members
+                 *     of that module, list, `Versions` or `Time`.
+                 */
                 prefix?: string;
             };
             header?: never;
@@ -2241,7 +2245,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description What can be typed after the prefix, at most 50: the line items of the line item's module first, then those of other modules, lists, functions and keywords */
+            /** @description What can be typed after the prefix, at most 50. Without a dot: the line items of the line item's module first, then those of other modules, lists, functions and keywords. After a dot: the members of the module, list, Versions or Time before it (line items, items, versions, periods). */
             200: {
                 headers: {
                     [name: string]: unknown;
