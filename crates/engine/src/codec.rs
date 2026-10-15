@@ -771,7 +771,8 @@ impl Chunk {
         for _ in 0..axes {
             let len = reader.u32()? as usize;
             let keys = reader.take(len.saturating_mul(16))?;
-            dictionaries.push(keys.chunks_exact(16).map(le_u128).collect::<Vec<_>>());
+            let (keys, _) = keys.as_chunks::<16>();
+            dictionaries.push(keys.iter().map(|key| le_u128(key)).collect::<Vec<_>>());
         }
         let mut indices = Vec::with_capacity(axes);
         for dictionary in &dictionaries {
@@ -780,12 +781,16 @@ impl Chunk {
             let axis: Vec<u32> = match width {
                 1 => bytes.iter().map(|&index| u32::from(index)).collect(),
                 2 => bytes
-                    .chunks_exact(2)
-                    .map(|index| u32::from(u16::from_le_bytes([index[0], index[1]])))
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|&index| u32::from(u16::from_le_bytes(index)))
                     .collect(),
                 _ => bytes
-                    .chunks_exact(4)
-                    .map(|index| u32::from_le_bytes([index[0], index[1], index[2], index[3]]))
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|&index| u32::from_le_bytes(index))
                     .collect(),
             };
             if axis.iter().any(|&index| index as usize >= dictionary.len()) {

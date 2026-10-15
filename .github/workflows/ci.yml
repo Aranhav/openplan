@@ -34,7 +34,7 @@ jobs:
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.0
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
@@ -54,7 +54,7 @@ jobs:
           node-version: 22
           cache: pnpm
       # gen:api prints the OpenAPI document with the server binary.
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.0
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: server-debug
@@ -92,7 +92,7 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.0
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: server-debug

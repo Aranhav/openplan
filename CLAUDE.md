@@ -78,7 +78,7 @@ docker compose up --build   # OpenPlan on http://localhost:8080 with Postgres
 
 ## Global constraints
 
-- Rust edition 2024. `cargo fmt --all` clean and `cargo clippy --all-targets -- -D warnings` clean.
+- Rust edition 2024, toolchain pinned to 1.97.0 in `rust-toolchain.toml`. `cargo fmt --all` clean and `cargo clippy --all-targets -- -D warnings` clean.
 - Crates (use newest compatible patch versions): `axum 0.8`, `axum-extra` (cookie feature, version compatible with axum 0.8), `tokio 1` (full), `sqlx 0.8` (features `runtime-tokio`, `tls-rustls`, `postgres`, `uuid`, `chrono`, `json`, `migrate`, `macros`), `tower-http 0.6` (`trace`, `request-id`, `util`), `tower 0.5`, `utoipa 5` (`axum_extras`, `uuid`, `chrono`), `utoipa-scalar` (axum feature, compatible with utoipa 5), `argon2 0.5`, `rust-embed 8`, `mime_guess 2`, `uuid 1` (`v7`, `serde`), `chrono 0.4` (`serde`), `serde 1`, `serde_json 1`, `thiserror 2`, `anyhow 1`, `tracing 0.1`, `tracing-subscriber 0.3` (`env-filter`), `rand 0.9`, `sha2 0.10`, `base64 0.22`, `clap 4` (`derive`).
 - SQL: use `sqlx::query`/`sqlx::query_as::<_, T>` with `#[derive(sqlx::FromRow)]`. Do **not** use `query!`/`query_as!` macros (no DB needed at compile time). Migrations embedded with `sqlx::migrate!("./migrations")`.
 - Every new table enables row level security in the migration that creates it (Supabase exposes `public` through its Data API).

@@ -15,7 +15,7 @@ RUN pnpm install --frozen-lockfile --filter "./web..."
 COPY web web
 RUN pnpm --dir web build
 
-FROM rust:1-bookworm AS build
+FROM rust:1.97-bookworm AS build
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY crates crates
