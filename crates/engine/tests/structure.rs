@@ -3,8 +3,9 @@ use std::sync::Arc;
 use chrono::NaiveDate;
 use openplan_engine::{
     Axis, AxisSpec, Calendar, CellEdit, ChangeSet, Command, CoordToken, EngineError, Format,
-    ItemId, ItemSpec, LineItem, LineItemId, LineItemPatch, ListId, Model, ModuleId, SubsetId,
-    SummaryMethod, TimeLevel, TimeRangeId, TimeScale, Value, VersionId, VersionsScope,
+    ItemId, ItemSpec, LineItem, LineItemId, LineItemPatch, ListId, MAX_LINE_ITEM_CELLS, Model,
+    ModuleId, SubsetId, SummaryMethod, TimeLevel, TimeRangeId, TimeScale, Value, VersionId,
+    VersionsScope,
 };
 use serde_json::json;
 
@@ -2993,9 +2994,10 @@ fn a_line_item_may_have_exactly_the_limit_and_not_one_cell_more() {
         vec![list_axis(products), list_axis(regions)],
     );
     let flag = add_line_item(&mut model, sales, "Flag", Format::Boolean);
+    assert_eq!(MAX_LINE_ITEM_CELLS, 1 << 26);
     assert_eq!(
         model.structure().line_item_shape(flag).unwrap().size(),
-        67_108_864
+        MAX_LINE_ITEM_CELLS
     );
     let before = snapshot(&model);
 
