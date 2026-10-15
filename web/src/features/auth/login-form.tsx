@@ -17,6 +17,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { ApiError, errorDetail } from "@/lib/api/client"
 import { useLogin } from "./api"
+import { safeRedirectPath } from "./redirect"
 
 const schema = z.object({
   email: z.string().trim().min(1, "Enter your email."),
@@ -26,12 +27,8 @@ const schema = z.object({
 type LoginValues = z.infer<typeof schema>
 
 interface LoginFormProps {
-  /** Where to go after signing in; only paths within this app are honoured. */
+  /** Where to go after signing in; anything outside this app is ignored. */
   redirectTo?: string
-}
-
-function localPath(target: string | undefined): string {
-  return target && /^\/(?![/\\])/.test(target) ? target : "/"
 }
 
 function failureAlert(error: unknown): string | undefined {
@@ -61,12 +58,14 @@ export function LoginForm({ redirectTo }: LoginFormProps) {
     try {
       await login.mutateAsync(values)
     } catch (error) {
-      if (!failureAlert(error)) {
+      if (error instanceof ApiError && error.code === "auth.invalid_credentials") {
+        form.setFocus("password", { shouldSelect: true })
+      } else if (!failureAlert(error)) {
         toast.error(errorDetail(error))
       }
       return
     }
-    await navigate({ href: localPath(redirectTo) })
+    await navigate({ href: safeRedirectPath(redirectTo) })
   }
 
   return (

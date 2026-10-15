@@ -1,5 +1,6 @@
 import { Outlet, createFileRoute, redirect } from "@tanstack/react-router"
 import { meQuery, setupStatusQuery } from "@/features/auth/api"
+import { loginSearch } from "@/features/auth/redirect"
 import { ApiError } from "@/lib/api/client"
 
 export const Route = createFileRoute("/_app")({
@@ -12,7 +13,7 @@ export const Route = createFileRoute("/_app")({
       return { me: await queryClient.ensureQueryData(meQuery) }
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
-        throw redirect({ to: "/login", search: { redirect: location.href } })
+        throw redirect({ to: "/login", search: loginSearch(location.href) })
       }
       throw error
     }

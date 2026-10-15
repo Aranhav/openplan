@@ -58,7 +58,7 @@ const DEFAULT_VALUES: SetupValues = {
 }
 
 function isFormField(field: string): field is keyof SetupValues {
-  return field in DEFAULT_VALUES
+  return Object.hasOwn(DEFAULT_VALUES, field)
 }
 
 /** Shows the server's field errors under their inputs; returns whether any matched. */
@@ -90,7 +90,10 @@ export function SetupForm() {
         workspace_name: values.workspace_name,
       })
     } catch (error) {
-      if (!(error instanceof ApiError && showFieldErrors(form, error.errors))) {
+      if (error instanceof ApiError && error.code === "setup.already_done") {
+        toast.info("OpenPlan is already set up. Sign in to continue.")
+        await navigate({ to: "/login" })
+      } else if (!(error instanceof ApiError && showFieldErrors(form, error.errors))) {
         toast.error(errorDetail(error))
       }
       return

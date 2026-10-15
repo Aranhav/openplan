@@ -2,6 +2,7 @@ import { createFileRoute, redirect } from "@tanstack/react-router"
 import { AuthLayout } from "@/components/auth-layout"
 import { setupStatusQuery } from "@/features/auth/api"
 import { SetupForm } from "@/features/auth/setup-form"
+import { useDocumentTitle } from "@/hooks/use-document-title"
 
 export const Route = createFileRoute("/setup")({
   beforeLoad: async ({ context: { queryClient } }) => {
@@ -14,6 +15,7 @@ export const Route = createFileRoute("/setup")({
 })
 
 function SetupPage() {
+  useDocumentTitle("Set up OpenPlan")
   return (
     <AuthLayout
       title="Set up OpenPlan"

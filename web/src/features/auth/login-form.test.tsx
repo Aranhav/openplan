@@ -41,6 +41,23 @@ describe("LoginForm", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Email or password is incorrect.")
   })
 
+  it("moves focus to the password and selects it after a wrong password", async () => {
+    server.use(
+      http.post("/api/v1/auth/login", () =>
+        problem(401, "auth.invalid_credentials", "Invalid credentials."),
+      ),
+    )
+    const typist = userEvent.setup()
+    renderWithProviders(<LoginForm />)
+    await signIn(typist)
+    await screen.findByRole("alert")
+
+    const password = screen.getByLabelText<HTMLInputElement>("Password")
+    await waitFor(() => expect(password).toHaveFocus())
+    expect(password.selectionStart).toBe(0)
+    expect(password.selectionEnd).toBe(password.value.length)
+  })
+
   it("tells the user how many minutes to wait when rate limited", async () => {
     server.use(
       http.post("/api/v1/auth/login", () =>
@@ -141,7 +158,7 @@ describe("LoginForm", () => {
     await waitFor(() => expect(router.state.location.href).toBe("/models/42?tab=sheet"))
   })
 
-  it.each(["https://evil.example/steal", "//evil.example", "models/42"])(
+  it.each(["https://evil.example/steal", "//evil.example", "/\t/evil.example", "models/42"])(
     "ignores the redirect target %s",
     async (target) => {
       acceptLogin()

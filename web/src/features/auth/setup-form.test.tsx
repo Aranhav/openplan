@@ -8,7 +8,7 @@ import { problem } from "@/test/problem"
 import { server } from "@/test/server"
 import { SetupForm } from "./setup-form"
 
-vi.mock("sonner", () => ({ toast: { error: vi.fn() } }))
+vi.mock("sonner", () => ({ toast: { error: vi.fn(), info: vi.fn() } }))
 
 const user = {
   id: "0192f3a0-0000-7000-8000-000000000001",
@@ -148,10 +148,26 @@ describe("SetupForm", () => {
     await waitFor(() => expect(router.state.location.pathname).toBe("/"))
   })
 
-  it("reports other failures in a toast", async () => {
+  it("reports other failures in a toast and stays put", async () => {
+    server.use(
+      http.post("/api/v1/setup", () => problem(500, "internal", "Something went wrong.")),
+    )
+    const typist = userEvent.setup()
+    const { router } = renderWithProviders(<SetupForm />)
+    await fillForm(typist)
+    await submit(typist)
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("Something went wrong."))
+    expect(screen.getByRole("button", { name: "Create account" })).toBeEnabled()
+    expect(router.state.location.pathname).toBe("/host")
+  })
+
+  it("toasts a server error that names no field on the form", async () => {
     server.use(
       http.post("/api/v1/setup", () =>
-        problem(409, "setup.already_done", "Setup has already been completed."),
+        problem(422, "validation", "Some fields are invalid.", {
+          errors: [{ field: "toString", message: "Nothing to see here." }],
+        }),
       ),
     )
     const typist = userEvent.setup()
@@ -159,9 +175,24 @@ describe("SetupForm", () => {
     await fillForm(typist)
     await submit(typist)
 
-    await waitFor(() =>
-      expect(toast.error).toHaveBeenCalledWith("Setup has already been completed."),
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("Some fields are invalid."))
+  })
+
+  it("sends the user to sign in when setup was already completed elsewhere", async () => {
+    server.use(
+      http.post("/api/v1/setup", () =>
+        problem(409, "setup.already_done", "Setup has already been completed."),
+      ),
     )
-    expect(screen.getByRole("button", { name: "Create account" })).toBeEnabled()
+    const typist = userEvent.setup()
+    const { queryClient, router } = renderWithProviders(<SetupForm />)
+    queryClient.setQueryData(["setup-status"], { needs_setup: true })
+    await fillForm(typist)
+    await submit(typist)
+
+    await waitFor(() => expect(router.state.location.pathname).toBe("/login"))
+    expect(toast.info).toHaveBeenCalledWith("OpenPlan is already set up. Sign in to continue.")
+    expect(toast.error).not.toHaveBeenCalled()
+    expect(queryClient.getQueryData(["setup-status"])).toEqual({ needs_setup: false })
   })
 })

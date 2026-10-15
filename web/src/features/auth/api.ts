@@ -1,6 +1,6 @@
 import { queryOptions, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useNavigate } from "@tanstack/react-router"
-import { api, unwrap } from "@/lib/api/client"
+import { ApiError, api, unwrap } from "@/lib/api/client"
 import { queryKeys } from "@/lib/api/keys"
 import type { components } from "@/lib/api/schema"
 
@@ -29,6 +29,12 @@ export function useSetup() {
       queryClient.setQueryData(setupStatusQuery.queryKey, { needs_setup: false })
       queryClient.setQueryData(meQuery.queryKey, { user, workspaces: [workspace] })
     },
+    onError: (error) => {
+      // Someone else finished setup first; don't let /login send the user back to /setup.
+      if (error instanceof ApiError && error.code === "setup.already_done") {
+        queryClient.setQueryData(setupStatusQuery.queryKey, { needs_setup: false })
+      }
+    },
   })
 }
 
@@ -47,10 +53,10 @@ export function useLogout() {
   const navigate = useNavigate()
   return useMutation({
     mutationFn: () => unwrap(api.POST("/auth/logout")),
-    onSuccess: async () => {
-      // Leave first so the signed-in screens unmount before their queries go.
-      await navigate({ to: "/login" })
+    // Clear first: /login treats a cached `me` as proof that the user is still signed in.
+    onSuccess: () => {
       queryClient.removeQueries()
+      return navigate({ to: "/login" })
     },
   })
 }
