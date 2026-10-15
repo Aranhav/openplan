@@ -5,7 +5,8 @@ OpenPlan is an open-source, Anaplan-style connected planning platform: a Rust (a
 ## Layout
 
 ```
-Cargo.toml          Cargo workspace (members = ["crates/server"])
+Cargo.toml          Cargo workspace (members = ["crates/engine", "crates/server"])
+crates/engine/      package openplan-engine, the calculation engine (structure, formulas, recalculation, summaries, cell storage codec); no I/O, no database
 crates/server/      package openplan-server, binary `openplan` (HTTP API, migrations, embedded web UI)
 web/                Vite + React + TypeScript app (served by the server from web/dist)
 e2e/                Playwright end-to-end tests that drive the real server
@@ -20,6 +21,7 @@ Server (from the repo root):
 ```
 cargo run -p openplan-server -- serve      # needs DATABASE_URL and OPENPLAN_PUBLIC_URL
 cargo run -p openplan-server -- openapi    # print the OpenAPI document; needs no env or DB
+cargo test -p openplan-engine              # the engine needs no database
 cargo test -p openplan-server              # export DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres first
 cargo clippy --all-targets -- -D warnings
 cargo fmt --all --check
