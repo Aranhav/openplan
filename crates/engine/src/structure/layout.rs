@@ -4,7 +4,7 @@ use crate::ids::{LineItemId, VersionId};
 use crate::shape::{Axis, Shape};
 
 use super::module::time_axis;
-use super::{AxisSpec, LineItem, Structure, TimeScale, VersionsScope, level_name, not_found};
+use super::{AxisSpec, LineItem, Structure, TimeScale, VersionsScope, level_name};
 
 /// The axes of a line item's stored cells: where its module's axes put them, after the
 /// line item's own overrides.
@@ -21,7 +21,7 @@ impl Structure {
         let line_item = self
             .line_items
             .get(&id)
-            .ok_or_else(|| not_found("line item", id.0))?;
+            .ok_or_else(|| EngineError::not_found("line item", id.0))?;
         self.shape_of(&self.layout(line_item)?)
     }
 
@@ -29,7 +29,7 @@ impl Structure {
         let module = self
             .modules
             .get(&line_item.module)
-            .ok_or_else(|| not_found("module", line_item.module.0))?;
+            .ok_or_else(|| EngineError::not_found("module", line_item.module.0))?;
         let own_axes = line_item.applies_to.as_ref().unwrap_or(&module.axes);
         let mut axes: Vec<Axis> = own_axes
             .iter()

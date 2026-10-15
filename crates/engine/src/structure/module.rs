@@ -8,9 +8,7 @@ use crate::error::EngineError;
 use crate::ids::{LineItemId, ListId, ModuleId, SubsetId, TimeRangeId, VersionId};
 use crate::value::Format;
 
-use super::{
-    Structure, already_exists, check_name, clean_name, ensure_unique, in_use, invalid, not_found,
-};
+use super::{Structure, already_exists, check_name, clean_name, ensure_unique, in_use};
 
 const SYSTEM_AREA: &str = "System";
 
@@ -138,7 +136,9 @@ impl Structure {
             return Err(already_exists("module", id.0));
         }
         if self.lists.contains_key(&ListId(id.0)) {
-            return Err(invalid("A module cannot have the id of a list."));
+            return Err(EngineError::invalid(
+                "A module cannot have the id of a list.",
+            ));
         }
         let name = check_name(
             "module",
@@ -165,7 +165,7 @@ impl Structure {
     pub(crate) fn restore_properties_module(&mut self, module: Module) -> Result<(), EngineError> {
         let mut restored = self.new_properties_module(module.id)?;
         if module.name != restored.name || module.axes != restored.axes {
-            return Err(invalid(
+            return Err(EngineError::invalid(
                 "The name and dimensions of a list's properties module follow the list.",
             ));
         }
@@ -185,14 +185,14 @@ impl Structure {
         let module = self
             .modules
             .get(&id)
-            .ok_or_else(|| not_found("module", id.0))?;
+            .ok_or_else(|| EngineError::not_found("module", id.0))?;
         if self.lists.contains_key(&ListId(id.0))
             && (name
                 .as_deref()
                 .is_some_and(|name| name.trim() != module.name)
                 || axes.as_ref().is_some_and(|axes| *axes != module.axes))
         {
-            return Err(invalid(
+            return Err(EngineError::invalid(
                 "The name and dimensions of a list's properties module follow the list.",
             ));
         }
@@ -214,7 +214,7 @@ impl Structure {
                 .line_items_in(id)
                 .find(|li| finer_than_module(&li.time_scale, axes))
             {
-                return Err(invalid(format!(
+                return Err(EngineError::invalid(format!(
                     "The time scale of line item '{}' would be finer than its module's.",
                     line_item.name
                 )));
@@ -225,7 +225,7 @@ impl Structure {
         let module = self
             .modules
             .get_mut(&id)
-            .ok_or_else(|| not_found("module", id.0))?;
+            .ok_or_else(|| EngineError::not_found("module", id.0))?;
         if let Some(name) = name {
             module.name = name;
         }
@@ -242,7 +242,7 @@ impl Structure {
         let module = self
             .modules
             .get(&id)
-            .ok_or_else(|| not_found("module", id.0))?;
+            .ok_or_else(|| EngineError::not_found("module", id.0))?;
         self.ensure_line_items_free("Module", &module.name, &self.line_item_ids_of(id))?;
         self.drop_module(id);
         Ok(())
@@ -273,7 +273,7 @@ impl Structure {
         let mut line_item = self
             .line_items
             .get(&id)
-            .ok_or_else(|| not_found("line item", id.0))?
+            .ok_or_else(|| EngineError::not_found("line item", id.0))?
             .clone();
         patch.apply_to(&mut line_item);
         line_item.name = self.check_line_item(&line_item)?;
@@ -285,7 +285,7 @@ impl Structure {
         let line_item = self
             .line_items
             .get(&id)
-            .ok_or_else(|| not_found("line item", id.0))?;
+            .ok_or_else(|| EngineError::not_found("line item", id.0))?;
         self.ensure_line_items_free(
             "Line item",
             &self.qualified_name(line_item),
@@ -330,7 +330,7 @@ impl Structure {
         let list = self
             .lists
             .get(&list_id)
-            .ok_or_else(|| not_found("module", id.0))?;
+            .ok_or_else(|| EngineError::not_found("module", id.0))?;
         let name = properties_name(&list.name);
         ensure_unique(
             "module",
@@ -359,7 +359,7 @@ impl Structure {
         if let Some(module) = self.modules.get(&line_item.module)
             && finer_than_module(&line_item.time_scale, &module.axes)
         {
-            return Err(invalid(
+            return Err(EngineError::invalid(
                 "A line item's time scale can't be finer than its module's.",
             ));
         }
@@ -368,17 +368,20 @@ impl Structure {
         }
         if let VersionsScope::Only(only) = &line_item.versions {
             if only.is_empty() {
-                return Err(invalid(
+                return Err(EngineError::invalid(
                     "A line item restricted to versions needs at least one.",
                 ));
             }
             let mut seen = HashSet::new();
             for id in only {
                 if self.version(*id).is_none() {
-                    return Err(not_found("version", id.0));
+                    return Err(EngineError::not_found("version", id.0));
                 }
                 if !seen.insert(*id) {
-                    return Err(invalid(format!("Version {} is listed twice.", id.0)));
+                    return Err(EngineError::invalid(format!(
+                        "Version {} is listed twice.",
+                        id.0
+                    )));
                 }
             }
         }
@@ -386,13 +389,13 @@ impl Structure {
             self.require_list(*list)?;
         }
         if references(line_item).any(|target| target == line_item.id) {
-            return Err(invalid(
+            return Err(EngineError::invalid(
                 "A line item can't use itself as a ratio part or access driver.",
             ));
         }
         for target in references(line_item) {
             if !self.line_items.contains_key(&target) {
-                return Err(not_found("line item", target.0));
+                return Err(EngineError::not_found("line item", target.0));
             }
         }
         Ok(name)
@@ -410,24 +413,32 @@ impl Structure {
                 AxisSpec::Subset { subset } => Some(self.require_subset(*subset)?.list),
                 AxisSpec::Time { range, .. } => {
                     if !allow_time_versions {
-                        return Err(invalid("Only lists and subsets can be applied to."));
+                        return Err(EngineError::invalid(
+                            "Only lists and subsets can be applied to.",
+                        ));
                     }
                     if let Some(range) = range
                         && !self.time_ranges.contains_key(range)
                     {
-                        return Err(not_found("time range", range.0));
+                        return Err(EngineError::not_found("time range", range.0));
                     }
                     if std::mem::replace(&mut has_time, true) {
-                        return Err(invalid("A module can have only one Time dimension."));
+                        return Err(EngineError::invalid(
+                            "A module can have only one Time dimension.",
+                        ));
                     }
                     None
                 }
                 AxisSpec::Versions => {
                     if !allow_time_versions {
-                        return Err(invalid("Only lists and subsets can be applied to."));
+                        return Err(EngineError::invalid(
+                            "Only lists and subsets can be applied to.",
+                        ));
                     }
                     if std::mem::replace(&mut has_versions, true) {
-                        return Err(invalid("A module can have only one Versions dimension."));
+                        return Err(EngineError::invalid(
+                            "A module can have only one Versions dimension.",
+                        ));
                     }
                     None
                 }
@@ -436,7 +447,7 @@ impl Structure {
                 && !lists.insert(list)
             {
                 let name = &self.require_list(list)?.name;
-                return Err(invalid(format!(
+                return Err(EngineError::invalid(format!(
                     "List '{name}' can be used only once among the dimensions."
                 )));
             }

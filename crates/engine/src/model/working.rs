@@ -14,7 +14,7 @@ use crate::summary::{
 };
 use crate::value::Column;
 
-use super::{missing_line_item, ratio_part};
+use super::ratio_part;
 
 /// The values a recalculation reads: the cells typed into input line items and the calculated
 /// ones calculated so far. Calculated line items are read straight from here, never through the
@@ -182,7 +182,7 @@ impl<'a> Working<'a> {
         let line_item = self
             .structure
             .line_item(id)
-            .ok_or_else(|| missing_line_item(id))?;
+            .ok_or_else(|| EngineError::not_found("line item", id.0))?;
         let shape = self.structure.line_item_shape(id)?;
         Ok(Arc::new(Column::new_blank(
             &line_item.format.value_type(),
@@ -200,7 +200,7 @@ impl<'a> Working<'a> {
         let line_item = self
             .structure
             .line_item(id)
-            .ok_or_else(|| missing_line_item(id))?;
+            .ok_or_else(|| EngineError::not_found("line item", id.0))?;
         let layout = self.structure.layout(line_item)?;
         let shape = self.structure.shape_of(&layout)?;
         let switched = with_actual_before_switchover(
@@ -237,7 +237,7 @@ impl<'a> Working<'a> {
         let line_item = self
             .structure
             .line_item(id)
-            .ok_or_else(|| missing_line_item(id))?;
+            .ok_or_else(|| EngineError::not_found("line item", id.0))?;
         let layout = self.structure.layout(line_item)?;
         let shape = self.structure.shape_of(&layout)?;
         let rolled = if summarised_by_formula(line_item, &shape, levels) {

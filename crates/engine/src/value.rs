@@ -81,6 +81,20 @@ pub enum ValueType {
     Period(TimeLevel),
 }
 
+impl ValueType {
+    /// The value of an unset cell of this type.
+    pub(crate) fn blank(self) -> Value {
+        match self {
+            ValueType::Number => Value::Number(0.0),
+            ValueType::Boolean => Value::Boolean(false),
+            ValueType::Text => Value::Text(Arc::from("")),
+            ValueType::Date => Value::Date(None),
+            ValueType::Item(_) => Value::Item(None),
+            ValueType::Period(_) => Value::Period(None),
+        }
+    }
+}
+
 /// A single cell value; blank dates, items and periods are `None`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "t", content = "v", rename_all = "snake_case")]
@@ -328,6 +342,22 @@ mod tests {
         assert!(!Column::Item(vec![u32::MAX, 0]).is_blank_at(1));
         assert!(Column::Period(vec![u32::MAX, 0]).is_blank_at(0));
         assert!(!Column::Period(vec![u32::MAX, 0]).is_blank_at(1));
+    }
+
+    #[test]
+    fn a_blank_value_is_what_a_blank_cell_reads_as() {
+        let list = ListId::new();
+        for (ty, blank) in [
+            (ValueType::Number, Value::Number(0.0)),
+            (ValueType::Boolean, Value::Boolean(false)),
+            (ValueType::Text, Value::Text(Arc::from(""))),
+            (ValueType::Date, Value::Date(None)),
+            (ValueType::Item(list), Value::Item(None)),
+            (ValueType::Period(TimeLevel::Month), Value::Period(None)),
+        ] {
+            assert_eq!(ty.blank(), blank);
+            assert!(Column::new_blank(&ty, 1).is_blank_at(0));
+        }
     }
 
     #[test]

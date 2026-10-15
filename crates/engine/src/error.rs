@@ -39,6 +39,21 @@ pub enum EngineError {
 }
 
 impl EngineError {
+    /// A rejected command or structure, with the reason in words.
+    pub(crate) fn invalid(message: impl Into<String>) -> EngineError {
+        EngineError::Invalid {
+            message: message.into(),
+        }
+    }
+
+    /// Something a command names that the model does not have: a kind of thing and its id.
+    pub(crate) fn not_found(what: &'static str, id: impl std::fmt::Display) -> EngineError {
+        EngineError::NotFound {
+            what,
+            id: id.to_string(),
+        }
+    }
+
     /// Stable machine-readable code, mapped one to one to API problem codes.
     ///
     /// A formula error reports the code of its first problem.
@@ -136,6 +151,16 @@ mod tests {
         for (error, code) in cases {
             assert_eq!(error.code(), code, "{error}");
         }
+    }
+
+    #[test]
+    fn constructors_build_the_variants_they_are_named_for() {
+        let invalid = EngineError::invalid("years must be between 1 and 20");
+        assert_eq!(invalid.code(), "structure.invalid");
+        assert_eq!(invalid.to_string(), "years must be between 1 and 20");
+        let not_found = EngineError::not_found("list", 7);
+        assert_eq!(not_found.code(), "structure.not_found");
+        assert_eq!(not_found.to_string(), "list not found: 7");
     }
 
     #[test]

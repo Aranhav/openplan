@@ -290,7 +290,9 @@ impl Structure {
             .current_month
             .is_some_and(|month| month >= calendar.months())
         {
-            return Err(invalid("The current month must lie inside the calendar."));
+            return Err(EngineError::invalid(
+                "The current month must lie inside the calendar.",
+            ));
         }
         // A switchover is a month of the calendar: it stays on the same month when the calendar
         // moves, and is cleared when that month is no longer on the timeline.
@@ -322,22 +324,26 @@ impl Structure {
         )?;
         if let Some(month) = switchover {
             if month >= self.calendar.months() {
-                return Err(invalid(
+                return Err(EngineError::invalid(
                     "The switchover month must lie inside the calendar.",
                 ));
             }
             if is_actual {
-                return Err(invalid(
+                return Err(EngineError::invalid(
                     "The actual version cannot have a switchover month.",
                 ));
             }
         }
         let others = || self.versions.iter().filter(|version| version.id != id);
         if !is_actual && others().all(|version| !version.is_actual) {
-            return Err(invalid("Exactly one version must be the actual version."));
+            return Err(EngineError::invalid(
+                "Exactly one version must be the actual version.",
+            ));
         }
         if !is_current && others().all(|version| !version.is_current) {
-            return Err(invalid("Exactly one version must be the current version."));
+            return Err(EngineError::invalid(
+                "Exactly one version must be the current version.",
+            ));
         }
         for other in self.versions.iter_mut().filter(|version| version.id != id) {
             other.is_actual &= !is_actual;
@@ -358,9 +364,11 @@ impl Structure {
     }
 
     fn delete_version(&mut self, id: VersionId) -> Result<(), EngineError> {
-        let version = self.version(id).ok_or_else(|| not_found("version", id.0))?;
+        let version = self
+            .version(id)
+            .ok_or_else(|| EngineError::not_found("version", id.0))?;
         if version.is_actual || version.is_current {
-            return Err(invalid(
+            return Err(EngineError::invalid(
                 "The actual and current versions cannot be deleted.",
             ));
         }
@@ -391,12 +399,12 @@ impl Structure {
             }
             match version.switchover {
                 Some(month) if month >= self.calendar.months() => {
-                    return Err(invalid(
+                    return Err(EngineError::invalid(
                         "The switchover month must lie inside the calendar.",
                     ));
                 }
                 Some(_) if version.is_actual => {
-                    return Err(invalid(
+                    return Err(EngineError::invalid(
                         "The actual version cannot have a switchover month.",
                     ));
                 }
@@ -405,10 +413,14 @@ impl Structure {
             restored.push(Version { name, ..version });
         }
         if restored.iter().filter(|version| version.is_actual).count() != 1 {
-            return Err(invalid("Exactly one version must be the actual version."));
+            return Err(EngineError::invalid(
+                "Exactly one version must be the actual version.",
+            ));
         }
         if restored.iter().filter(|version| version.is_current).count() != 1 {
-            return Err(invalid("Exactly one version must be the current version."));
+            return Err(EngineError::invalid(
+                "Exactly one version must be the current version.",
+            ));
         }
         self.versions = restored;
         Ok(())
@@ -430,10 +442,12 @@ impl Structure {
             self.time_ranges.values().map(|range| range.name.as_str()),
         )?;
         if !(1..=20).contains(&years) {
-            return Err(invalid("years must be between 1 and 20"));
+            return Err(EngineError::invalid("years must be between 1 and 20"));
         }
         if !(1..=9999).contains(&first_year) {
-            return Err(invalid("first_year must be between 1 and 9999"));
+            return Err(EngineError::invalid(
+                "first_year must be between 1 and 9999",
+            ));
         }
         self.time_ranges.insert(
             id,
@@ -451,7 +465,7 @@ impl Structure {
         let range = self
             .time_ranges
             .get(&id)
-            .ok_or_else(|| not_found("time range", id.0))?;
+            .ok_or_else(|| EngineError::not_found("time range", id.0))?;
         let users = self
             .modules
             .values()
@@ -479,7 +493,7 @@ impl Structure {
         let range = self
             .time_ranges
             .get(&id)
-            .ok_or_else(|| not_found("time range", id.0))?;
+            .ok_or_else(|| EngineError::not_found("time range", id.0))?;
         Ok(Calendar {
             first_year: range.first_year,
             years: range.years,
@@ -497,13 +511,15 @@ impl Structure {
     }
 
     fn require_list(&self, id: ListId) -> Result<&List, EngineError> {
-        self.lists.get(&id).ok_or_else(|| not_found("list", id.0))
+        self.lists
+            .get(&id)
+            .ok_or_else(|| EngineError::not_found("list", id.0))
     }
 
     fn require_subset(&self, id: SubsetId) -> Result<&Subset, EngineError> {
         self.subsets
             .get(&id)
-            .ok_or_else(|| not_found("subset", id.0))
+            .ok_or_else(|| EngineError::not_found("subset", id.0))
     }
 
     /// `Module.Line item`, for messages.
@@ -550,21 +566,8 @@ pub(crate) fn level_name(level: TimeLevel) -> &'static str {
     }
 }
 
-fn invalid(message: impl Into<String>) -> EngineError {
-    EngineError::Invalid {
-        message: message.into(),
-    }
-}
-
-fn not_found(what: &'static str, id: Uuid) -> EngineError {
-    EngineError::NotFound {
-        what,
-        id: id.to_string(),
-    }
-}
-
 fn already_exists(what: &'static str, id: Uuid) -> EngineError {
-    invalid(format!("A {what} with id {id} already exists."))
+    EngineError::invalid(format!("A {what} with id {id} already exists."))
 }
 
 /// Case-insensitive name comparison.
@@ -585,12 +588,12 @@ fn clean_name(what: &str, raw: &str) -> Result<String, EngineError> {
     let name = raw.trim();
     let length = name.chars().count();
     if length == 0 || length > MAX_NAME_CHARS {
-        return Err(invalid(format!(
+        return Err(EngineError::invalid(format!(
             "The {what} name must be between 1 and {MAX_NAME_CHARS} characters."
         )));
     }
     if name.contains('\0') {
-        return Err(invalid(format!(
+        return Err(EngineError::invalid(format!(
             "The {what} name can't contain the NUL character."
         )));
     }

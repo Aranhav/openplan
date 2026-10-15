@@ -186,7 +186,7 @@ impl Model {
     /// item that does not exist is reported as a problem with code `structure.not_found`.
     pub fn check_formula(&self, li: LineItemId, src: &str) -> Result<ValueType, Vec<FormulaError>> {
         let Some(line_item) = self.structure.line_item(li) else {
-            return Err(formula_errors(missing_line_item(li)));
+            return Err(formula_errors(EngineError::not_found("line item", li.0)));
         };
         let ty = line_item.format.value_type();
         if src.trim().is_empty() {
@@ -225,7 +225,7 @@ impl Model {
         let line_item = self
             .structure
             .line_item(li)
-            .ok_or_else(|| missing_line_item(li))?;
+            .ok_or_else(|| EngineError::not_found("line item", li.0))?;
         let layout = self.structure.layout(line_item)?;
         let shape = self.structure.shape_of(&layout)?;
         let ty = line_item.format.value_type();
@@ -244,7 +244,7 @@ impl Model {
                     Some(column) => {
                         decode(&self.structure, &ty, column.get(shape.index(&position)))
                     }
-                    None => blank_value(&ty),
+                    None => ty.blank(),
                 })
             })
             .collect()
@@ -266,7 +266,7 @@ impl Model {
         let line_item = self
             .structure
             .line_item(li)
-            .ok_or_else(|| missing_line_item(li))?;
+            .ok_or_else(|| EngineError::not_found("line item", li.0))?;
         let layout = self.structure.layout(line_item)?;
         let summary = self.summary_column(line_item, &layout, levels)?;
         let (shape, column) = &*summary;
@@ -588,7 +588,7 @@ impl Model {
         let structure = Arc::clone(&self.structure);
         let line_item = structure
             .line_item(id)
-            .ok_or_else(|| missing_line_item(id))?;
+            .ok_or_else(|| EngineError::not_found("line item", id.0))?;
         if line_item.formula.is_some() {
             return Err(EngineError::NotInput {
                 line_item: line_item.name.clone(),
@@ -668,13 +668,6 @@ fn cell_edits(command: &Command) -> Option<(LineItemId, &[CellEdit])> {
     }
 }
 
-fn missing_line_item(id: LineItemId) -> EngineError {
-    EngineError::NotFound {
-        what: "line item",
-        id: id.0.to_string(),
-    }
-}
-
 /// Whether the calculated column of line item `id` is still laid out as the structure now has
 /// it: the line item is still calculated, its type, axes and time scale are the same and no
 /// axis has gained, lost or moved an item, subset member, version or period.
@@ -720,7 +713,7 @@ fn ratio_part<'a>(
 ) -> Result<&'a LineItem, EngineError> {
     let part = structure
         .line_item(id)
-        .ok_or_else(|| missing_line_item(id))?;
+        .ok_or_else(|| EngineError::not_found("line item", id.0))?;
     if structure.line_item_shape(id)? != *shape {
         return Err(EngineError::Invalid {
             message: format!(
@@ -876,18 +869,7 @@ fn decode(structure: &Structure, ty: &ValueType, cell: Cell) -> Value {
         (ValueType::Period(level), Cell::Period(index)) => {
             Value::Period((index != BLANK_PERIOD).then_some((*level, index)))
         }
-        (ty, _) => blank_value(ty),
-    }
-}
-
-fn blank_value(ty: &ValueType) -> Value {
-    match ty {
-        ValueType::Number => Value::Number(0.0),
-        ValueType::Boolean => Value::Boolean(false),
-        ValueType::Text => Value::Text(Arc::from("")),
-        ValueType::Date => Value::Date(None),
-        ValueType::Item(_) => Value::Item(None),
-        ValueType::Period(_) => Value::Period(None),
+        (ty, _) => ty.blank(),
     }
 }
 

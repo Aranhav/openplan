@@ -238,18 +238,6 @@ fn formula_error(
     }
 }
 
-/// The value of an unset cell of type `ty`.
-fn blank_value(ty: ValueType) -> Value {
-    match ty {
-        ValueType::Number => Value::Number(0.0),
-        ValueType::Boolean => Value::Boolean(false),
-        ValueType::Text => Value::Text(Arc::from("")),
-        ValueType::Date => Value::Date(None),
-        ValueType::Item(_) => Value::Item(None),
-        ValueType::Period(_) => Value::Period(None),
-    }
-}
-
 /// The operator as it reads in an error message.
 fn symbol(op: BinOp) -> &'static str {
     match op {
@@ -379,7 +367,7 @@ impl<'a> Resolver<'a> {
 
     fn blank(&mut self, hint: Option<ValueType>, span: Span) -> Option<TExpr> {
         match hint {
-            Some(ty) => Some(constant(blank_value(ty), ty, span)),
+            Some(ty) => Some(constant(ty.blank(), ty, span)),
             None => self.mismatch(
                 span,
                 "BLANK takes the type of what it is used with, but nothing here says which type that is.",

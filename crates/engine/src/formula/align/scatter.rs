@@ -14,7 +14,7 @@ use crate::structure::LineItem;
 use crate::summary::with_actual_before_switchover;
 use crate::value::{Column, ValueType, sanitize_number};
 
-use super::{Builder, Driver, NONE, Work, dimension, invalid, list_of, not_found};
+use super::{Builder, Driver, NONE, Work, dimension, list_of};
 
 impl Builder<'_> {
     /// Combines the cells of the source that `mapping` sends to the same item or period, as
@@ -30,7 +30,7 @@ impl Builder<'_> {
         let structure = self.ctx.structure;
         let mapping_item = structure
             .line_item(mapping)
-            .ok_or_else(|| not_found("line item", mapping.0))?;
+            .ok_or_else(|| EngineError::not_found("line item", mapping.0))?;
         let ty = mapping_item.format.value_type();
         let (new_axis, new_len) = match ty {
             ValueType::Item(list) => (Axis::List(list), list_of(structure, list)?.len_dense()),
@@ -39,7 +39,7 @@ impl Builder<'_> {
                 structure.calendar.periods(level),
             ),
             _ => {
-                return Err(invalid(format!(
+                return Err(EngineError::invalid(format!(
                     "'{}' does not map to a list or a time period.",
                     mapping_item.name
                 )));
@@ -167,7 +167,9 @@ impl Builder<'_> {
         let cells: Vec<usize> = (0..work.shape.size()).collect();
         match reader.gather(&cells) {
             Column::Item(keys) | Column::Period(keys) => Ok(keys),
-            _ => Err(invalid("A mapping line item must hold items or periods.")),
+            _ => Err(EngineError::invalid(
+                "A mapping line item must hold items or periods.",
+            )),
         }
     }
 }
@@ -199,7 +201,7 @@ fn combine(
         }
         (K::FirstNonBlank | K::LastNonBlank, _) => Ok(non_blank(kind, column, targets, size)),
         (K::TextList, Column::Text(values)) => Ok(Column::Text(text_list(values, targets, size))),
-        _ => Err(invalid(format!(
+        _ => Err(EngineError::invalid(format!(
             "A {kind:?} modifier cannot combine this kind of line item."
         ))),
     }

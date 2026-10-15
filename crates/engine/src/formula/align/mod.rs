@@ -9,8 +9,6 @@
 
 use std::sync::Arc;
 
-use uuid::Uuid;
-
 use crate::error::{EngineError, FormulaError};
 use crate::ids::{LineItemId, ListId, VersionId};
 use crate::shape::{Axis, Shape};
@@ -288,12 +286,12 @@ impl Builder<'_> {
         let structure = self.ctx.structure;
         let line_item = structure
             .line_item(src)
-            .ok_or_else(|| not_found("line item", src.0))?;
+            .ok_or_else(|| EngineError::not_found("line item", src.0))?;
         let layout = structure.layout(line_item)?;
         let shape = structure.shape_of(&layout)?;
         let column = self.ctx.columns.column(src)?;
         if column.len() != shape.size() {
-            return Err(invalid(format!(
+            return Err(EngineError::invalid(format!(
                 "The values of line item '{}' do not fit its dimensions.",
                 line_item.name
             )));
@@ -346,7 +344,7 @@ impl Builder<'_> {
             .ctx
             .structure
             .line_item(mapping)
-            .ok_or_else(|| not_found("line item", mapping.0))?;
+            .ok_or_else(|| EngineError::not_found("line item", mapping.0))?;
         Ok(line_item.format.value_type())
     }
 
@@ -466,7 +464,7 @@ impl Builder<'_> {
                 Axis::List(_) | Axis::Subset(_) => self.plan_list(axis, driver, target),
                 Axis::Time { level, range } => self.plan_time((*level, *range), driver, target),
                 Axis::Versions => self.plan_versions(work, drivers, driver, target),
-                Axis::ListTop(_) => Err(invalid(format!(
+                Axis::ListTop(_) => Err(EngineError::invalid(format!(
                     "Line item '{}' cannot have a top-level axis.",
                     line_item.name
                 ))),
@@ -561,7 +559,7 @@ impl Builder<'_> {
         let structure = self.ctx.structure;
         let list = self
             .base_list(axis)
-            .ok_or_else(|| invalid("A list axis was expected."))?;
+            .ok_or_else(|| EngineError::invalid("A list axis was expected."))?;
         let has_top = list_of(structure, list)?.top_level_name.is_some();
         if !has_top {
             let name = match axis {
@@ -597,12 +595,12 @@ impl Builder<'_> {
             Axis::Subset(id) => {
                 let subset = structure
                     .subset(*id)
-                    .ok_or_else(|| not_found("subset", id.0))?;
+                    .ok_or_else(|| EngineError::not_found("subset", id.0))?;
                 let list = list_of(structure, subset.list)?;
                 let dense = subset.items.iter().map(|item| list.idx(*item)).collect();
                 Ok((subset.list, dense))
             }
-            _ => Err(invalid("A list axis was expected.")),
+            _ => Err(EngineError::invalid("A list axis was expected.")),
         }
     }
 
@@ -617,7 +615,7 @@ impl Builder<'_> {
         let structure = self.ctx.structure;
         let source = self
             .base_list(axis)
-            .ok_or_else(|| invalid("A list axis was expected."))?;
+            .ok_or_else(|| EngineError::invalid("A list axis was expected."))?;
         let dense = match self.relation(source, list)? {
             Relation::SourceFiner => return Ok((Axis::List(list), dense)),
             Relation::Unrelated => {
@@ -634,7 +632,7 @@ impl Builder<'_> {
             Axis::Subset(id) => {
                 let subset = structure
                     .subset(*id)
-                    .ok_or_else(|| not_found("subset", id.0))?;
+                    .ok_or_else(|| EngineError::not_found("subset", id.0))?;
                 let from = list_of(structure, source)?;
                 let mut member_of = vec![None; from.len_dense() as usize];
                 for (position, item) in subset.items.iter().enumerate() {
@@ -769,11 +767,13 @@ fn free_axis(work: &Work, drivers: &[Driver], wanted: impl Fn(&Axis) -> bool) ->
 }
 
 fn list_of(structure: &Structure, id: ListId) -> Result<&crate::structure::List, EngineError> {
-    structure.list(id).ok_or_else(|| not_found("list", id.0))
+    structure
+        .list(id)
+        .ok_or_else(|| EngineError::not_found("list", id.0))
 }
 
 fn mismatched_modifier() -> EngineError {
-    invalid("A modifier does not fit the dimension it was matched to.")
+    EngineError::invalid("A modifier does not fit the dimension it was matched to.")
 }
 
 fn dimension(message: impl Into<String>) -> EngineError {
@@ -784,17 +784,4 @@ fn dimension(message: impl Into<String>) -> EngineError {
         end: 0,
         suggestion: None,
     }])
-}
-
-fn invalid(message: impl Into<String>) -> EngineError {
-    EngineError::Invalid {
-        message: message.into(),
-    }
-}
-
-fn not_found(what: &'static str, id: Uuid) -> EngineError {
-    EngineError::NotFound {
-        what,
-        id: id.to_string(),
-    }
 }

@@ -199,21 +199,15 @@ impl Model {
     }
 }
 
-fn invalid(message: impl Into<String>) -> EngineError {
-    EngineError::Invalid {
-        message: message.into(),
-    }
-}
-
 fn damaged(what: &str) -> EngineError {
-    invalid(format!("A chunk of stored cells is damaged: {what}."))
+    EngineError::invalid(format!("A chunk of stored cells is damaged: {what}."))
 }
 
 /// The structure a document describes, made by the commands that make one so that everything
 /// they check is checked.
 fn rebuild(doc: StructureDoc) -> Result<Structure, EngineError> {
     if doc.format_version != STRUCTURE_FORMAT {
-        return Err(invalid(format!(
+        return Err(EngineError::invalid(format!(
             "Structure format {} is not supported.",
             doc.format_version
         )));
@@ -268,7 +262,7 @@ fn create_lists(structure: &mut Structure, lists: Vec<ListDoc>) -> Result<(), En
             .into_iter()
             .partition(|list| list.parent.is_none_or(|parent| created.contains(&parent)));
         if ready.is_empty() {
-            return Err(invalid(
+            return Err(EngineError::invalid(
                 "A list has a parent list that is missing, or lists are each other's parents.",
             ));
         }
@@ -724,7 +718,7 @@ impl Chunk {
         let mut head = [0; HEAD_BYTES];
         decoder.read_exact(&mut head[..1]).map_err(|_| short())?;
         if head[0] != CHUNK_FORMAT {
-            return Err(invalid(format!(
+            return Err(EngineError::invalid(format!(
                 "Chunk format {} is not supported.",
                 head[0]
             )));
