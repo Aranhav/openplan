@@ -158,6 +158,43 @@ describe("CreateModelDialog", () => {
     await waitFor(() => expect(router.state.location.pathname).toBe(`/m/${created.id}`))
   })
 
+  it("cannot be closed while the model is being created", async () => {
+    server.use(
+      http.post(listUrl, async () => {
+        await delay(300)
+        return HttpResponse.json(created, { status: 201 })
+      }),
+      http.get(listUrl, () => HttpResponse.json([created])),
+    )
+    const typist = userEvent.setup()
+    const { router, onOpenChange } = renderDialog()
+    const dialog = await openDialog()
+    await typist.type(within(dialog).getByLabelText("Name"), "FY27 Budget")
+    await typist.click(within(dialog).getByRole("button", { name: "Create model" }))
+
+    expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled()
+    expect(within(dialog).queryByRole("button", { name: "Close" })).not.toBeInTheDocument()
+    await typist.keyboard("{Escape}")
+    expect(onOpenChange).not.toHaveBeenCalled()
+    expect(screen.getByRole("dialog", { name: "Create model" })).toBeVisible()
+    // The dialog closes itself once the model exists.
+    await waitFor(() => expect(router.state.location.pathname).toBe(`/m/${created.id}`))
+    expect(onOpenChange).toHaveBeenCalledWith(false)
+  })
+
+  it("can be closed again after a failed attempt", async () => {
+    server.use(http.post(listUrl, () => problem(403, "auth.forbidden", "You can't do that.")))
+    const typist = userEvent.setup()
+    const { onOpenChange } = renderDialog()
+    const dialog = await openDialog()
+    await typist.type(within(dialog).getByLabelText("Name"), "FY27 Budget")
+    await typist.click(within(dialog).getByRole("button", { name: "Create model" }))
+    await waitFor(() => expect(toast.error).toHaveBeenCalled())
+    await typist.keyboard("{Escape}")
+
+    expect(onOpenChange).toHaveBeenCalledWith(false)
+  })
+
   it("closes without creating anything when Cancel is pressed", async () => {
     const typist = userEvent.setup()
     const { onOpenChange } = renderDialog()

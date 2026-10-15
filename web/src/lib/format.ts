@@ -18,6 +18,9 @@ const formatter = new Intl.RelativeTimeFormat("en", { numeric: "auto" })
 /** How long ago an RFC 3339 timestamp was, in words: "just now", "2 hours ago", "yesterday". */
 export function relativeTime(iso: string, now: Date = new Date()): string {
   const gap = new Date(iso).getTime() - now.getTime()
+  if (Number.isNaN(gap)) {
+    return "at an unknown time"
+  }
   // Within a minute either way, which also covers a server clock a little ahead of ours.
   if (Math.abs(gap) < MINUTE) {
     return "just now"

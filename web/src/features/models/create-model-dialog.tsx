@@ -36,24 +36,37 @@ export function CreateModelDialog({
   onOpenChange,
   onCloseAutoFocus,
 }: CreateModelDialogProps) {
+  const createModel = useCreateModel(workspaceId)
+  // Nothing closes the dialog while the model is being created: Escape, a click outside and the
+  // close button would hide a request that is still running.
+  const closeUnlessBusy = (next: boolean) => {
+    if (!createModel.isPending) {
+      onOpenChange(next)
+    }
+  }
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent onCloseAutoFocus={onCloseAutoFocus}>
+    <Dialog open={open} onOpenChange={closeUnlessBusy}>
+      <DialogContent onCloseAutoFocus={onCloseAutoFocus} showCloseButton={!createModel.isPending}>
         <DialogHeader>
           <DialogTitle>Create model</DialogTitle>
           <DialogDescription>
             Give your planning model a name. You can change it later.
           </DialogDescription>
         </DialogHeader>
-        <CreateModelForm workspaceId={workspaceId} onClose={() => onOpenChange(false)} />
+        <CreateModelForm createModel={createModel} onClose={() => onOpenChange(false)} />
       </DialogContent>
     </Dialog>
   )
 }
 
 // A separate component, so the form starts empty each time the dialog opens.
-function CreateModelForm({ workspaceId, onClose }: { workspaceId: string; onClose: () => void }) {
-  const createModel = useCreateModel(workspaceId)
+function CreateModelForm({
+  createModel,
+  onClose,
+}: {
+  createModel: ReturnType<typeof useCreateModel>
+  onClose: () => void
+}) {
   const navigate = useNavigate()
   const form = useForm<CreateModelValues>({
     resolver: zodResolver(schema),
@@ -77,7 +90,12 @@ function CreateModelForm({ workspaceId, onClose }: { workspaceId: string; onClos
         <ModelNameField autoFocus />
         <ModelDescriptionField />
         <DialogFooter>
-          <Button type="button" variant="outline" onClick={onClose}>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={createModel.isPending}
+            onClick={onClose}
+          >
             Cancel
           </Button>
           <Button type="submit" disabled={createModel.isPending}>

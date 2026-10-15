@@ -43,6 +43,11 @@ describe("relativeTime", () => {
     expect(relativeTime(ago(-3 * 60 * 60), now)).toBe("in 3 hours")
   })
 
+  it("does not fail on a timestamp it cannot read", () => {
+    expect(relativeTime("not a date", now)).toBe("at an unknown time")
+    expect(relativeTime("", now)).toBe("at an unknown time")
+  })
+
   it("compares with the current time when none is given", () => {
     expect(relativeTime(new Date().toISOString())).toBe("just now")
   })

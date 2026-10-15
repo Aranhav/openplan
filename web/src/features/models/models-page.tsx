@@ -17,7 +17,7 @@ import { ModelCard } from "./model-card"
 
 const GRID = "grid gap-4 sm:grid-cols-2 xl:grid-cols-3"
 
-export function ModelsPage({ workspaceId }: { workspaceId: string }) {
+export function ModelsPage() {
   const { workspace, isLoading } = useCurrentWorkspace()
 
   if (isLoading) {
@@ -28,8 +28,8 @@ export function ModelsPage({ workspaceId }: { workspaceId: string }) {
       </>
     )
   }
-  // The current workspace falls back to another one when the address names none the user is in.
-  if (workspace?.id !== workspaceId) {
+  // Without a current workspace, the address names one the user is not in.
+  if (!workspace) {
     return <WorkspaceNotFound />
   }
   return <WorkspaceModels workspace={workspace} />
@@ -40,7 +40,8 @@ function WorkspaceModels({ workspace }: { workspace: components["schemas"]["Work
   const [creating, setCreating] = useState(false)
   const { ref: newModelRef, onCloseAutoFocus: restoreFocus } = useRestoreFocus<HTMLButtonElement>()
   const canEdit = canEditModels(workspace.role)
-  const isEmpty = models.isSuccess && models.data.length === 0
+  // A refresh that fails keeps the list on screen: only a list that never loaded is an error.
+  const list = models.data
 
   const newModel = canEdit && (
     <Button ref={newModelRef} onClick={() => setCreating(true)}>
@@ -51,15 +52,17 @@ function WorkspaceModels({ workspace }: { workspace: components["schemas"]["Work
 
   return (
     <>
-      {/* An empty list has the same button in its own message, so the header leaves it out. */}
+      {/* An empty list has the same button in its own message; one still loading has no button. */}
       <PageHeader
         title="Models"
         description={`Planning models in ${workspace.name}.`}
-        actions={!isEmpty && newModel}
+        actions={list !== undefined && list.length > 0 && newModel}
       />
       {models.isPending && <ModelCardsSkeleton />}
-      {models.isError && <ErrorState error={models.error} onRetry={() => void models.refetch()} />}
-      {isEmpty && (
+      {models.isError && !list && (
+        <ErrorState error={models.error} onRetry={() => void models.refetch()} />
+      )}
+      {list?.length === 0 && (
         <EmptyState
           icon={Boxes}
           title="No models yet"
@@ -71,10 +74,15 @@ function WorkspaceModels({ workspace }: { workspace: components["schemas"]["Work
           action={newModel}
         />
       )}
-      {models.isSuccess && !isEmpty && (
+      {list !== undefined && list.length > 0 && (
         <div className={GRID}>
-          {models.data.map((model) => (
-            <ModelCard key={model.id} model={model} canEdit={canEdit} />
+          {list.map((model) => (
+            <ModelCard
+              key={model.id}
+              model={model}
+              canEdit={canEdit}
+              fallbackFocus={() => newModelRef.current}
+            />
           ))}
         </div>
       )}

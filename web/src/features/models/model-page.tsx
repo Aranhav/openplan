@@ -1,5 +1,5 @@
 import { Link, useNavigate } from "@tanstack/react-router"
-import { Box } from "lucide-react"
+import { ArrowLeft, Box } from "lucide-react"
 import { useState } from "react"
 import { EmptyState } from "@/components/empty-state"
 import { ErrorState } from "@/components/error-state"
@@ -21,29 +21,15 @@ import { ModelSettingsForm } from "./model-settings-form"
 export function ModelPage({ modelId }: { modelId: string }) {
   const model = useModel(modelId)
 
-  if (model.isPending) {
-    return (
-      <>
-        <PageHeader title="Model" />
-        <div role="status" aria-label="Loading model" className="max-w-2xl">
-          <Card>
-            <CardHeader>
-              <Skeleton className="h-5 w-36" />
-            </CardHeader>
-            <CardContent className="grid gap-4">
-              <Skeleton className="h-9 w-full" />
-              <Skeleton className="h-16 w-full" />
-              <Skeleton className="h-18 w-full" />
-            </CardContent>
-          </Card>
-        </div>
-      </>
-    )
+  // A 404 means the model is gone, even if a copy of it is still on screen. Any other failure to
+  // refresh leaves the page as it is, so a form with unsaved changes is never unmounted.
+  if (model.error instanceof ApiError && model.error.status === 404) {
+    return <ModelNotFound />
+  }
+  if (model.data) {
+    return <ModelDetails model={model.data} />
   }
   if (model.isError) {
-    if (model.error instanceof ApiError && model.error.status === 404) {
-      return <ModelNotFound />
-    }
     return (
       <>
         <PageHeader title="Model" />
@@ -51,7 +37,23 @@ export function ModelPage({ modelId }: { modelId: string }) {
       </>
     )
   }
-  return <ModelDetails model={model.data} />
+  return (
+    <>
+      <PageHeader title="Model" />
+      <div role="status" aria-label="Loading model" className="max-w-2xl">
+        <Card>
+          <CardHeader>
+            <Skeleton className="h-5 w-36" />
+          </CardHeader>
+          <CardContent className="grid gap-4">
+            <Skeleton className="h-9 w-full" />
+            <Skeleton className="h-16 w-full" />
+            <Skeleton className="h-18 w-full" />
+          </CardContent>
+        </Card>
+      </div>
+    </>
+  )
 }
 
 function ModelNotFound() {
@@ -63,7 +65,10 @@ function ModelNotFound() {
       description="It may have been deleted, or you don't have access."
       action={
         <Button asChild>
-          <Link to="/">Back to models</Link>
+          <Link to="/">
+            <ArrowLeft />
+            Back to models
+          </Link>
         </Button>
       }
       headingLevel={1}
@@ -115,6 +120,7 @@ function ModelDetails({ model }: { model: components["schemas"]["ModelDto"] }) {
           open={deleting}
           onOpenChange={setDeleting}
           onCloseAutoFocus={restoreFocus}
+          focusAfterDelete={() => document.querySelector("h1")}
           onDeleted={() =>
             navigate({ to: "/w/$workspaceId", params: { workspaceId: model.workspace_id } })
           }

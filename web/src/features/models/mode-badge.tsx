@@ -1,6 +1,18 @@
 import { Badge } from "@/components/ui/badge"
 import type { components } from "@/lib/api/schema"
 
-export function ModeBadge({ mode }: { mode: components["schemas"]["ModelMode"] }) {
-  return mode === "prod" ? <Badge>Production</Badge> : <Badge variant="secondary">Dev</Badge>
+interface ModeBadgeProps {
+  mode: components["schemas"]["ModelMode"]
+  /** Spoken as "Mode: Dev"; turn off where a visible "Mode" label already comes first. */
+  announceMode?: boolean
+}
+
+export function ModeBadge({ mode, announceMode = true }: ModeBadgeProps) {
+  const label = mode === "prod" ? "Production" : "Dev"
+  return (
+    <Badge variant={mode === "prod" ? "default" : "secondary"}>
+      {announceMode && <span className="sr-only">Mode: </span>}
+      {label}
+    </Badge>
+  )
 }

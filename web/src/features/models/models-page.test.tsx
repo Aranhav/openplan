@@ -1,11 +1,16 @@
-import { screen, waitFor, within } from "@testing-library/react"
+import type { QueryClient } from "@tanstack/react-query"
+import { act, configure, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { HttpResponse, delay, http } from "msw"
 import { toast } from "sonner"
 import { describe, expect, it, vi } from "vitest"
+import { queryKeys } from "@/lib/api/keys"
 import { makeModel, me, mockSession, renderApp, serveModels, workspace } from "@/test/app"
 import { problem } from "@/test/problem"
 import { server } from "@/test/server"
+
+// The first render of the whole app in a test file can take over a second on a busy machine.
+configure({ asyncUtilTimeout: 3000 })
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 
@@ -36,6 +41,23 @@ async function openMenu(typist: Typist, modelName: string) {
   return screen.findByRole("menu")
 }
 
+async function confirmDeletion(typist: Typist, modelName: string) {
+  const menu = await openMenu(typist, modelName)
+  await typist.click(within(menu).getByRole("menuitem", { name: "Delete" }))
+  const dialog = await screen.findByRole("alertdialog", { name: `Delete ${modelName}?` })
+  await typist.click(within(dialog).getByRole("button", { name: "Delete model" }))
+}
+
+/** Refetches `key`, then gives the query client the tick it needs to tell the page how that went. */
+async function refresh(queryClient: QueryClient, key: readonly unknown[]) {
+  await act(async () => {
+    await queryClient.invalidateQueries({ queryKey: key })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  })
+}
+
+const costPlan = makeModel({ id: "0192f3a0-0000-7000-8000-000000000013", name: "Cost plan" })
+
 describe("the models page", () => {
   it("names the workspace", async () => {
     mockSession()
@@ -65,11 +87,7 @@ describe("the models page", () => {
 
   it("lists the models as cards that open the model", async () => {
     mockSession()
-    serveModels([
-      revenue,
-      headcount,
-      makeModel({ id: "0192f3a0-0000-7000-8000-000000000013", name: "Cost plan" }),
-    ])
+    serveModels([revenue, headcount, costPlan])
     renderApp(`/w/${workspace.id}`)
 
     const link = await screen.findByRole("link", { name: "Revenue plan" })
@@ -77,11 +95,70 @@ describe("the models page", () => {
     const card = within(link)
     expect(card.getByText("Top-down revenue forecast for the next fiscal year.")).toBeVisible()
     expect(card.getByText("Dev")).toBeVisible()
+    expect(card.getByText("Mode:")).toHaveClass("sr-only")
     expect(card.getByText("Updated 2 hours ago")).toBeVisible()
 
     const production = within(screen.getByRole("link", { name: "Headcount plan" }))
     expect(production.getByText("Production")).toBeVisible()
     expect(production.getByText("No description")).toBeVisible()
+  })
+
+  it("offers the full name of a card whose title is cut short", async () => {
+    const longName = "Regional sales and marketing campaign performance planning model for EMEA"
+    mockSession()
+    serveModels([makeModel({ name: longName })])
+    renderApp(`/w/${workspace.id}`)
+
+    expect(await screen.findByTitle(longName)).toHaveTextContent(longName)
+  })
+
+  it("offers New model only once the list has loaded", async () => {
+    mockSession()
+    server.use(
+      http.get(listUrl, async () => {
+        await delay(100)
+        return HttpResponse.json([revenue])
+      }),
+    )
+    renderApp(`/w/${workspace.id}`)
+
+    await screen.findByRole("status", { name: "Loading models" })
+    expect(screen.queryByRole("button", { name: "New model" })).not.toBeInTheDocument()
+    expect(await screen.findByRole("button", { name: "New model" })).toBeVisible()
+  })
+
+  it("keeps the list, and New model, on screen when a refresh fails", async () => {
+    mockSession()
+    serveModels([revenue])
+    const { queryClient } = renderApp(`/w/${workspace.id}`)
+    await screen.findByRole("link", { name: "Revenue plan" })
+    server.use(http.get(listUrl, () => problem(500, "internal", "The database is starting up.")))
+    await refresh(queryClient, queryKeys.models(workspace.id))
+
+    expect(queryClient.getQueryState(queryKeys.models(workspace.id))?.status).toBe("error")
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+    expect(screen.getByRole("link", { name: "Revenue plan" })).toBeVisible()
+    expect(screen.getByRole("button", { name: "New model" })).toBeVisible()
+  })
+
+  it("keeps an empty list on screen when a refresh fails", async () => {
+    mockSession()
+    const { queryClient } = renderApp(`/w/${workspace.id}`)
+    await screen.findByRole("heading", { name: "No models yet" })
+    server.use(http.get(listUrl, () => problem(500, "internal", "The database is starting up.")))
+    await refresh(queryClient, queryKeys.models(workspace.id))
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+    expect(screen.getByRole("heading", { name: "No models yet" })).toBeVisible()
+  })
+
+  it("offers no New model while the list could not be loaded", async () => {
+    mockSession()
+    server.use(http.get(listUrl, () => problem(500, "internal", "The database is starting up.")))
+    renderApp(`/w/${workspace.id}`)
+
+    expect(await screen.findByRole("alert")).toBeVisible()
+    expect(screen.queryByRole("button", { name: "New model" })).not.toBeInTheDocument()
   })
 
   it("opens a model when its card is clicked", async () => {
@@ -263,6 +340,89 @@ describe("the models page", () => {
     expect(screen.getByRole("link", { name: "Headcount plan" })).toBeVisible()
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument()
     expect(router.state.location.pathname).toBe(`/w/${workspace.id}`)
+  })
+
+  it("moves focus to the next card when a model is deleted", async () => {
+    mockSession()
+    serveModels([revenue, headcount, costPlan])
+    const typist = userEvent.setup()
+    renderApp(`/w/${workspace.id}`)
+    await confirmDeletion(typist, "Revenue plan")
+
+    await waitFor(() => expect(screen.queryByRole("link", { name: "Revenue plan" })).toBeNull())
+    await waitFor(() => expect(screen.getByRole("link", { name: "Headcount plan" })).toHaveFocus())
+  })
+
+  it("moves focus to the previous card when the last one is deleted", async () => {
+    mockSession()
+    serveModels([revenue, headcount, costPlan])
+    const typist = userEvent.setup()
+    renderApp(`/w/${workspace.id}`)
+    await confirmDeletion(typist, "Cost plan")
+
+    await waitFor(() => expect(screen.queryByRole("link", { name: "Cost plan" })).toBeNull())
+    await waitFor(() => expect(screen.getByRole("link", { name: "Headcount plan" })).toHaveFocus())
+  })
+
+  it("moves focus to New model when the only model is deleted", async () => {
+    mockSession()
+    serveModels([revenue])
+    const typist = userEvent.setup()
+    renderApp(`/w/${workspace.id}`)
+    await confirmDeletion(typist, "Revenue plan")
+
+    expect(await screen.findByRole("heading", { name: "No models yet" })).toBeVisible()
+    await waitFor(() => expect(screen.getByRole("button", { name: "New model" })).toHaveFocus())
+  })
+
+  it("cannot be dismissed while a model is being deleted", async () => {
+    mockSession()
+    const store = serveModels([revenue, headcount])
+    server.use(
+      http.delete(`/api/v1/models/${revenue.id}`, async () => {
+        await delay(300)
+        store.models = [headcount]
+        return new HttpResponse(null, { status: 204 })
+      }),
+    )
+    const typist = userEvent.setup()
+    renderApp(`/w/${workspace.id}`)
+    await confirmDeletion(typist, "Revenue plan")
+    const dialog = screen.getByRole("alertdialog", { name: "Delete Revenue plan?" })
+
+    expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled()
+    expect(within(dialog).getByRole("button", { name: "Delete model" })).toBeDisabled()
+    await typist.keyboard("{Escape}")
+    expect(screen.getByRole("alertdialog", { name: "Delete Revenue plan?" })).toBeVisible()
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith("Model deleted"))
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument()
+  })
+
+  it("cannot be dismissed while a model is being renamed", async () => {
+    mockSession()
+    serveModels([revenue])
+    server.use(
+      http.patch(`/api/v1/models/${revenue.id}`, async () => {
+        await delay(300)
+        return HttpResponse.json({ ...revenue, name: "Revenue forecast" })
+      }),
+    )
+    const typist = userEvent.setup()
+    renderApp(`/w/${workspace.id}`)
+    const menu = await openMenu(typist, "Revenue plan")
+    await typist.click(within(menu).getByRole("menuitem", { name: "Rename" }))
+    const dialog = await screen.findByRole("dialog", { name: "Rename model" })
+    const name = within(dialog).getByLabelText("Name")
+    await typist.clear(name)
+    await typist.type(name, "Revenue forecast")
+    await typist.click(within(dialog).getByRole("button", { name: "Rename model" }))
+
+    expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled()
+    expect(within(dialog).queryByRole("button", { name: "Close" })).not.toBeInTheDocument()
+    await typist.keyboard("{Escape}")
+    expect(screen.getByRole("dialog", { name: "Rename model" })).toBeVisible()
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith("Model renamed"))
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument())
   })
 
   it("keeps the model when the deletion is cancelled", async () => {

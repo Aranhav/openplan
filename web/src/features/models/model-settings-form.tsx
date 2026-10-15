@@ -52,20 +52,27 @@ export function ModelSettingsForm({ model, canEdit }: ModelSettingsFormProps) {
 
 function EditableSettings({ model }: { model: ModelDto }) {
   const updateModel = useUpdateModel(model.id)
+  // The form follows the model: a field nobody has touched takes the latest saved value (a rename
+  // from elsewhere shows up), a field being edited keeps what was typed.
   const form = useForm<SettingsValues>({
     resolver: zodResolver(schema),
-    defaultValues: settingsOf(model),
+    values: settingsOf(model),
+    resetOptions: { keepDirtyValues: true },
   })
 
   async function onSubmit({ name, description, production }: SettingsValues) {
+    // Only what was changed is sent, so saving one field never overwrites another that was
+    // changed somewhere else in the meantime.
+    const { dirtyFields } = form.formState
     try {
       const saved = await updateModel.mutateAsync({
-        name,
-        description,
-        mode: production ? "prod" : "dev",
+        ...(dirtyFields.name && { name }),
+        ...(dirtyFields.description && { description }),
+        ...(dirtyFields.production && { mode: production ? "prod" : "dev" }),
       })
-      // Starts over from what the server kept (the name, trimmed), so the form is clean again.
-      form.reset(settingsOf(saved))
+      // Starts over from what the server kept (the name, trimmed), so the form is clean again;
+      // without the option, the form's own `keepDirtyValues` would keep what was typed.
+      form.reset(settingsOf(saved), { keepDirtyValues: false })
       toast.success("Changes saved")
     } catch (error) {
       reportModelFormError(form, error)
@@ -122,7 +129,7 @@ function ReadOnlySettings({ model }: { model: ModelDto }) {
           {model.description || <span className="text-muted-foreground">No description</span>}
         </Setting>
         <Setting label="Mode">
-          <ModeBadge mode={model.mode} />
+          <ModeBadge mode={model.mode} announceMode={false} />
         </Setting>
       </dl>
     </CardContent>

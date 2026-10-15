@@ -36,28 +36,41 @@ export function RenameModelDialog({
   onOpenChange,
   onCloseAutoFocus,
 }: RenameModelDialogProps) {
+  const updateModel = useUpdateModel(model.id)
+  // Nothing closes the dialog while the rename is being saved: Escape, a click outside and the
+  // close button would hide a request that is still running.
+  const closeUnlessBusy = (next: boolean) => {
+    if (!updateModel.isPending) {
+      onOpenChange(next)
+    }
+  }
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent onCloseAutoFocus={onCloseAutoFocus}>
+    <Dialog open={open} onOpenChange={closeUnlessBusy}>
+      <DialogContent onCloseAutoFocus={onCloseAutoFocus} showCloseButton={!updateModel.isPending}>
         <DialogHeader>
           <DialogTitle>Rename model</DialogTitle>
           <DialogDescription>Each model in a workspace needs its own name.</DialogDescription>
         </DialogHeader>
-        <RenameModelForm model={model} onClose={() => onOpenChange(false)} />
+        <RenameModelForm
+          model={model}
+          updateModel={updateModel}
+          onClose={() => onOpenChange(false)}
+        />
       </DialogContent>
     </Dialog>
   )
 }
 
-// A separate component, so the form starts from the model's current name each time the dialog opens.
+// A separate component, so the form starts from the model's current name on every opening.
 function RenameModelForm({
   model,
+  updateModel,
   onClose,
 }: {
   model: RenameModelDialogProps["model"]
+  updateModel: ReturnType<typeof useUpdateModel>
   onClose: () => void
 }) {
-  const updateModel = useUpdateModel(model.id)
   const form = useForm<RenameModelValues>({
     resolver: zodResolver(schema),
     defaultValues: { name: model.name },
@@ -82,7 +95,12 @@ function RenameModelForm({
       <form onSubmit={form.handleSubmit(onSubmit)} noValidate className="flex flex-col gap-4">
         <ModelNameField autoFocus />
         <DialogFooter>
-          <Button type="button" variant="outline" onClick={onClose}>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={updateModel.isPending}
+            onClick={onClose}
+          >
             Cancel
           </Button>
           <Button type="submit" disabled={updateModel.isPending}>
