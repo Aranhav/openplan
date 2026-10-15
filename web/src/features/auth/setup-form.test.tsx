@@ -67,9 +67,32 @@ describe("SetupForm", () => {
     await submit(typist)
 
     expect(await screen.findByText("Name is required.")).toBeInTheDocument()
-    expect(screen.getByText("Enter a valid email address.")).toBeInTheDocument()
+    expect(screen.getByText("Enter an email address.")).toBeInTheDocument()
     expect(screen.getByText("Password must be at least 10 characters.")).toBeInTheDocument()
     expect(screen.getByText("Workspace name is required.")).toBeInTheDocument()
+    expect(attempts).not.toHaveBeenCalled()
+  })
+
+  it("holds the email and the names to the same rules as everywhere else", async () => {
+    const attempts = vi.fn()
+    server.use(
+      http.post("/api/v1/setup", () => {
+        attempts()
+        return HttpResponse.json({ user, workspace }, { status: 201 })
+      }),
+    )
+    const typist = userEvent.setup()
+    renderWithProviders(<SetupForm />)
+    await typist.click(await screen.findByLabelText("Your name"))
+    await typist.paste("n".repeat(101))
+    await typist.type(screen.getByLabelText("Work email"), "not-an-email")
+    await typist.click(screen.getByLabelText("Workspace name"))
+    await typist.paste("w".repeat(81))
+    await submit(typist)
+
+    expect(await screen.findByText("Name must be at most 100 characters.")).toBeInTheDocument()
+    expect(screen.getByText("Enter a valid email address.")).toBeInTheDocument()
+    expect(screen.getByText("Workspace name must be at most 80 characters.")).toBeInTheDocument()
     expect(attempts).not.toHaveBeenCalled()
   })
 
@@ -149,9 +172,7 @@ describe("SetupForm", () => {
   })
 
   it("reports other failures in a toast and stays put", async () => {
-    server.use(
-      http.post("/api/v1/setup", () => problem(500, "internal", "Something went wrong.")),
-    )
+    server.use(http.post("/api/v1/setup", () => problem(500, "internal", "Something went wrong.")))
     const typist = userEvent.setup()
     const { router } = renderWithProviders(<SetupForm />)
     await fillForm(typist)

@@ -1,7 +1,7 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useNavigate } from "@tanstack/react-router"
 import { Loader2 } from "lucide-react"
-import { type UseFormReturn, useForm } from "react-hook-form"
+import { useForm } from "react-hook-form"
 import { toast } from "sonner"
 import { z } from "zod"
 import { Button } from "@/components/ui/button"
@@ -15,32 +15,24 @@ import {
   FormMessage,
 } from "@/components/ui/form"
 import { Input } from "@/components/ui/input"
-import { ApiError, type FieldError, errorDetail } from "@/lib/api/client"
+import { ApiError } from "@/lib/api/client"
+import { reportFormError } from "@/lib/form-errors"
+import {
+  emailSchema,
+  passwordSchema,
+  personNameSchema,
+  workspaceNameSchema,
+} from "@/lib/validation"
 import { useSetup } from "./api"
 
 // Field names match the API's, so server validation errors map straight onto them.
 const schema = z
   .object({
-    name: z
-      .string()
-      .trim()
-      .min(1, "Name is required.")
-      .max(100, "Name must be at most 100 characters."),
-    email: z
-      .string()
-      .trim()
-      .max(254, "Email must be at most 254 characters.")
-      .regex(/^[^@]+@[^@]+$/, "Enter a valid email address."),
-    password: z
-      .string()
-      .min(10, "Password must be at least 10 characters.")
-      .max(256, "Password must be at most 256 characters."),
+    name: personNameSchema,
+    email: emailSchema,
+    password: passwordSchema,
     confirm_password: z.string(),
-    workspace_name: z
-      .string()
-      .trim()
-      .min(1, "Workspace name is required.")
-      .max(80, "Workspace name must be at most 80 characters."),
+    workspace_name: workspaceNameSchema,
   })
   .refine((values) => values.password === values.confirm_password, {
     path: ["confirm_password"],
@@ -55,22 +47,6 @@ const DEFAULT_VALUES: SetupValues = {
   password: "",
   confirm_password: "",
   workspace_name: "",
-}
-
-function isFormField(field: string): field is keyof SetupValues {
-  return Object.hasOwn(DEFAULT_VALUES, field)
-}
-
-/** Shows the server's field errors under their inputs; returns whether any matched. */
-function showFieldErrors(form: UseFormReturn<SetupValues>, errors: FieldError[]): boolean {
-  let shown = false
-  for (const { field, message } of errors) {
-    if (isFormField(field)) {
-      form.setError(field, { message }, { shouldFocus: !shown })
-      shown = true
-    }
-  }
-  return shown
 }
 
 export function SetupForm() {
@@ -93,8 +69,8 @@ export function SetupForm() {
       if (error instanceof ApiError && error.code === "setup.already_done") {
         toast.info("OpenPlan is already set up. Sign in to continue.")
         await navigate({ to: "/login" })
-      } else if (!(error instanceof ApiError && showFieldErrors(form, error.errors))) {
-        toast.error(errorDetail(error))
+      } else {
+        reportFormError(form, error)
       }
       return
     }

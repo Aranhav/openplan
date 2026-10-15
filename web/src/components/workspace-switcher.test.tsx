@@ -205,6 +205,68 @@ describe("the workspace switcher", () => {
     await waitFor(() => expect(router.state.location.pathname).toBe(`/w/${initech.id}`))
   })
 
+  it("can't be dismissed while the workspace is being created", async () => {
+    mockSession()
+    server.use(
+      http.post("/api/v1/workspaces", async () => {
+        await delay(300)
+        return HttpResponse.json(initech, { status: 201 })
+      }),
+    )
+    const typist = userEvent.setup()
+    const { router } = renderApp(`/w/${workspace.id}`)
+    const menu = await openSwitcher(typist)
+    await typist.click(within(menu).getByRole("menuitem", { name: "Create workspace" }))
+    const dialog = await screen.findByRole("dialog", { name: "Create workspace" })
+    await typist.type(within(dialog).getByLabelText("Workspace name"), "Initech")
+    await typist.click(within(dialog).getByRole("button", { name: "Create workspace" }))
+
+    expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled()
+    expect(within(dialog).queryByRole("button", { name: "Close" })).not.toBeInTheDocument()
+    await typist.keyboard("{Escape}")
+    expect(screen.getByRole("dialog", { name: "Create workspace" })).toBeVisible()
+    // The dialog closes itself once the workspace exists.
+    await waitFor(() => expect(router.state.location.pathname).toBe(`/w/${initech.id}`))
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument())
+  })
+
+  it("can be closed again after a failed attempt, which is reported in a toast", async () => {
+    mockSession()
+    server.use(
+      http.post("/api/v1/workspaces", () => problem(403, "auth.forbidden", "You can't do that.")),
+    )
+    const typist = userEvent.setup()
+    renderApp(`/w/${workspace.id}`)
+    const menu = await openSwitcher(typist)
+    await typist.click(within(menu).getByRole("menuitem", { name: "Create workspace" }))
+    const dialog = await screen.findByRole("dialog", { name: "Create workspace" })
+    await typist.type(within(dialog).getByLabelText("Workspace name"), "Initech")
+    await typist.click(within(dialog).getByRole("button", { name: "Create workspace" }))
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("You can't do that."))
+    expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeEnabled()
+    expect(within(dialog).getByRole("button", { name: "Close" })).toBeInTheDocument()
+    await typist.keyboard("{Escape}")
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument())
+  })
+
+  it("keeps the name to 80 characters", async () => {
+    mockSession()
+    const typist = userEvent.setup()
+    renderApp(`/w/${workspace.id}`)
+    const menu = await openSwitcher(typist)
+    await typist.click(within(menu).getByRole("menuitem", { name: "Create workspace" }))
+    const dialog = await screen.findByRole("dialog", { name: "Create workspace" })
+    await typist.click(within(dialog).getByLabelText("Workspace name"))
+    await typist.paste("w".repeat(81))
+    await typist.click(within(dialog).getByRole("button", { name: "Create workspace" }))
+
+    expect(
+      await within(dialog).findByText("Workspace name must be at most 80 characters."),
+    ).toBeVisible()
+  })
+
   it("does not offer workspace creation to anyone else", async () => {
     mockSession({ me: { ...me, user: { ...user, is_instance_admin: false } } })
     const typist = userEvent.setup()

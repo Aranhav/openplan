@@ -22,16 +22,12 @@ import {
   FormMessage,
 } from "@/components/ui/form"
 import { Input } from "@/components/ui/input"
-import { ApiError, errorDetail } from "@/lib/api/client"
+import { closeUnlessBusy } from "@/lib/close-unless-busy"
+import { reportFormError } from "@/lib/form-errors"
+import { workspaceNameSchema } from "@/lib/validation"
 import { useCreateWorkspace } from "./api"
 
-const schema = z.object({
-  name: z
-    .string()
-    .trim()
-    .min(1, "Workspace name is required.")
-    .max(80, "Workspace name must be at most 80 characters."),
-})
+const schema = z.object({ name: workspaceNameSchema })
 
 type CreateWorkspaceValues = z.infer<typeof schema>
 
@@ -47,24 +43,36 @@ export function CreateWorkspaceDialog({
   onOpenChange,
   onCloseAutoFocus,
 }: CreateWorkspaceDialogProps) {
+  const createWorkspace = useCreateWorkspace()
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent onCloseAutoFocus={onCloseAutoFocus}>
+    <Dialog open={open} onOpenChange={closeUnlessBusy(createWorkspace.isPending, onOpenChange)}>
+      <DialogContent
+        onCloseAutoFocus={onCloseAutoFocus}
+        showCloseButton={!createWorkspace.isPending}
+      >
         <DialogHeader>
           <DialogTitle>Create workspace</DialogTitle>
           <DialogDescription>
             A workspace holds planning models and the people who work on them.
           </DialogDescription>
         </DialogHeader>
-        <CreateWorkspaceForm onClose={() => onOpenChange(false)} />
+        <CreateWorkspaceForm
+          createWorkspace={createWorkspace}
+          onClose={() => onOpenChange(false)}
+        />
       </DialogContent>
     </Dialog>
   )
 }
 
 // A separate component, so the form starts empty each time the dialog opens.
-function CreateWorkspaceForm({ onClose }: { onClose: () => void }) {
-  const createWorkspace = useCreateWorkspace()
+function CreateWorkspaceForm({
+  createWorkspace,
+  onClose,
+}: {
+  createWorkspace: ReturnType<typeof useCreateWorkspace>
+  onClose: () => void
+}) {
   const navigate = useNavigate()
   const form = useForm<CreateWorkspaceValues>({
     resolver: zodResolver(schema),
@@ -78,12 +86,7 @@ function CreateWorkspaceForm({ onClose }: { onClose: () => void }) {
       onClose()
       await navigate({ to: "/w/$workspaceId", params: { workspaceId: workspace.id } })
     } catch (error) {
-      const fieldError = error instanceof ApiError && error.errors.find((e) => e.field === "name")
-      if (fieldError) {
-        form.setError("name", { message: fieldError.message }, { shouldFocus: true })
-      } else {
-        toast.error(errorDetail(error))
-      }
+      reportFormError(form, error)
     }
   }
 
@@ -104,7 +107,12 @@ function CreateWorkspaceForm({ onClose }: { onClose: () => void }) {
           )}
         />
         <DialogFooter>
-          <Button type="button" variant="outline" onClick={onClose}>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={createWorkspace.isPending}
+            onClick={onClose}
+          >
             Cancel
           </Button>
           <Button type="submit" disabled={createWorkspace.isPending}>

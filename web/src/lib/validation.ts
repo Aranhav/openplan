@@ -15,6 +15,12 @@ export const personNameSchema = z
   .min(1, "Name is required.")
   .max(100, "Name must be at most 100 characters.")
 
+export const workspaceNameSchema = z
+  .string()
+  .trim()
+  .min(1, "Workspace name is required.")
+  .max(80, "Workspace name must be at most 80 characters.")
+
 export const passwordSchema = z
   .string()
   .min(10, "Password must be at least 10 characters.")
