@@ -1,12 +1,15 @@
 import { type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { useNavigate } from "@tanstack/react-router"
 import { meQuery } from "@/features/auth/api"
 import { api, unwrap } from "@/lib/api/client"
 import { queryKeys } from "@/lib/api/keys"
 import type { components } from "@/lib/api/schema"
+import { pickWorkspace } from "@/lib/last-workspace"
 import type { WorkspaceRole } from "./roles"
 
 type WorkspaceNameRequest = components["schemas"]["WorkspaceNameRequest"]
 type AddMemberRequest = components["schemas"]["AddMemberRequest"]
+type MeResponse = components["schemas"]["MeResponse"]
 
 /** The workspace list is part of the signed-in user, so a change to a workspace refreshes that. */
 function refreshWorkspaces(queryClient: QueryClient) {
@@ -87,5 +90,39 @@ export function useRemoveMember(wsId: string) {
         queryClient.invalidateQueries({ queryKey: queryKeys.members(wsId) }),
         refreshWorkspaces(queryClient),
       ]),
+  })
+}
+
+/**
+ * The signed-in user removes themselves from a workspace. They can no longer open its pages, so
+ * they move on before the workspace list is refreshed: refreshing first would turn the page they
+ * are looking at into "not found" for a moment. Nor is the members list asked for again; they
+ * could no longer read it.
+ */
+export function useLeaveWorkspace(wsId: string) {
+  const queryClient = useQueryClient()
+  const navigate = useNavigate()
+  return useMutation({
+    mutationFn: (userId: string) =>
+      unwrap(
+        api.DELETE("/workspaces/{id}/members/{user_id}", {
+          params: { path: { id: wsId, user_id: userId } },
+        }),
+      ),
+    onSuccess: async () => {
+      const remaining = queryClient
+        .getQueryData<MeResponse>(queryKeys.me)
+        ?.workspaces.filter((workspace) => workspace.id !== wsId)
+      const next = pickWorkspace(remaining ?? [])
+      if (next) {
+        await navigate({ to: "/w/$workspaceId", params: { workspaceId: next.id } })
+      }
+      void queryClient.invalidateQueries({ queryKey: queryKeys.members(wsId), refetchType: "none" })
+      await refreshWorkspaces(queryClient)
+      // With no workspace left, home is the "not in any workspace" page, which needs the fresh list.
+      if (!next) {
+        await navigate({ to: "/" })
+      }
+    },
   })
 }

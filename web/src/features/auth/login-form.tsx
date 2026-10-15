@@ -17,6 +17,7 @@ import {
 import { Input } from "@/components/ui/input"
 import { ApiError, errorDetail } from "@/lib/api/client"
 import { useLogin } from "./api"
+import { rateLimitMessage } from "./rate-limit"
 import { safeRedirectPath } from "./redirect"
 
 const schema = z.object({
@@ -32,17 +33,10 @@ interface LoginFormProps {
 }
 
 function failureAlert(error: unknown): string | undefined {
-  if (!(error instanceof ApiError)) {
-    return undefined
-  }
-  if (error.code === "auth.invalid_credentials") {
+  if (error instanceof ApiError && error.code === "auth.invalid_credentials") {
     return "Email or password is incorrect."
   }
-  if (error.code === "auth.rate_limited") {
-    const minutes = Math.max(1, Math.ceil((error.retryAfter ?? 0) / 60))
-    return `Too many attempts. Try again in ${minutes} ${minutes === 1 ? "minute" : "minutes"}.`
-  }
-  return undefined
+  return rateLimitMessage(error)
 }
 
 export function LoginForm({ redirectTo }: LoginFormProps) {

@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router"
-import { PageHeader } from "@/components/page-header"
+import { UsersPage } from "@/features/users/users-page"
 
 export const Route = createFileRoute("/_app/admin/users")({
-  component: () => <PageHeader title="Users" />,
+  component: UsersPage,
 })
