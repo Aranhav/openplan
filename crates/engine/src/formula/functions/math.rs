@@ -143,130 +143,57 @@ pub(super) fn eval_round(
     map2(&values, |x, places| round(x, places, mode))
 }
 
-/// From 2^52 up a number is whole already, since the spacing of numbers there is 1.
-const WHOLE_FROM: f64 = (1u64 << 52) as f64;
-
-/// From 2^50 up a number is not snapped by [`settle`]: there the spacing of numbers is a quarter,
-/// too coarse to tell a half from the representation error of a computed number.
-const SNAP_BELOW: f64 = (1u64 << 50) as f64;
-
-/// `x` rounded to `places` decimals in `mode`. Rounding to a whole number works on `x` itself;
-/// any other number is rounded on the decimal digits it is written with (see [`round_decimal`]).
+/// `x` rounded to `places` decimals (negative to the left of the point) in `mode`. The rounding is
+/// done on the shortest decimal that reads back as `x`, which is the number as it was written, and
+/// the result is the double nearest to the decimal that comes out. A decimal beyond the range of a
+/// double comes out infinite, which [`sanitize_number`] makes 0.
 fn round(x: f64, places: f64, mode: Word) -> f64 {
-    let places = places.trunc().clamp(-400.0, 400.0) as i32;
-    if places == 0 {
-        round_whole(x, mode)
-    } else {
-        round_decimal(x, places, mode)
-    }
-}
-
-/// `x` rounded to a whole number in `mode`.
-fn round_whole(x: f64, mode: Word) -> f64 {
-    if !x.is_finite() || x.abs() >= WHOLE_FROM {
-        return x;
-    }
-    let settled = settle(x);
-    match mode {
-        Word::Up => settled.abs().ceil().copysign(settled),
-        Word::Down => settled.trunc(),
-        _ => settled.round(),
-    }
-}
-
-/// A number within four units in the last place of a whole or half number is taken as that
-/// number, so that a computed `2.4999999999999996` rounds to a whole number as `2.5` does. From
-/// `SNAP_BELOW` up the number is kept as it is.
-fn settle(x: f64) -> f64 {
-    let magnitude = x.abs();
-    if magnitude >= SNAP_BELOW {
-        return x;
-    }
-    let half = (x * 2.0).round() / 2.0;
-    let ulp = f64::from_bits(magnitude.to_bits() + 1) - magnitude;
-    if (x - half).abs() <= 4.0 * ulp {
-        half
-    } else {
-        x
-    }
-}
-
-/// `x` rounded to `places` decimals (negative to the left of the point) in `mode`, on the decimal
-/// digits that `x` is written with: the shortest decimal that reads back as `x`, which is the
-/// number as it was typed. The result is the double nearest to the decimal that comes out.
-fn round_decimal(x: f64, places: i32, mode: Word) -> f64 {
     if !x.is_finite() {
         return x;
     }
-    let written = format!("{}", x.abs());
-    let (whole, fraction) = written.split_once('.').unwrap_or((&written, ""));
-    let mut digits: Vec<u8> = whole
-        .bytes()
-        .chain(fraction.bytes())
-        .map(|byte| byte - b'0')
-        .collect();
-    // `point` counts the digits before the decimal point, and `kept` the digits that stay.
-    let mut point = whole.len() as i64;
-    let kept = point + i64::from(places);
-    if kept >= digits.len() as i64 {
+    let places = places.trunc().clamp(-400.0, 400.0) as i64;
+    let (mut digits, mut point) = shortest_digits(x.abs());
+    // `keep` digits stay: the rounding place is `places` places from the point.
+    let keep = point + places;
+    if keep >= digits.len() as i64 {
         return x;
     }
-    let kept = if kept < 0 {
-        // The rounding place is beyond every digit, so zeros stand in for the digits before it.
-        digits.splice(0..0, std::iter::repeat_n(0, kept.unsigned_abs() as usize));
-        point -= kept;
+    let kept = if keep < 0 {
+        // Every digit lies beyond the rounding place, so zeros stand in for the digits before it.
+        digits.splice(0..0, std::iter::repeat_n(0, keep.unsigned_abs() as usize));
+        point -= keep;
         0
     } else {
-        kept as usize
+        keep as usize
     };
-    let away = rounds_up(&digits[kept..], places, x.abs(), mode);
+    let away = rounds_away(&digits[kept..], mode);
     digits.truncate(kept);
     if away {
         point += add_one(&mut digits);
     }
-    let text = if point <= 0 {
-        format!("0.{}{}", "0".repeat((-point) as usize), digit_text(&digits))
-    } else if point as usize >= digits.len() {
-        format!(
-            "{}{}",
-            digit_text(&digits),
-            "0".repeat(point as usize - digits.len())
-        )
-    } else {
-        let (integer, fraction) = digits.split_at(point as usize);
-        format!("{}.{}", digit_text(integer), digit_text(fraction))
-    };
-    let value: f64 = text.parse().unwrap_or(0.0);
+    let value: f64 = format!("0.{}e{point}", digit_text(&digits))
+        .parse()
+        .unwrap_or(0.0);
     if x < 0.0 { -value } else { value }
 }
 
-/// The shortest run of zeros or nines that marks representation error: a computed number lies
-/// just above a place with a run of zeros after it, or just below one with a run of nines.
-const ERROR_RUN: usize = 10;
+/// The digits of `x`, which is finite and not negative, as the shortest decimal that reads back as
+/// `x`, and the place of the decimal point among them: `x` is `0.d1d2... × 10^point`.
+fn shortest_digits(x: f64) -> (Vec<u8>, i64) {
+    let written = format!("{x:e}");
+    let (mantissa, exponent) = written.split_once('e').unwrap_or((written.as_str(), "0"));
+    let digits = mantissa
+        .bytes()
+        .filter(u8::is_ascii_digit)
+        .map(|byte| byte - b'0')
+        .collect();
+    (digits, exponent.parse::<i64>().unwrap_or(0) + 1)
+}
 
-/// Whether the `dropped` digits after the last kept place take that place up by one, in `mode`.
-/// A remainder within four units in the last place of `magnitude`, with a run of at least
-/// [`ERROR_RUN`] zeros or nines after the place, is representation error: no remainder, or the
-/// whole place, so that a computed `0.30000000000000004` is 0.3. Otherwise the digits are rounded
-/// as written. The test only applies where the place is more than eight units in the last place
-/// apart.
-fn rounds_up(dropped: &[u8], places: i32, magnitude: f64, mode: Word) -> bool {
-    let unit = 10f64.powi(-places);
-    let ulp = f64::from_bits(magnitude.to_bits() + 1) - magnitude;
-    let lead = dropped.first().copied().unwrap_or(0);
-    let run = dropped.iter().take_while(|&&digit| digit == lead).count();
-    if unit.is_finite() && 8.0 * ulp < unit && run >= ERROR_RUN && (lead == 0 || lead == 9) {
-        let remainder = format!("0.{}", digit_text(dropped))
-            .parse::<f64>()
-            .unwrap_or(0.0)
-            * unit;
-        if lead == 0 && remainder <= 4.0 * ulp {
-            return false;
-        }
-        if lead == 9 && unit - remainder <= 4.0 * ulp {
-            return true;
-        }
-    }
+/// Whether the `dropped` digits take the last kept place up by one in `mode`: `UP` when any of them
+/// is nonzero, `DOWN` never, and `NEAREST` when the first is 5 or more, which takes a half away
+/// from zero.
+fn rounds_away(dropped: &[u8], mode: Word) -> bool {
     match mode {
         Word::Up => dropped.iter().any(|&digit| digit != 0),
         Word::Down => false,

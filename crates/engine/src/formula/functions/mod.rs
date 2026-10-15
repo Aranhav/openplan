@@ -103,7 +103,7 @@ functions! {
         name: "ROUND",
         category: "Math",
         signature: [Number, Number] | [Number, Number, RoundMode] => Ret::Number,
-        doc: "Rounds a number to a number of decimal places, away from zero with UP, toward zero with DOWN or to the nearest value by default.",
+        doc: "Rounds the number as written (its shortest decimal form) to the given places.",
         example: "ROUND(Price * Volume, 2, UP)",
     }
     Min {

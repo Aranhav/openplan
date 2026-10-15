@@ -372,9 +372,10 @@ fn round_ignores_the_representation_error_of_scaling() {
     // 12.35 * 100 is 1235.0000000000002 and 1.005 * 100 is 100.49999999999999, but these
     // are the numbers the user typed, so they round as such.
     book.numbers_in("Typed", &[12.35, 1.005, 1.1, 0.1 + 0.2, 2.675]);
+    // 0.1 + 0.2 is 0.30000000000000004 as written, so UP takes it on to 0.31.
     assert_eq!(
         book.numbers("ROUND(Typed, 2, UP)", 5),
-        [12.35, 1.01, 1.1, 0.3, 2.68]
+        [12.35, 1.01, 1.1, 0.31, 2.68]
     );
     assert_eq!(
         book.numbers("ROUND(Typed, 2, DOWN)", 5),
@@ -442,6 +443,46 @@ fn round_of_large_numbers_is_the_nearest_double_of_the_decimal() {
         book.numbers("ROUND(450359962737051136, -2)", 1),
         [450359962737051072.0]
     );
+}
+
+#[test]
+fn round_takes_the_number_as_written() {
+    let mut book = Book::new();
+    assert_eq!(book.numbers("ROUND(12.35, 2, UP)", 1), [12.35]);
+    assert_eq!(book.numbers("ROUND(12.35, 1)", 1), [12.4]);
+    assert_eq!(book.numbers("ROUND(2.5, 0)", 1), [3.0]);
+    assert_eq!(book.numbers("ROUND(-2.5, 0)", 1), [-3.0]);
+    assert_eq!(book.numbers("ROUND(1.005, 2)", 1), [1.01]);
+    assert_eq!(book.numbers("ROUND(1234.5678, -2)", 1), [1200.0]);
+    assert_eq!(book.numbers("ROUND(-1234.5678, -2, UP)", 1), [-1300.0]);
+    assert_eq!(book.numbers("ROUND(0.000123456, 4, DOWN)", 1), [0.0001]);
+    // Any amount above zero is away from zero at UP, even when it is far below the unit.
+    assert_eq!(book.numbers("ROUND(0.0001, -2, UP)", 1), [100.0]);
+}
+
+#[test]
+fn round_of_large_numbers_takes_the_digits_written() {
+    let mut book = Book::new();
+    // 281474976710656.3 is 281474976710656.3125 as a double, and the digits written leave a
+    // fraction below a half.
+    assert_eq!(
+        book.numbers("ROUND(281474976710656.3, 0)", 1),
+        [281474976710656.0]
+    );
+    // Rounded to the nearest 10^308 this is 2e308, which is out of range, so the result is 0.
+    assert_eq!(
+        book.numbers("ROUND(1.7976931348623157e308, -308)", 1),
+        [0.0]
+    );
+}
+
+#[test]
+fn round_of_a_blank_or_a_zero_is_zero() {
+    let mut book = Book::new();
+    book.line_item(book.sheet, "Blank", Format::number(), None);
+    assert_eq!(book.numbers("ROUND(Blank, 2, UP)", 1), [0.0]);
+    assert_eq!(book.numbers("ROUND(Blank / 0, -2, UP)", 1), [0.0]);
+    assert_eq!(book.numbers("ROUND(0, 2, UP)", 1), [0.0]);
 }
 
 #[test]
