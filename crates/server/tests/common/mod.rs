@@ -214,20 +214,27 @@ impl TestApp {
 pub const ADMIN_EMAIL: &str = "admin@acme.com";
 pub const PASSWORD: &str = "correct horse battery";
 
+/// The body of the first-run setup request.
+pub fn setup_body() -> Value {
+    json!({
+        "email": ADMIN_EMAIL,
+        "name": "Ada Admin",
+        "password": PASSWORD,
+        "workspace_name": "Acme",
+    })
+}
+
+/// Completes first-run setup and returns the response, which has the user and the "Acme"
+/// workspace it creates.
+pub async fn post_setup(app: &mut TestApp) -> TestResponse {
+    let response = app.post("/api/v1/setup", Some(setup_body())).await;
+    assert_eq!(response.status, StatusCode::CREATED, "{}", response.text);
+    response
+}
+
 /// Completes first-run setup and returns the id of the "Acme" workspace it creates.
 pub async fn setup_admin(app: &mut TestApp) -> String {
-    let response = app
-        .post(
-            "/api/v1/setup",
-            Some(json!({
-                "email": ADMIN_EMAIL,
-                "name": "Ada Admin",
-                "password": PASSWORD,
-                "workspace_name": "Acme",
-            })),
-        )
-        .await;
-    assert_eq!(response.status, StatusCode::CREATED, "{}", response.text);
+    let response = post_setup(app).await;
     response.json["workspace"]["id"]
         .as_str()
         .unwrap()
