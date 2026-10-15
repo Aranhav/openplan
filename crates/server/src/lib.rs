@@ -1,15 +1,21 @@
+pub mod actor;
 pub mod app;
 pub mod auth;
 pub mod authz;
+pub mod cells_api;
 pub mod client_ip;
 pub mod config;
 pub mod db;
+pub mod engine_store;
 pub mod error;
 pub mod extract;
 pub mod logging;
 pub mod models;
+pub mod modules_api;
 pub mod openapi;
 pub mod static_files;
+pub mod structure_api;
+pub mod structure_dto;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub mod users;

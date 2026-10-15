@@ -3,6 +3,7 @@ use axum::{
     http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
+use openplan_engine::{EngineError, FormulaError};
 use serde::Serialize;
 use utoipa::ToSchema;
 
@@ -40,6 +41,20 @@ pub enum AppError {
     CodedNotFound { code: &'static str, detail: String },
     #[error("validation failed")]
     Validation(Vec<FieldError>),
+    /// A request body refers to something that does not exist. Only a path parameter that names
+    /// nothing is a 404; this one is `structure.invalid` and names the fields.
+    #[error("the request refers to something that does not exist")]
+    MissingReferences(Vec<FieldError>),
+    /// A request the server understood and refuses: `code` tells why, and `errors` which parts of
+    /// the request are wrong.
+    #[error("unprocessable ({code}): {detail}")]
+    Unprocessable {
+        code: &'static str,
+        detail: String,
+        errors: Vec<FieldError>,
+    },
+    #[error("engine rejected the change: {0}")]
+    Engine(#[from] EngineError),
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
@@ -61,6 +76,32 @@ impl From<FieldError> for AppError {
     }
 }
 
+/// A problem found in a formula, located by the byte positions of the part it concerns.
+#[derive(Serialize, ToSchema)]
+pub struct FormulaProblem {
+    /// A stable code such as `formula.unknown_name`.
+    code: &'static str,
+    message: String,
+    /// Where the problem starts, in bytes from the start of the formula.
+    start: usize,
+    /// Where the problem ends, in bytes from the start of the formula.
+    end: usize,
+    /// What to write instead, such as the name that was probably meant.
+    suggestion: Option<String>,
+}
+
+impl From<&FormulaError> for FormulaProblem {
+    fn from(error: &FormulaError) -> Self {
+        FormulaProblem {
+            code: error.code,
+            message: error.message.clone(),
+            start: error.start,
+            end: error.end,
+            suggestion: error.suggestion.clone(),
+        }
+    }
+}
+
 /// The body of every error response, served as `application/problem+json`.
 #[derive(Serialize, ToSchema)]
 pub struct Problem {
@@ -78,12 +119,54 @@ pub struct Problem {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(nullable = false)]
     errors: Option<Vec<FieldError>>,
+    /// What is wrong with a formula, with where; only on formula errors, which also list the
+    /// problems in `errors`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    formula_errors: Option<Vec<FormulaProblem>>,
+}
+
+/// Makes the message of an engine error, which is written without a capital or a full stop, read
+/// as a sentence.
+fn sentence(message: &str) -> String {
+    let mut chars = message.trim().chars();
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
+    let mut sentence: String = first.to_uppercase().chain(chars).collect();
+    if !sentence.ends_with(['.', '!', '?']) {
+        sentence.push('.');
+    }
+    sentence
+}
+
+/// The status, code and sentence of the response to an engine error.
+fn engine_problem(error: &EngineError) -> (StatusCode, &'static str, String) {
+    let status = match error {
+        EngineError::NotFound { .. } => StatusCode::NOT_FOUND,
+        EngineError::NameTaken { .. } | EngineError::InUse { .. } => StatusCode::CONFLICT,
+        _ => StatusCode::UNPROCESSABLE_ENTITY,
+    };
+    let code = match error {
+        EngineError::NotFound { .. } => "not_found",
+        other => other.code(),
+    };
+    let detail = match error {
+        EngineError::Formula(problems) => match problems.as_slice() {
+            [problem] => sentence(&problem.message),
+            [] => "The formula is not valid.".to_string(),
+            _ => format!("The formula has {} problems.", problems.len()),
+        },
+        other => sentence(&other.to_string()),
+    };
+    (status, code, detail)
 }
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let mut retry_after = None;
         let mut errors = None;
+        let mut formula_errors = None;
         let (status, code, detail) = match self {
             AppError::Unauthenticated => (
                 StatusCode::UNAUTHORIZED,
@@ -144,6 +227,58 @@ impl IntoResponse for AppError {
                     "Some fields are invalid.".to_string(),
                 )
             }
+            AppError::MissingReferences(field_errors) => {
+                let detail = match field_errors.as_slice() {
+                    [only] => only.message.clone(),
+                    _ => "Some of the things the request refers to do not exist.".to_string(),
+                };
+                errors = Some(field_errors);
+                (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "structure.invalid",
+                    detail,
+                )
+            }
+            AppError::Unprocessable {
+                code,
+                detail,
+                errors: field_errors,
+            } => {
+                errors = Some(field_errors);
+                (StatusCode::UNPROCESSABLE_ENTITY, code, detail)
+            }
+            AppError::Engine(error) => {
+                match &error {
+                    EngineError::Formula(problems) => {
+                        errors = Some(
+                            problems
+                                .iter()
+                                .map(|problem| FieldError {
+                                    field: "formula".into(),
+                                    message: format!(
+                                        "{}-{}: {}",
+                                        problem.start, problem.end, problem.message
+                                    ),
+                                })
+                                .collect(),
+                        );
+                        formula_errors = Some(problems.iter().map(FormulaProblem::from).collect());
+                    }
+                    EngineError::InvalidValue { cells } => {
+                        errors = Some(
+                            cells
+                                .iter()
+                                .map(|cell| FieldError {
+                                    field: format!("cells[{}]", cell.index),
+                                    message: cell.message.clone(),
+                                })
+                                .collect(),
+                        );
+                    }
+                    _ => {}
+                }
+                engine_problem(&error)
+            }
             AppError::Internal(err) => {
                 tracing::error!("internal error: {err:#}");
                 (
@@ -161,6 +296,7 @@ impl IntoResponse for AppError {
             code,
             detail,
             errors,
+            formula_errors,
         };
         let mut response = (
             status,
@@ -184,6 +320,7 @@ impl IntoResponse for AppError {
 mod tests {
     use super::*;
     use axum::{body::to_bytes, http::header};
+    use openplan_engine::{CellIssue, EngineError, FormulaError};
     use serde_json::Value;
 
     async fn body_json(response: Response) -> Value {
@@ -208,6 +345,58 @@ mod tests {
         assert_eq!(json["code"], "validation");
         assert_eq!(json["errors"][0]["field"], "name");
         assert_eq!(json["errors"][0]["message"], "Name is required");
+    }
+
+    #[tokio::test]
+    async fn unprocessable_requests_have_their_own_code_detail_and_fields() {
+        let response = AppError::Unprocessable {
+            code: "cells.invalid_value",
+            detail: "1 edit has an invalid value.".into(),
+            errors: vec![FieldError {
+                field: "edits[4]".into(),
+                message: "Expected a number.".into(),
+            }],
+        }
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let json = body_json(response).await;
+        assert_eq!(json["code"], "cells.invalid_value");
+        assert_eq!(json["detail"], "1 edit has an invalid value.");
+        assert_eq!(json["errors"][0]["field"], "edits[4]");
+        assert_eq!(json["errors"][0]["message"], "Expected a number.");
+    }
+
+    #[tokio::test]
+    async fn missing_references_are_structure_invalid_and_name_their_fields() {
+        let one = AppError::MissingReferences(vec![FieldError {
+            field: "format.list".into(),
+            message: "The list does not exist.".into(),
+        }])
+        .into_response();
+        assert_eq!(one.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let json = body_json(one).await;
+        assert_eq!(json["code"], "structure.invalid");
+        assert_eq!(json["detail"], "The list does not exist.");
+        assert_eq!(json["errors"][0]["field"], "format.list");
+
+        let two = AppError::MissingReferences(vec![
+            FieldError {
+                field: "axes[0].list".into(),
+                message: "The list does not exist.".into(),
+            },
+            FieldError {
+                field: "axes[1].subset".into(),
+                message: "The subset does not exist.".into(),
+            },
+        ])
+        .into_response();
+        let json = body_json(two).await;
+        assert_eq!(
+            json["detail"],
+            "Some of the things the request refers to do not exist."
+        );
+        assert_eq!(json["errors"].as_array().unwrap().len(), 2);
     }
 
     #[tokio::test]
@@ -305,5 +494,171 @@ mod tests {
             AppError::from(sqlx::Error::PoolTimedOut),
             AppError::Internal(_)
         ));
+    }
+
+    fn engine_response(error: EngineError) -> Response {
+        AppError::Engine(error).into_response()
+    }
+
+    #[tokio::test]
+    async fn formula_errors_are_422_with_every_error_and_their_spans() {
+        let response = engine_response(EngineError::Formula(vec![
+            FormulaError {
+                code: "formula.unknown_name",
+                message: "Unknown name 'Revnue'".to_string(),
+                start: 4,
+                end: 10,
+                suggestion: Some("Revenue".to_string()),
+            },
+            FormulaError {
+                code: "formula.arity",
+                message: "SUM takes 1 argument".to_string(),
+                start: 12,
+                end: 20,
+                suggestion: None,
+            },
+        ]));
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let json = body_json(response).await;
+        assert_eq!(json["code"], "formula.unknown_name");
+        assert_eq!(json["status"], 422);
+        assert_eq!(
+            json["errors"],
+            serde_json::json!([
+                { "field": "formula", "message": "4-10: Unknown name 'Revnue'" },
+                { "field": "formula", "message": "12-20: SUM takes 1 argument" },
+            ])
+        );
+        assert_eq!(
+            json["formula_errors"],
+            serde_json::json!([
+                {
+                    "code": "formula.unknown_name",
+                    "message": "Unknown name 'Revnue'",
+                    "start": 4,
+                    "end": 10,
+                    "suggestion": "Revenue",
+                },
+                {
+                    "code": "formula.arity",
+                    "message": "SUM takes 1 argument",
+                    "start": 12,
+                    "end": 20,
+                    "suggestion": null,
+                },
+            ])
+        );
+        assert!(json["detail"].as_str().unwrap().contains("2 problems"));
+    }
+
+    #[tokio::test]
+    async fn one_formula_error_is_the_detail() {
+        let json = body_json(engine_response(EngineError::Formula(vec![FormulaError {
+            code: "formula.syntax",
+            message: "Expected a value".to_string(),
+            start: 3,
+            end: 4,
+            suggestion: None,
+        }])))
+        .await;
+
+        assert_eq!(json["code"], "formula.syntax");
+        assert_eq!(json["detail"], "Expected a value.");
+    }
+
+    #[tokio::test]
+    async fn invalid_cells_are_listed_by_position() {
+        let response = engine_response(EngineError::InvalidValue {
+            cells: vec![
+                CellIssue {
+                    index: 0,
+                    message: "Enter a number".to_string(),
+                },
+                CellIssue {
+                    index: 3,
+                    message: "Enter a date".to_string(),
+                },
+            ],
+        });
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let json = body_json(response).await;
+        assert_eq!(json["code"], "cells.invalid_value");
+        assert_eq!(
+            json["errors"],
+            serde_json::json!([
+                { "field": "cells[0]", "message": "Enter a number" },
+                { "field": "cells[3]", "message": "Enter a date" },
+            ])
+        );
+        assert!(json.get("formula_errors").is_none());
+    }
+
+    #[tokio::test]
+    async fn other_engine_errors_have_their_status_and_code() {
+        let cases = [
+            (
+                EngineError::NotFound {
+                    what: "list",
+                    id: "abc".to_string(),
+                },
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "List not found: abc.",
+            ),
+            (
+                EngineError::NameTaken {
+                    what: "module",
+                    name: "Revenue".to_string(),
+                },
+                StatusCode::CONFLICT,
+                "structure.name_taken",
+                "Module name already in use: Revenue.",
+            ),
+            (
+                EngineError::Invalid {
+                    message: "years must be between 1 and 20".to_string(),
+                },
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "structure.invalid",
+                "Years must be between 1 and 20.",
+            ),
+            (
+                EngineError::InUse {
+                    message: "The list is used by a module.".to_string(),
+                },
+                StatusCode::CONFLICT,
+                "structure.in_use",
+                "The list is used by a module.",
+            ),
+            (
+                EngineError::NotInput {
+                    line_item: "Margin".to_string(),
+                },
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "cells.not_input",
+                "Line item Margin is calculated and cannot be edited.",
+            ),
+            (
+                EngineError::InvalidCoordinate {
+                    message: "Cell 2: no such period".to_string(),
+                    index: None,
+                },
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "cells.invalid_coordinate",
+                "Cell 2: no such period.",
+            ),
+        ];
+        for (error, status, code, detail) in cases {
+            let response = engine_response(error);
+
+            assert_eq!(response.status(), status, "{code}");
+            let json = body_json(response).await;
+            assert_eq!(json["code"], code);
+            assert_eq!(json["detail"], detail);
+            assert!(json.get("errors").is_none(), "{code}");
+            assert!(json.get("formula_errors").is_none(), "{code}");
+        }
     }
 }

@@ -76,6 +76,13 @@ pub fn password(raw: &str) -> Result<(), FieldError> {
     Ok(())
 }
 
+/// A code as the engine keeps it: trimmed, and absent when blank.
+pub fn code(raw: &str) -> Option<String> {
+    Some(raw.trim())
+        .filter(|code| !code.is_empty())
+        .map(str::to_string)
+}
+
 pub fn entity_name(field: &str, raw: &str) -> Result<String, FieldError> {
     trimmed_name(field, raw, ENTITY_NAME_MAX)
 }

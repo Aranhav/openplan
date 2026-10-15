@@ -5,7 +5,8 @@ OpenPlan is an open-source, Anaplan-style connected planning platform: a Rust (a
 ## Layout
 
 ```
-Cargo.toml          Cargo workspace (members = ["crates/server"])
+Cargo.toml          Cargo workspace (members = ["crates/engine", "crates/server"])
+crates/engine/      package openplan-engine, the calculation engine (structure, formulas, recalculation, summaries, cell storage codec); no I/O, no database
 crates/server/      package openplan-server, binary `openplan` (HTTP API, migrations, embedded web UI)
 web/                Vite + React + TypeScript app (served by the server from web/dist)
 e2e/                Playwright end-to-end tests that drive the real server
@@ -20,12 +21,13 @@ Server (from the repo root):
 ```
 cargo run -p openplan-server -- serve      # needs DATABASE_URL and OPENPLAN_PUBLIC_URL
 cargo run -p openplan-server -- openapi    # print the OpenAPI document; needs no env or DB
+cargo test -p openplan-engine              # the engine needs no database
 cargo test -p openplan-server              # export DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres first
 cargo clippy --all-targets -- -D warnings
 cargo fmt --all --check
 ```
 
-Server configuration comes from `DATABASE_URL`, `OPENPLAN_PUBLIC_URL`, `OPENPLAN_BIND` (default `0.0.0.0:8080`; `PORT` is used on all interfaces when `OPENPLAN_BIND` is unset), `OPENPLAN_LOG` (default `info`), `OPENPLAN_TRUSTED_PROXY_HOPS` (default `0`; see `docs/deploy.md`) and `OPENPLAN_DB_POOL_SIZE` (default `10`; the most database connections held open, and a request waits up to 10 seconds for a free one).
+Server configuration comes from `DATABASE_URL`, `OPENPLAN_PUBLIC_URL`, `OPENPLAN_BIND` (default `0.0.0.0:8080`; `PORT` is used on all interfaces when `OPENPLAN_BIND` is unset), `OPENPLAN_LOG` (default `info`), `OPENPLAN_TRUSTED_PROXY_HOPS` (default `0`; see `docs/deploy.md`), `OPENPLAN_DB_POOL_SIZE` (default `10`; the most database connections held open, and a request waits up to 10 seconds for a free one) and `OPENPLAN_MODEL_IDLE_MINUTES` (default `30`; how long an unused model stays loaded in memory before it is checkpointed and unloaded).
 
 Web:
 
@@ -71,18 +73,25 @@ docker compose up --build   # OpenPlan on http://localhost:8080 with Postgres
 
 - E2E (`e2e/`, Playwright pinned to 1.56.1): `playwright.config.ts` starts the real server through `scripts/start-server.sh`, which drops and recreates the `openplan_e2e` database (admin connection from `E2E_ADMIN_DATABASE_URL`, default `postgres://postgres:postgres@localhost:5432/postgres`) and runs `target/debug/openplan` on `127.0.0.1:8090`. A debug build reads `web/dist` from disk, so after a UI change only `pnpm --dir web build` is needed, not a server rebuild. The specs share that one instance and run on one worker: the `setup` project is `onboarding.spec.ts`, which creates the `ADMIN` user and the "Acme Corp" workspace (`tests/helpers.ts`), and the `app` project depends on it, so every other spec starts with `login(page, ADMIN)`. Never run `playwright install` locally (browsers come from `PLAYWRIGHT_BROWSERS_PATH`); CI runs `playwright install --with-deps chromium`.
 - E2E specs find things by role and label and assert the copy the app really shows, so a copy change in `web/src` needs the matching spec change. `screenshot(page, name)` saves `e2e/screenshots/<name>-light.png` and `-dark.png` (gitignored, uploaded by CI); it reloads the page to apply each theme, so pass a `reopen` callback for UI a reload closes (the command palette).
-- CI (`.github/workflows/ci.yml`): `rust` (fmt, clippy, tests against a Postgres service), `web` (lint, typecheck, test, build, and a `gen:api` check that `schema.d.ts` is up to date, which needs the Rust toolchain), `e2e` (needs both) and `docker` (builds `docker/Dockerfile` without pushing).
+- CI (`.github/workflows/ci.yml`): `rust` (fmt, clippy, tests against a Postgres service; it also runs the engine's timing tests in release mode with `cargo test --release -p openplan-engine --test recalc -- --ignored`), `web` (lint, typecheck, test, build, and a `gen:api` check that `schema.d.ts` is up to date, which needs the Rust toolchain), `e2e` (needs both) and `docker` (builds `docker/Dockerfile` without pushing).
 - `docker/Dockerfile` builds the web app, then the server with `web/dist` embedded, then a slim non-root runtime. The pnpm version everywhere (Dockerfile through corepack, CI through `pnpm/action-setup`) is the `packageManager` field of `web/package.json`; the workspace filter there is the path `./web...` because the package is named `openplan-web`. It does not set `OPENPLAN_BIND`, so the server follows `PORT` on Render and defaults to `0.0.0.0:8080` elsewhere; `compose.yml` sets `OPENPLAN_BIND` itself.
+
+## Server conventions
+
+- A handler that works on a model gets the model's actor from `handle_for(state, user, model_id, min_role, ProdLock)` (`structure_api.rs`) before it looks at anything else: it is the one place that checks membership (404), role (403) and, for `ProdLock::Enforce`, the production lock (409), so each handler states the role it needs and whether the lock applies. A route with a large body takes the caller and the actor in an extractor of the request head ahead of `ApiJson` (`Planner` in `cells_api.rs`), so a caller who may not call it is refused before the body is read.
+- A change to a model is a batch of engine commands made inside the model's actor: `handle.apply_with(user.id, |model| ...)` builds the commands from the model the batch is applied to, and `apply_with_answer` also returns what the handler answers with. Never read the model and then apply, since a batch applied in between would be missed.
+- Take bodies, query strings and path parameters through `ApiJson`, `ApiQuery` and `ApiPath` (`extract.rs`), not axum's `Json`, `Query` and `Path`: their rejections are `application/problem+json`, and they refuse the NUL character, which Postgres cannot store.
+- Every migration that creates a table enables row level security on it (`ALTER TABLE ... ENABLE ROW LEVEL SECURITY`), because Supabase exposes the public schema through its Data API; a test in `tests/health.rs` fails for a table without it.
 
 ## Global constraints
 
-- Rust edition 2024. `cargo fmt --all` clean and `cargo clippy --all-targets -- -D warnings` clean.
+- Rust edition 2024, toolchain pinned to 1.97.0 in `rust-toolchain.toml`. `cargo fmt --all` clean and `cargo clippy --all-targets -- -D warnings` clean.
 - Crates (use newest compatible patch versions): `axum 0.8`, `axum-extra` (cookie feature, version compatible with axum 0.8), `tokio 1` (full), `sqlx 0.8` (features `runtime-tokio`, `tls-rustls`, `postgres`, `uuid`, `chrono`, `json`, `migrate`, `macros`), `tower-http 0.6` (`trace`, `request-id`, `util`), `tower 0.5`, `utoipa 5` (`axum_extras`, `uuid`, `chrono`), `utoipa-scalar` (axum feature, compatible with utoipa 5), `argon2 0.5`, `rust-embed 8`, `mime_guess 2`, `uuid 1` (`v7`, `serde`), `chrono 0.4` (`serde`), `serde 1`, `serde_json 1`, `thiserror 2`, `anyhow 1`, `tracing 0.1`, `tracing-subscriber 0.3` (`env-filter`), `rand 0.9`, `sha2 0.10`, `base64 0.22`, `clap 4` (`derive`).
 - SQL: use `sqlx::query`/`sqlx::query_as::<_, T>` with `#[derive(sqlx::FromRow)]`. Do **not** use `query!`/`query_as!` macros (no DB needed at compile time). Migrations embedded with `sqlx::migrate!("./migrations")`.
 - Every new table enables row level security in the migration that creates it (Supabase exposes `public` through its Data API).
 - JSON fields are `snake_case`. Timestamps RFC 3339 UTC (`chrono::DateTime<Utc>`). IDs are UUID v7 generated in Rust (`Uuid::now_v7()`).
 - All API routes live under `/api/v1` except `GET /api/health`, `GET /api/openapi.json`, `GET /api/docs`.
-- Errors are `application/problem+json`: `{"type":"about:blank","title":..,"status":..,"code":..,"detail":..,"errors":[{"field":..,"message":..}]?}`. Stable codes used in M1: `auth.unauthenticated` 401, `auth.invalid_credentials` 401, `auth.forbidden` 403, `auth.csrf` 403, `auth.rate_limited` 429, `setup.already_done` 409, `validation` 422, `not_found` 404, `user.email_taken` 409, `user.not_found` 404, `user.last_instance_admin` 409, `workspace.last_admin` 409, `workspace.member_exists` 409, `model.name_taken` 409, `internal` 500.
+- Errors are `application/problem+json`: `{"type":"about:blank","title":..,"status":..,"code":..,"detail":..,"errors":[{"field":..,"message":..}]?,"formula_errors":[{"code":..,"message":..,"start":..,"end":..,"suggestion":..}]?}`. Stable codes: `auth.unauthenticated` 401, `auth.invalid_credentials` 401, `auth.forbidden` 403, `auth.csrf` 403, `auth.rate_limited` 429, `setup.already_done` 409, `validation` 422, `not_found` 404, `user.email_taken` 409, `user.not_found` 404, `user.last_instance_admin` 409, `workspace.last_admin` 409, `workspace.member_exists` 409, `model.name_taken` 409, `model.production_locked` 409 (a structure change to a model in production mode), `formula.syntax`, `formula.unknown_name`, `formula.unknown_function`, `formula.arity`, `formula.type_mismatch`, `formula.dimension`, `formula.ambiguous_name` and `formula.cycle` 422 (the code of the first problem in a formula; `errors` lists every problem as `"{start}-{end}: {message}"` and `formula_errors` has them in full), `structure.name_taken` 409, `structure.invalid` 422, `structure.in_use` 409, `cells.invalid_value` 422 (`errors` has one entry per rejected cell, `cells[<index>]`), `cells.not_input` 422, `cells.invalid_coordinate` 422, `internal` 500.
 - Validation limits: email trimmed + lowercased, must contain one `@` with non-empty parts, ≤ 254 chars; person name trimmed 1–100 chars; password 10–256 chars; workspace and model names trimmed 1–80 chars; model description ≤ 500 chars.
 - Frontend: TypeScript strict; Tailwind v4 via `@tailwindcss/vite`; shadcn/ui style `new-york`, base color `neutral`, CSS variables; icons from `lucide-react`. Any UI element that exists in shadcn/ui must use that component. Never edit files in `web/src/components/ui/` by hand except via the shadcn CLI.
 - UX rules: every mutation button is disabled and shows `Loader2` spinner while pending; forms use react-hook-form + zod + shadcn `Form` with inline field errors; success and failure feedback via `sonner` toasts; every data view has a `Skeleton` loading state, an empty state (icon, one sentence, primary action) and an error state (`Alert variant="destructive"` with Retry). Copy is sentence case; buttons start with a verb.

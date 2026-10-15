@@ -18,8 +18,29 @@ use crate::{
         },
     },
     authz::WorkspaceRole,
+    cells_api::{
+        CellChangeDto, CellEditDto, ChangedByDto, ReadCellsRequest, ReadCellsResponse, ValueDto,
+        WriteCellsRequest, WriteCellsResponse,
+    },
     error::Problem,
     models::{Calendar, CreateModelRequest, ModelDto, ModelMode, UpdateModelRequest},
+    modules_api::{
+        CheckFormulaRequest, CheckFormulaResponse, CompletionDto, CompletionKindDto,
+        CreateLineItemRequest, CreateModuleRequest, FormulaAccepted, FormulaRejected, FunctionDto,
+        ReorderLineItemsRequest, UpdateLineItemRequest, UpdateModuleRequest,
+    },
+    structure_api::{
+        CalendarDto, CreateItemsRequest, CreateListRequest, CreateSubsetRequest,
+        CreateTimeRangeRequest, DeleteItemsRequest, ItemDto, ItemInput, ListDto, SubsetDto,
+        TimeRangeDto, UpdateItemRequest, UpdateListRequest, UpdateSubsetRequest, VersionDto,
+        VersionRequest,
+    },
+    structure_dto::{
+        AxisDto, FormatDto, LineItemDto, ModuleDto, NegativeStyleDto, NumberUnitDto,
+        StructureCalendarDto, StructureDto, StructureItemDto, StructureListDto, StructureSubsetDto,
+        StructureTimeRangeDto, StructureVersionDto, SummaryMethodDto, TimeLevelDto, TimeScaleDto,
+        ValueTypeDto, VersionsScopeDto,
+    },
     users::{CreateUserRequest, UpdateUserRequest, UserDto},
     workspaces::{
         AddMemberRequest, ChangeRoleRequest, MemberDto, WorkspaceNameRequest, WorkspaceSummary,
@@ -74,6 +95,36 @@ const CSRF_EXEMPT_PATHS: [&str; 3] = ["/api/v1/setup", "/api/v1/auth/login", "/a
         crate::models::get_model,
         crate::models::update_model,
         crate::models::delete_model,
+        crate::structure_api::get_structure,
+        crate::structure_api::update_calendar,
+        crate::structure_api::create_list,
+        crate::structure_api::update_list,
+        crate::structure_api::delete_list,
+        crate::structure_api::list_items,
+        crate::structure_api::create_items,
+        crate::structure_api::update_item,
+        crate::structure_api::delete_items,
+        crate::structure_api::create_subset,
+        crate::structure_api::update_subset,
+        crate::structure_api::delete_subset,
+        crate::structure_api::create_version,
+        crate::structure_api::upsert_version,
+        crate::structure_api::delete_version,
+        crate::structure_api::create_time_range,
+        crate::structure_api::delete_time_range,
+        crate::modules_api::create_module,
+        crate::modules_api::update_module,
+        crate::modules_api::delete_module,
+        crate::modules_api::create_line_item,
+        crate::modules_api::update_line_item,
+        crate::modules_api::delete_line_item,
+        crate::modules_api::reorder_line_items,
+        crate::modules_api::check_formula,
+        crate::modules_api::completions,
+        crate::modules_api::functions_reference,
+        crate::cells_api::write_cells,
+        crate::cells_api::read_cells,
+        crate::cells_api::cell_history,
     ),
     components(schemas(
         Problem,
@@ -101,6 +152,60 @@ const CSRF_EXEMPT_PATHS: [&str; 3] = ["/api/v1/setup", "/api/v1/auth/login", "/a
         ModelDto,
         CreateModelRequest,
         UpdateModelRequest,
+        ListDto,
+        CreateListRequest,
+        UpdateListRequest,
+        ItemDto,
+        ItemInput,
+        CreateItemsRequest,
+        UpdateItemRequest,
+        DeleteItemsRequest,
+        SubsetDto,
+        CreateSubsetRequest,
+        UpdateSubsetRequest,
+        VersionDto,
+        VersionRequest,
+        CalendarDto,
+        TimeRangeDto,
+        CreateTimeRangeRequest,
+        StructureDto,
+        StructureCalendarDto,
+        StructureListDto,
+        StructureItemDto,
+        StructureSubsetDto,
+        StructureVersionDto,
+        StructureTimeRangeDto,
+        ModuleDto,
+        LineItemDto,
+        AxisDto,
+        TimeLevelDto,
+        FormatDto,
+        NumberUnitDto,
+        NegativeStyleDto,
+        SummaryMethodDto,
+        TimeScaleDto,
+        VersionsScopeDto,
+        ValueTypeDto,
+        CreateModuleRequest,
+        UpdateModuleRequest,
+        CreateLineItemRequest,
+        UpdateLineItemRequest,
+        ReorderLineItemsRequest,
+        CheckFormulaRequest,
+        CheckFormulaResponse,
+        FormulaAccepted,
+        FormulaRejected,
+        CompletionDto,
+        CompletionKindDto,
+        FunctionDto,
+        ValueDto,
+        CellEditDto,
+        WriteCellsRequest,
+        WriteCellsResponse,
+        ReadCellsRequest,
+        ReadCellsResponse,
+        ChangedByDto,
+        CellChangeDto,
     ))
 )]
 pub struct ApiDoc;
@@ -301,7 +406,15 @@ mod tests {
         properties.sort_unstable();
         assert_eq!(
             properties,
-            ["code", "detail", "errors", "status", "title", "type"]
+            [
+                "code",
+                "detail",
+                "errors",
+                "formula_errors",
+                "status",
+                "title",
+                "type"
+            ]
         );
         let mut required: Vec<&str> = problem["required"]
             .as_array()
@@ -312,6 +425,7 @@ mod tests {
         required.sort_unstable();
         assert_eq!(required, ["code", "detail", "status", "title", "type"]);
         assert!(document()["components"]["schemas"]["FieldError"].is_object());
+        assert!(document()["components"]["schemas"]["FormulaProblem"].is_object());
     }
 
     #[test]
@@ -379,6 +493,31 @@ mod tests {
                 .unwrap()
                 .contains("auth.rate_limited")
         );
+    }
+
+    #[test]
+    fn a_formula_check_is_told_apart_by_its_ok_field() {
+        let schemas = &document()["components"]["schemas"];
+
+        assert_eq!(
+            schemas["CheckFormulaResponse"]["oneOf"],
+            serde_json::json!([
+                { "$ref": "#/components/schemas/FormulaAccepted" },
+                { "$ref": "#/components/schemas/FormulaRejected" },
+            ])
+        );
+        assert_eq!(
+            schemas["FormulaAccepted"]["properties"]["ok"]["enum"],
+            serde_json::json!([true])
+        );
+        assert_eq!(
+            schemas["FormulaRejected"]["properties"]["ok"]["enum"],
+            serde_json::json!([false])
+        );
+        for schema in ["FormulaAccepted", "FormulaRejected"] {
+            let required = schemas[schema]["required"].as_array().unwrap();
+            assert!(required.contains(&Value::from("ok")), "{schema}");
+        }
     }
 
     fn resolve<'a>(document: &'a Value, response: &'a Value) -> &'a Value {

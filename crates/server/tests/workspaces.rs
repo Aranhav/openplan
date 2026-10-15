@@ -1,77 +1,15 @@
 mod common;
 
 use axum::http::{StatusCode, header};
-use common::{TestApp, TestResponse};
+use common::{
+    ADMIN_EMAIL, TestApp, TestResponse, assert_problem, create_member, create_user, setup_admin,
+    sign_in,
+};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-const ADMIN_EMAIL: &str = "admin@acme.com";
-const PASSWORD: &str = "correct horse battery";
 const LAST_ADMIN_DETAIL: &str = "A workspace needs at least one admin.";
-
-/// Completes first-run setup and returns the id of the "Acme" workspace it creates.
-async fn setup_admin(app: &mut TestApp) -> String {
-    let response = app
-        .post(
-            "/api/v1/setup",
-            Some(json!({
-                "email": ADMIN_EMAIL,
-                "name": "Ada Admin",
-                "password": PASSWORD,
-                "workspace_name": "Acme",
-            })),
-        )
-        .await;
-    assert_eq!(response.status, StatusCode::CREATED, "{}", response.text);
-    response.json["workspace"]["id"]
-        .as_str()
-        .unwrap()
-        .to_string()
-}
-
-async fn create_user(admin: &mut TestApp, email: &str, name: &str) -> String {
-    let response = admin
-        .post(
-            "/api/v1/users",
-            Some(json!({
-                "email": email,
-                "name": name,
-                "password": PASSWORD,
-                "is_instance_admin": false,
-            })),
-        )
-        .await;
-    assert_eq!(response.status, StatusCode::CREATED, "{}", response.text);
-    response.json["id"].as_str().unwrap().to_string()
-}
-
-async fn sign_in(pool: &PgPool, email: &str) -> TestApp {
-    let mut app = TestApp::new(pool.clone());
-    let response = app
-        .post(
-            "/api/v1/auth/login",
-            Some(json!({ "email": email, "password": PASSWORD })),
-        )
-        .await;
-    assert_eq!(response.status, StatusCode::OK, "{}", response.text);
-    app
-}
-
-/// Creates a user and adds them to `workspace_id` with `role`, as the signed-in
-/// `admin`. Returns the new user's id.
-async fn create_member(
-    admin: &mut TestApp,
-    workspace_id: &str,
-    email: &str,
-    name: &str,
-    role: &str,
-) -> String {
-    let user_id = create_user(admin, email, name).await;
-    let added = add_member(admin, workspace_id, email, role).await;
-    assert_eq!(added.status, StatusCode::CREATED, "{}", added.text);
-    user_id
-}
 
 async fn add_member(
     app: &mut TestApp,
@@ -114,16 +52,6 @@ async fn admin_count(pool: &PgPool, workspace_id: &str) -> i64 {
     .fetch_one(pool)
     .await
     .unwrap()
-}
-
-fn assert_problem(response: &TestResponse, status: StatusCode, code: &str) {
-    assert_eq!(response.status, status, "{}", response.text);
-    let content_type = response.headers[header::CONTENT_TYPE].to_str().unwrap();
-    assert!(
-        content_type.starts_with("application/problem+json"),
-        "{content_type}"
-    );
-    assert_eq!(response.json["code"], code);
 }
 
 fn assert_no_store(response: &TestResponse) {

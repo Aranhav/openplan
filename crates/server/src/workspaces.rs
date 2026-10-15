@@ -273,6 +273,11 @@ pub(crate) async fn delete_workspace(
     ApiPath(id): ApiPath<Uuid>,
 ) -> AppResult<StatusCode> {
     require_instance_admin(&user)?;
+    // The models go with the workspace, and so must their actors.
+    let model_ids = sqlx::query_scalar::<_, Uuid>("SELECT id FROM models WHERE workspace_id = $1")
+        .bind(id)
+        .fetch_all(&state.db)
+        .await?;
     let deleted = sqlx::query("DELETE FROM workspaces WHERE id = $1")
         .bind(id)
         .execute(&state.db)
@@ -280,6 +285,7 @@ pub(crate) async fn delete_workspace(
     if deleted.rows_affected() == 0 {
         return Err(AppError::NotFound);
     }
+    state.models.discard_many(model_ids).await;
     Ok(StatusCode::NO_CONTENT)
 }
 

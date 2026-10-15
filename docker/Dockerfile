@@ -15,12 +15,14 @@ RUN pnpm install --frozen-lockfile --filter "./web..."
 COPY web web
 RUN pnpm --dir web build
 
-FROM rust:1-bookworm AS build
+FROM rust:1.97-bookworm AS build
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY crates crates
 # The server embeds the web app at compile time.
 COPY --from=web /app/web/dist web/dist
+# The engine's zstd compiles its bundled C library, so this stage needs a C compiler. The full
+# rust image has one; check before moving to a slimmer or an alpine image.
 RUN cargo build --release --locked -p openplan-server
 
 FROM debian:bookworm-slim

@@ -1,30 +1,14 @@
 mod common;
 
 use axum::http::{Method, StatusCode, header};
-use common::{TestApp, TestResponse};
+use common::{ADMIN_EMAIL, PASSWORD, TestApp, TestResponse, assert_problem, setup_admin};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-const ADMIN_EMAIL: &str = "admin@acme.com";
-const PASSWORD: &str = "correct horse battery";
 const NEW_PASSWORD: &str = "battery staple horse";
 const PLANNER_EMAIL: &str = "planner@acme.com";
 const OWN_ACCOUNT_MESSAGE: &str = "You can't change this for your own account.";
-
-fn setup_body() -> Value {
-    json!({
-        "email": ADMIN_EMAIL,
-        "name": "Ada Admin",
-        "password": PASSWORD,
-        "workspace_name": "Acme",
-    })
-}
-
-async fn setup_admin(app: &mut TestApp) {
-    let response = app.post("/api/v1/setup", Some(setup_body())).await;
-    assert_eq!(response.status, StatusCode::CREATED, "{}", response.text);
-}
 
 async fn login(app: &mut TestApp, email: &str, password: &str) -> TestResponse {
     app.post(
@@ -187,16 +171,6 @@ fn assert_one_succeeded_and_one_refused_as_last_admin(
         refused.json["detail"],
         "An instance needs at least one administrator."
     );
-}
-
-fn assert_problem(response: &TestResponse, status: StatusCode, code: &str) {
-    assert_eq!(response.status, status, "{}", response.text);
-    let content_type = response.headers[header::CONTENT_TYPE].to_str().unwrap();
-    assert!(
-        content_type.starts_with("application/problem+json"),
-        "{content_type}"
-    );
-    assert_eq!(response.json["code"], code);
 }
 
 fn assert_no_store(response: &TestResponse) {

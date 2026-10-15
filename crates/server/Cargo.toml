@@ -24,9 +24,11 @@ chrono.workspace = true
 clap.workspace = true
 cookie.workspace = true
 mime_guess.workspace = true
+openplan-engine.workspace = true
 rand.workspace = true
 rust-embed.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 sha2.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
@@ -38,6 +40,3 @@ tracing-subscriber.workspace = true
 utoipa.workspace = true
 utoipa-scalar.workspace = true
 uuid.workspace = true
-
-[dev-dependencies]
-serde_json.workspace = true

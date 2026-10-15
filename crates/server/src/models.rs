@@ -1,5 +1,6 @@
 use axum::{Json, Router, extract::State, http::StatusCode, routing::get};
 use chrono::{DateTime, Datelike, Utc};
+use openplan_engine::Calendar as EngineCalendar;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, PgPool};
 use utoipa::ToSchema;
@@ -9,6 +10,7 @@ use crate::{
     app::AppState,
     auth::CurrentUser,
     authz::{WorkspaceRole, require_workspace_role},
+    engine_store,
     error::{AppError, AppResult, FieldError},
     extract::{ApiJson, ApiPath},
     validate,
@@ -40,6 +42,27 @@ pub struct Calendar {
     pub fiscal_year_start_month: u8,
     pub first_year: i32,
     pub years: u8,
+}
+
+impl From<Calendar> for EngineCalendar {
+    fn from(calendar: Calendar) -> Self {
+        EngineCalendar {
+            fiscal_year_start_month: calendar.fiscal_year_start_month,
+            first_year: calendar.first_year,
+            years: calendar.years,
+            current_month: None,
+        }
+    }
+}
+
+impl From<EngineCalendar> for Calendar {
+    fn from(calendar: EngineCalendar) -> Self {
+        Calendar {
+            fiscal_year_start_month: calendar.fiscal_year_start_month,
+            first_year: calendar.first_year,
+            years: calendar.years,
+        }
+    }
 }
 
 /// The model's mode, stored and sent as `dev` or `prod`.
@@ -188,20 +211,25 @@ pub(crate) async fn create_model(
     validate::collect(vec![name.clone().map(drop), description.clone().map(drop)])?;
     let (name, description) = (name?, description?);
 
+    let id = Uuid::now_v7();
+    let calendar = default_calendar();
+    let mut tx = state.db.begin().await?;
     let model = sqlx::query_as::<_, ModelDto>(&format!(
         "INSERT INTO models (id, workspace_id, name, description, calendar, created_by)
          VALUES ($1, $2, $3, $4, $5, $6)
          RETURNING {MODEL_COLUMNS}"
     ))
-    .bind(Uuid::now_v7())
+    .bind(id)
     .bind(workspace_id)
     .bind(name)
     .bind(description)
-    .bind(sqlx::types::Json(default_calendar()))
+    .bind(sqlx::types::Json(&calendar))
     .bind(user.id)
-    .fetch_one(&state.db)
+    .fetch_one(&mut *tx)
     .await
     .map_err(map_model_write_error)?;
+    engine_store::create_model_state(&mut *tx, id, calendar.into()).await?;
+    tx.commit().await?;
     Ok((StatusCode::CREATED, Json(model)))
 }
 
@@ -315,6 +343,7 @@ pub(crate) async fn delete_model(
     if deleted.rows_affected() == 0 {
         return Err(AppError::NotFound);
     }
+    state.models.discard(id).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -322,6 +351,35 @@ pub(crate) async fn delete_model(
 mod tests {
     use super::*;
     use crate::test_support::{Violation, database_error};
+
+    #[test]
+    fn calendar_converts_to_and_from_the_engine_calendar() {
+        let calendar = Calendar {
+            fiscal_year_start_month: 4,
+            first_year: 2027,
+            years: 5,
+        };
+
+        let engine = EngineCalendar::from(calendar);
+
+        assert_eq!(
+            (
+                engine.fiscal_year_start_month,
+                engine.first_year,
+                engine.years,
+                engine.current_month
+            ),
+            (4, 2027, 5, None)
+        );
+        let back = Calendar::from(EngineCalendar {
+            current_month: Some(3),
+            ..engine
+        });
+        assert_eq!(
+            (back.fiscal_year_start_month, back.first_year, back.years),
+            (4, 2027, 5)
+        );
+    }
 
     #[test]
     fn model_write_maps_foreign_key_violation_to_not_found() {
