@@ -109,12 +109,14 @@ pub struct ViewQuery {
     /// The member of every dimension that is on neither rows nor columns.
     #[serde(default)]
     pub pages: Vec<PageSelection>,
+    /// Whether the summaries of lists and time are shown among their members. Without them
+    /// `collapsed` is ignored, as there is nothing to collapse, and `hidden` still applies.
     #[serde(default = "yes")]
     pub show_summaries: bool,
-    /// Summaries whose members are hidden.
+    /// Summaries whose members are hidden. Ignored without summaries.
     #[serde(default)]
     pub collapsed: Vec<MemberRef>,
-    /// Members left out.
+    /// Members left out, with or without summaries. The members below a hidden summary stay.
     #[serde(default)]
     pub hidden: Vec<MemberRef>,
     /// Conditions every row must meet. A view of more than 2,000,000 rows, before the filters
@@ -126,8 +128,11 @@ pub struct ViewQuery {
 
 /// A member of a dimension as a header shows it.
 ///
-/// `depth` counts the levels above a list or subset member, and the levels a time period lies
-/// above the periods of its module.
+/// `depth` of a list member is its distance below the top of the list (the total, or the first
+/// level of a list without one), so a parent is shallower than the items it adds up. It is 0
+/// for the members of a list shown without summaries, and for subset members, versions and line
+/// items. `depth` of a time period is its height above the periods of the module's level, so a
+/// summary is deeper than the periods it adds up, the other way round from a list.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Member {
     pub key: String,
