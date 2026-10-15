@@ -620,15 +620,104 @@ async fn csrf_required_for_cookie_mutations(pool: PgPool) {
     login(&mut app, EMAIL, PASSWORD).await;
 
     let rejected = app
-        .request_without_csrf(axum::http::Method::POST, "/api/v1/auth/logout", None)
+        .request_without_csrf(
+            axum::http::Method::PATCH,
+            "/api/v1/auth/me",
+            Some(json!({ "name": "Ada Again" })),
+        )
         .await;
 
-    assert_eq!(rejected.status, StatusCode::FORBIDDEN);
-    assert_eq!(rejected.json["code"], "auth.csrf");
-    assert_eq!(app.get("/api/v1/auth/me").await.status, StatusCode::OK);
+    assert_problem(&rejected, StatusCode::FORBIDDEN, "auth.csrf");
+    assert_eq!(
+        app.get("/api/v1/auth/me").await.json["user"]["name"],
+        "Ada Admin"
+    );
 
-    let accepted = app.post("/api/v1/auth/logout", None).await;
-    assert_eq!(accepted.status, StatusCode::NO_CONTENT);
+    let accepted = app
+        .patch("/api/v1/auth/me", Some(json!({ "name": "Ada Again" })))
+        .await;
+    assert_eq!(accepted.status, StatusCode::OK);
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn sign_in_and_sign_out_work_after_the_csrf_cookie_is_lost(pool: PgPool) {
+    let mut app = TestApp::new(pool.clone());
+    setup_admin(&mut app).await;
+    app.forget_cookie("op_csrf");
+
+    let signed_in = login(&mut app, EMAIL, PASSWORD).await;
+
+    assert_eq!(signed_in.status, StatusCode::OK, "{}", signed_in.text);
+    assert!(!cookie_value(set_cookie(&signed_in, "op_csrf")).is_empty());
+    app.forget_cookie("op_csrf");
+
+    let signed_out = app.post("/api/v1/auth/logout", None).await;
+
+    assert_eq!(signed_out.status, StatusCode::NO_CONTENT);
+    assert!(set_cookie(&signed_out, "op_session").contains("Max-Age=0"));
+    assert_eq!(
+        app.get("/api/v1/auth/me").await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(session_count(&pool).await, 1);
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn setup_works_with_a_leftover_session_cookie(pool: PgPool) {
+    let mut app = TestApp::new(pool);
+    app.set_cookie("op_session", "left-over-from-another-instance");
+
+    let response = app.post("/api/v1/setup", Some(setup_body())).await;
+
+    assert_eq!(response.status, StatusCode::CREATED, "{}", response.text);
+    assert_eq!(app.get("/api/v1/auth/me").await.status, StatusCode::OK);
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn csrf_exempt_routes_still_require_a_json_body(pool: PgPool) {
+    let mut app = TestApp::new(pool);
+    setup_admin(&mut app).await;
+    app.forget_cookie("op_csrf");
+
+    for path in ["/api/v1/auth/login", "/api/v1/setup"] {
+        let form = app
+            .post_raw(
+                path,
+                Some("application/x-www-form-urlencoded"),
+                format!("email={EMAIL}&password={PASSWORD}"),
+            )
+            .await;
+        assert_problem(
+            &form,
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "unsupported_media_type",
+        );
+    }
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn me_reissues_the_csrf_cookie_when_it_is_missing(pool: PgPool) {
+    let mut app = TestApp::new(pool);
+    let created = setup_admin(&mut app).await;
+    let session_token = cookie_value(set_cookie(&created, "op_session")).to_string();
+    app.forget_cookie("op_csrf");
+
+    let response = app.get("/api/v1/auth/me").await;
+
+    assert_eq!(response.status, StatusCode::OK);
+    let csrf = set_cookie(&response, "op_csrf");
+    assert!(!cookie_value(csrf).is_empty());
+    assert!(!csrf.contains("HttpOnly"), "{csrf}");
+    assert_eq!(
+        cookie_value(set_cookie(&response, "op_session")),
+        session_token
+    );
+    let saved = app
+        .patch("/api/v1/auth/me", Some(json!({ "name": "Ada Again" })))
+        .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text);
+    let again = app.get("/api/v1/auth/me").await;
+    assert!(again.headers.get(header::SET_COOKIE).is_none());
 }
 
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]

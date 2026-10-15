@@ -46,17 +46,17 @@ impl FromRequestParts<AppState> for CurrentUser {
         let session = session::lookup(&state.db, token)
             .await?
             .ok_or(AppError::Unauthenticated)?;
-        if session.renewed
+        let csrf = jar
+            .get(CSRF_COOKIE)
+            .map(Cookie::value)
+            .filter(|value| !value.is_empty());
+        // A browser that lost its CSRF cookie gets a new one on its next request.
+        if (session.renewed || csrf.is_none())
             && let Some(renewal) = parts.extensions.get::<SessionRenewal>()
         {
-            let csrf = jar
-                .get(CSRF_COOKIE)
-                .map(Cookie::value)
-                .filter(|value| !value.is_empty())
-                .map_or_else(random_token, str::to_string);
             renewal.offer(session_cookies_with_csrf(
                 token,
-                csrf,
+                csrf.map_or_else(random_token, str::to_string),
                 state.config.secure_cookies(),
             ));
         }

@@ -29,11 +29,19 @@ const SETUP_LOCK_KEY: i64 = 4242;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/setup/status", get(setup_status))
+        .route("/auth/me", get(me).patch(update_me))
+        .route("/auth/me/password", post(change_password))
+}
+
+/// The routes that start or end a session. They skip the CSRF check, because a
+/// browser that kept `op_session` but lost `op_csrf` could not otherwise sign
+/// in again or sign out. Sign-in and setup still need a JSON body, and the
+/// session cookie is `SameSite=Lax`, so a form on another site cannot use it.
+pub fn session_router() -> Router<AppState> {
+    Router::new()
         .route("/setup", post(setup))
         .route("/auth/login", post(login))
         .route("/auth/logout", post(logout))
-        .route("/auth/me", get(me).patch(update_me))
-        .route("/auth/me/password", post(change_password))
 }
 
 #[derive(Serialize, ToSchema)]

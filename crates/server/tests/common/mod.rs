@@ -65,6 +65,16 @@ impl TestApp {
         }
     }
 
+    /// Makes the client lose a cookie, as a browser does when site data is cleared.
+    pub fn forget_cookie(&mut self, name: &str) {
+        self.cookies.remove(name);
+    }
+
+    /// Makes the client hold a cookie that the server did not set.
+    pub fn set_cookie(&mut self, name: &str, value: &str) {
+        self.cookies.insert(name.to_string(), value.to_string());
+    }
+
     /// Sends a request with the stored cookies and, for non-GET requests,
     /// the CSRF header copied from the stored `op_csrf` cookie.
     pub async fn request(

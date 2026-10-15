@@ -101,11 +101,13 @@ async fn no_store_for_api(request: Request, next: Next) -> Response {
 }
 
 pub fn build_router(state: AppState) -> Router {
-    let api_v1: Router<AppState> = auth::routes::router()
+    let csrf_protected: Router<AppState> = auth::routes::router()
         .merge(users::router())
         .merge(workspaces::router())
         .merge(models::router())
-        .layer(middleware::from_fn(csrf::require_csrf))
+        .layer(middleware::from_fn(csrf::require_csrf));
+    let api_v1: Router<AppState> = csrf_protected
+        .merge(auth::routes::session_router())
         .layer(middleware::from_fn(renewal::reissue_cookies));
 
     Router::new()
