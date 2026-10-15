@@ -10,6 +10,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
+import { closeUnlessBusy } from "@/lib/close-unless-busy"
 
 interface ChangeOwnRoleDialogProps {
   open: boolean
@@ -36,8 +37,7 @@ export function ChangeOwnRoleDialog({
   }
 
   return (
-    // Escape and a click outside end up here too; neither may drop a request in flight.
-    <AlertDialog open={open} onOpenChange={(next) => !pending && onOpenChange(next)}>
+    <AlertDialog open={open} onOpenChange={closeUnlessBusy(pending, onOpenChange)}>
       <AlertDialogContent onCloseAutoFocus={onCloseAutoFocus}>
         <AlertDialogHeader>
           <AlertDialogTitle>Change your own role?</AlertDialogTitle>

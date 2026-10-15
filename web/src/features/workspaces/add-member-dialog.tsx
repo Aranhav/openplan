@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/form"
 import { Input } from "@/components/ui/input"
 import { Select, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { closeUnlessBusy } from "@/lib/close-unless-busy"
 import { reportFormError } from "@/lib/form-errors"
 import { emailSchema } from "@/lib/validation"
 import { useAddMember } from "./api"
@@ -51,9 +52,8 @@ export function AddMemberDialog({
 }: AddMemberDialogProps) {
   const addMember = useAddMember(workspaceId)
   return (
-    // Escape, the close button and a click outside all end up here; none may drop a request in flight.
-    <Dialog open={open} onOpenChange={(next) => !addMember.isPending && onOpenChange(next)}>
-      <DialogContent onCloseAutoFocus={onCloseAutoFocus}>
+    <Dialog open={open} onOpenChange={closeUnlessBusy(addMember.isPending, onOpenChange)}>
+      <DialogContent onCloseAutoFocus={onCloseAutoFocus} showCloseButton={!addMember.isPending}>
         <DialogHeader>
           <DialogTitle>Add member</DialogTitle>
           <DialogDescription>

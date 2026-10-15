@@ -12,6 +12,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { errorDetail } from "@/lib/api/client"
+import { closeUnlessBusy } from "@/lib/close-unless-busy"
 import type { components } from "@/lib/api/schema"
 import { useUpdateUser } from "./api"
 
@@ -44,8 +45,7 @@ export function DisableUserDialog({
   }
 
   return (
-    // Escape and a click outside end up here too; neither may drop a request in flight.
-    <AlertDialog open={open} onOpenChange={(next) => !updateUser.isPending && onOpenChange(next)}>
+    <AlertDialog open={open} onOpenChange={closeUnlessBusy(updateUser.isPending, onOpenChange)}>
       <AlertDialogContent onCloseAutoFocus={onCloseAutoFocus}>
         <AlertDialogHeader>
           <AlertDialogTitle>{`Disable ${user.name}?`}</AlertDialogTitle>

@@ -120,6 +120,7 @@ describe("ResetPasswordDialog", () => {
     expect(submit).toBeDisabled()
     expect(submit.querySelector("svg.animate-spin")).toBeInTheDocument()
     expect(dialog.getByRole("button", { name: "Cancel" })).toBeDisabled()
+    expect(dialog.queryByRole("button", { name: "Close" })).not.toBeInTheDocument()
     await typist.keyboard("{Escape}")
     expect(onOpenChange).not.toHaveBeenCalled()
 

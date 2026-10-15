@@ -12,6 +12,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { errorDetail } from "@/lib/api/client"
+import { closeUnlessBusy } from "@/lib/close-unless-busy"
 import type { components } from "@/lib/api/schema"
 import { useDeleteModel } from "./api"
 
@@ -55,13 +56,6 @@ export function DeleteModelDialog({
     }
   }
 
-  // Escape would otherwise close the dialog while the model is still being deleted.
-  function closeUnlessBusy(next: boolean) {
-    if (!deleteModel.isPending) {
-      onOpenChange(next)
-    }
-  }
-
   function restoreFocus(event: Event) {
     if (deleted.current) {
       event.preventDefault()
@@ -72,7 +66,7 @@ export function DeleteModelDialog({
   }
 
   return (
-    <AlertDialog open={open} onOpenChange={closeUnlessBusy}>
+    <AlertDialog open={open} onOpenChange={closeUnlessBusy(deleteModel.isPending, onOpenChange)}>
       <AlertDialogContent onCloseAutoFocus={restoreFocus}>
         <AlertDialogHeader>
           <AlertDialogTitle>Delete {model.name}?</AlertDialogTitle>

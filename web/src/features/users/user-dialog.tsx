@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/form"
 import { Input } from "@/components/ui/input"
 import type { components } from "@/lib/api/schema"
+import { closeUnlessBusy } from "@/lib/close-unless-busy"
 import { reportFormError } from "@/lib/form-errors"
 import { emailSchema, passwordSchema, personNameSchema } from "@/lib/validation"
 import { useCreateUser, useUpdateUser } from "./api"
@@ -71,9 +72,8 @@ export function UserDialog({
   const onClose = () => onOpenChange(false)
 
   return (
-    // Escape, the close button and a click outside all end up here; none may drop a request in flight.
-    <Dialog open={open} onOpenChange={(next) => !pending && onOpenChange(next)}>
-      <DialogContent onCloseAutoFocus={onCloseAutoFocus}>
+    <Dialog open={open} onOpenChange={closeUnlessBusy(pending, onOpenChange)}>
+      <DialogContent onCloseAutoFocus={onCloseAutoFocus} showCloseButton={!pending}>
         <DialogHeader>
           <DialogTitle>{user ? "Edit user" : "Create user"}</DialogTitle>
           <DialogDescription>

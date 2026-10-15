@@ -170,8 +170,8 @@ describe("AddMemberDialog", () => {
     expect(submit).toBeDisabled()
     expect(submit.querySelector("svg.animate-spin")).toBeInTheDocument()
     expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled()
+    expect(within(dialog).queryByRole("button", { name: "Close" })).not.toBeInTheDocument()
     await typist.keyboard("{Escape}")
-    await typist.click(within(dialog).getByRole("button", { name: "Close" }))
     expect(onOpenChange).not.toHaveBeenCalled()
 
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false))

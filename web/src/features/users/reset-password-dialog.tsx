@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/form"
 import { Input } from "@/components/ui/input"
 import type { components } from "@/lib/api/schema"
+import { closeUnlessBusy } from "@/lib/close-unless-busy"
 import { reportFormError } from "@/lib/form-errors"
 import { passwordSchema } from "@/lib/validation"
 import { useUpdateUser } from "./api"
@@ -47,9 +48,8 @@ export function ResetPasswordDialog({
 }: ResetPasswordDialogProps) {
   const updateUser = useUpdateUser()
   return (
-    // Escape, the close button and a click outside all end up here; none may drop a request in flight.
-    <Dialog open={open} onOpenChange={(next) => !updateUser.isPending && onOpenChange(next)}>
-      <DialogContent onCloseAutoFocus={onCloseAutoFocus}>
+    <Dialog open={open} onOpenChange={closeUnlessBusy(updateUser.isPending, onOpenChange)}>
+      <DialogContent onCloseAutoFocus={onCloseAutoFocus} showCloseButton={!updateUser.isPending}>
         <DialogHeader>
           <DialogTitle>Reset password</DialogTitle>
           <DialogDescription>

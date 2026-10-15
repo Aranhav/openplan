@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/dialog"
 import { Form } from "@/components/ui/form"
 import type { components } from "@/lib/api/schema"
+import { closeUnlessBusy } from "@/lib/close-unless-busy"
 import { reportFormError } from "@/lib/form-errors"
 import { useUpdateModel } from "./api"
 import { ModelNameField } from "./model-fields"
@@ -38,15 +39,8 @@ export function RenameModelDialog({
   onCloseAutoFocus,
 }: RenameModelDialogProps) {
   const updateModel = useUpdateModel(model.id)
-  // Nothing closes the dialog while the rename is being saved: Escape, a click outside and the
-  // close button would hide a request that is still running.
-  const closeUnlessBusy = (next: boolean) => {
-    if (!updateModel.isPending) {
-      onOpenChange(next)
-    }
-  }
   return (
-    <Dialog open={open} onOpenChange={closeUnlessBusy}>
+    <Dialog open={open} onOpenChange={closeUnlessBusy(updateModel.isPending, onOpenChange)}>
       <DialogContent onCloseAutoFocus={onCloseAutoFocus} showCloseButton={!updateModel.isPending}>
         <DialogHeader>
           <DialogTitle>Rename model</DialogTitle>

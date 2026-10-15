@@ -14,6 +14,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Form } from "@/components/ui/form"
+import { closeUnlessBusy } from "@/lib/close-unless-busy"
 import { reportFormError } from "@/lib/form-errors"
 import { useCreateModel } from "./api"
 import { ModelDescriptionField, ModelNameField } from "./model-fields"
@@ -38,15 +39,8 @@ export function CreateModelDialog({
   onCloseAutoFocus,
 }: CreateModelDialogProps) {
   const createModel = useCreateModel(workspaceId)
-  // Nothing closes the dialog while the model is being created: Escape, a click outside and the
-  // close button would hide a request that is still running.
-  const closeUnlessBusy = (next: boolean) => {
-    if (!createModel.isPending) {
-      onOpenChange(next)
-    }
-  }
   return (
-    <Dialog open={open} onOpenChange={closeUnlessBusy}>
+    <Dialog open={open} onOpenChange={closeUnlessBusy(createModel.isPending, onOpenChange)}>
       <DialogContent onCloseAutoFocus={onCloseAutoFocus} showCloseButton={!createModel.isPending}>
         <DialogHeader>
           <DialogTitle>Create model</DialogTitle>

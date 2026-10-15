@@ -172,8 +172,8 @@ describe("UserDialog, creating a user", () => {
     expect(submit).toBeDisabled()
     expect(submit.querySelector("svg.animate-spin")).toBeInTheDocument()
     expect(dialog.getByRole("button", { name: "Cancel" })).toBeDisabled()
+    expect(dialog.queryByRole("button", { name: "Close" })).not.toBeInTheDocument()
     await typist.keyboard("{Escape}")
-    await typist.click(dialog.getByRole("button", { name: "Close" }))
     expect(onOpenChange).not.toHaveBeenCalled()
 
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false))
@@ -233,6 +233,28 @@ describe("UserDialog, editing a user", () => {
 
     await waitFor(() => expect(patched).toHaveBeenCalledOnce())
     expect(patched).toHaveBeenCalledWith({ is_instance_admin: true })
+  })
+
+  it("can't be dismissed while the changes are being saved", async () => {
+    server.use(
+      http.patch(`${usersUrl}/${grace.id}`, async () => {
+        await delay(300)
+        return HttpResponse.json({ ...grace, is_instance_admin: true })
+      }),
+      http.get(usersUrl, () => HttpResponse.json([grace])),
+    )
+    const typist = userEvent.setup()
+    const { onOpenChange } = renderDialog({ user: grace })
+    const dialog = await openDialog()
+    await typist.click(dialog.getByRole("checkbox", { name: /Instance admin/ }))
+    await typist.click(dialog.getByRole("button", { name: "Save changes" }))
+
+    expect(dialog.getByRole("button", { name: "Cancel" })).toBeDisabled()
+    expect(dialog.queryByRole("button", { name: "Close" })).not.toBeInTheDocument()
+    await typist.keyboard("{Escape}")
+    expect(onOpenChange).not.toHaveBeenCalled()
+
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false))
   })
 
   it("closes without a request when nothing changed", async () => {
