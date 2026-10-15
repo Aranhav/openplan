@@ -15,6 +15,7 @@ use crate::structure::{Layout, LineItem, Structure, level_name};
 use crate::summary::{LevelSpec, Summary, SummaryCache, ratio_parts, roll_up};
 use crate::value::{BLANK_DATE, BLANK_ITEM, BLANK_PERIOD, Cell, Column, Format, Value, ValueType};
 
+mod read;
 mod recalc;
 mod working;
 
@@ -25,6 +26,9 @@ use working::{Working, summarised_by_formula};
 pub(crate) const EPOCH_DAYS_FROM_CE: i32 = 719_163;
 
 const SWITCHOVER_MESSAGE: &str = "Periods before the switchover show Actual values.";
+
+/// The most characters a text cell holds.
+const MAX_TEXT_CHARS: usize = 10_000;
 
 /// What the last command, batch or full recalculation calculated.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -597,7 +601,7 @@ impl Model {
                 });
                 continue;
             }
-            match encode(&structure, &ty, &edit.value) {
+            match encode(&structure, &ty, &edit.value).and_then(check_text) {
                 Ok(cell) => writes.push((shape.index(&position), cell)),
                 Err(message) => issues.push(CellIssue { index, message }),
             }
@@ -769,6 +773,20 @@ impl<'a> AxisMaps<'a> {
         self.cache.insert(key, Rc::clone(&map));
         Ok(map)
     }
+}
+
+/// Fails if a text cell is longer than a cell may be or holds the NUL character, which the
+/// database cannot store.
+fn check_text(cell: Cell) -> Result<Cell, String> {
+    if let Cell::Text(text) = &cell {
+        if text.chars().count() > MAX_TEXT_CHARS {
+            return Err("Text is limited to 10,000 characters.".to_string());
+        }
+        if text.contains('\0') {
+            return Err("Text can't contain the NUL character.".to_string());
+        }
+    }
+    Ok(cell)
 }
 
 /// Converts a submitted value into the storage form of a cell of type `ty`.

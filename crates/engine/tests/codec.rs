@@ -1222,37 +1222,39 @@ fn cells_are_left_out_when_a_list_axis_becomes_a_subset_of_it() {
 
 #[test]
 fn large_text_is_split_into_chunks_that_can_be_read_back() {
-    const CELLS: usize = 5;
-    const LENGTH: usize = 14 << 20;
+    // The longest text a cell holds, in the characters that take the most bytes: the cells
+    // together are more than a chunk takes before compression.
+    const CELLS: usize = 1_800;
+    const LENGTH: usize = 10_000;
+    const KINDS: usize = 5;
+    let names: Vec<String> = (0..CELLS).map(|i| format!("Item {i}")).collect();
+    let entries: Vec<(&str, Option<ItemId>)> =
+        names.iter().map(|name| (name.as_str(), None)).collect();
     let mut book = Book::new(1);
-    let (list, items) = book.list(
-        "Notes",
-        None,
-        &[
-            ("A", None),
-            ("B", None),
-            ("C", None),
-            ("D", None),
-            ("E", None),
-        ],
-    );
+    let (list, items) = book.list("Notes", None, &entries);
     let module = book.module("Notes", vec![list_axis(list)]);
     let note = book.add(line_item(module, "Note", Format::Text, None));
-    let texts: Vec<Arc<str>> = (0..CELLS)
-        .map(|i| Arc::from(char::from(b'a' + i as u8).to_string().repeat(LENGTH)))
+    let texts: Vec<Arc<str>> = (0..KINDS as u32)
+        .map(|i| {
+            let emoji = char::from_u32(0x1F600 + i).expect("an emoji");
+            Arc::from(emoji.to_string().repeat(LENGTH))
+        })
+        .collect();
+    let expected: Vec<Value> = (0..CELLS)
+        .map(|i| Value::Text(Arc::clone(&texts[i % KINDS])))
         .collect();
     book.set(
         note,
         items
             .iter()
-            .zip(&texts)
-            .map(|(&id, text)| (vec![item(id)], Value::Text(Arc::clone(text))))
+            .zip(&expected)
+            .map(|(&id, value)| (vec![item(id)], value.clone()))
             .collect(),
     );
 
     let chunks = book.model.export_inputs_for(note);
 
-    assert!(chunks.len() >= 2, "{} chunk(s) for 70 MiB", chunks.len());
+    assert!(chunks.len() >= 2, "{} chunk(s) for 69 MiB", chunks.len());
     assert_eq!(
         chunks.iter().map(|chunk| chunk.chunk).collect::<Vec<_>>(),
         (0..chunks.len() as u32).collect::<Vec<_>>()
@@ -1260,6 +1262,5 @@ fn large_text_is_split_into_chunks_that_can_be_read_back() {
     let loaded = Model::from_parts(book.model.export_structure(), chunks).unwrap();
     assert_eq!(loaded.load_warnings(), 0);
     let cells: Vec<Vec<CoordToken>> = items.iter().map(|&id| vec![item(id)]).collect();
-    let expected: Vec<Value> = texts.into_iter().map(Value::Text).collect();
     assert!(read(&loaded, note, &cells) == expected);
 }

@@ -581,13 +581,19 @@ pub(crate) fn fold(text: &str) -> String {
     text.chars().flat_map(char::to_lowercase).collect()
 }
 
-/// Trims a name and checks its length.
+/// Trims a name and checks its length and that it has no NUL character, which the database
+/// cannot store.
 fn clean_name(what: &str, raw: &str) -> Result<String, EngineError> {
     let name = raw.trim();
     let length = name.chars().count();
     if length == 0 || length > MAX_NAME_CHARS {
         return Err(invalid(format!(
             "The {what} name must be between 1 and {MAX_NAME_CHARS} characters."
+        )));
+    }
+    if name.contains('\0') {
+        return Err(invalid(format!(
+            "The {what} name can't contain the NUL character."
         )));
     }
     Ok(name.to_string())
