@@ -372,10 +372,9 @@ fn round_ignores_the_representation_error_of_scaling() {
     // 12.35 * 100 is 1235.0000000000002 and 1.005 * 100 is 100.49999999999999, but these
     // are the numbers the user typed, so they round as such.
     book.numbers_in("Typed", &[12.35, 1.005, 1.1, 0.1 + 0.2, 2.675]);
-    // 0.1 + 0.2 is 0.30000000000000004 as written, so UP takes it on to 0.31.
     assert_eq!(
         book.numbers("ROUND(Typed, 2, UP)", 5),
-        [12.35, 1.01, 1.1, 0.31, 2.68]
+        [12.35, 1.01, 1.1, 0.3, 2.68]
     );
     assert_eq!(
         book.numbers("ROUND(Typed, 2, DOWN)", 5),
@@ -483,6 +482,26 @@ fn round_of_a_blank_or_a_zero_is_zero() {
     assert_eq!(book.numbers("ROUND(Blank, 2, UP)", 1), [0.0]);
     assert_eq!(book.numbers("ROUND(Blank / 0, -2, UP)", 1), [0.0]);
     assert_eq!(book.numbers("ROUND(0, 2, UP)", 1), [0.0]);
+}
+
+#[test]
+fn round_takes_fifteen_digits_when_they_read_back_to_the_number() {
+    let mut book = Book::new();
+    // 1.005 and 2.675 read back from their 15-digit decimals, so they round as written.
+    assert_eq!(book.numbers("ROUND(1.005, 2)", 1), [1.01]);
+    assert_eq!(book.numbers("ROUND(2.675, 2)", 1), [2.68]);
+    assert_eq!(book.numbers("ROUND(0.1 + 0.2, 2, UP)", 1), [0.3]);
+}
+
+#[test]
+fn round_takes_the_shortest_decimal_when_fifteen_digits_are_too_far() {
+    let mut book = Book::new();
+    // The 15-digit decimal of 5728547987.8965435 is 5728547987.89654, more than two units in the
+    // last place from it, so the shortest decimal is rounded.
+    assert_eq!(
+        book.numbers("ROUND(5728547987.8965435, 6)", 1),
+        [5728547987.896544]
+    );
 }
 
 #[test]

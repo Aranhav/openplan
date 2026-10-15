@@ -143,28 +143,30 @@ pub(super) fn eval_round(
     map2(&values, |x, places| round(x, places, mode))
 }
 
-/// `x` rounded to `places` decimals (negative to the left of the point) in `mode`. The rounding is
-/// done on the shortest decimal that reads back as `x`, which is the number as it was written, and
-/// the result is the double nearest to the decimal that comes out. A decimal beyond the range of a
-/// double comes out infinite, which [`sanitize_number`] makes 0.
+/// From 2^52 up a number is whole already, so ROUND to a place of 0 or more leaves it as it is.
+const WHOLE_FROM: f64 = (1u64 << 52) as f64;
+
+/// `x` rounded to `places` decimals (negative to the left of the point) in `mode`, on the decimal
+/// that [`decimal_digits`] gives for `x`. The result is the double nearest to the decimal that
+/// comes out.
 fn round(x: f64, places: f64, mode: Word) -> f64 {
     if !x.is_finite() {
         return x;
     }
     let places = places.trunc().clamp(-400.0, 400.0) as i64;
-    let (mut digits, mut point) = shortest_digits(x.abs());
-    // `keep` digits stay: the rounding place is `places` places from the point.
-    let keep = point + places;
-    if keep >= digits.len() as i64 {
+    if places >= 0 && x.abs() >= WHOLE_FROM {
         return x;
     }
+    let (mut digits, mut point) = decimal_digits(x.abs());
+    // `keep` digits stay: the rounding place is `places` places from the point.
+    let keep = point + places;
     let kept = if keep < 0 {
         // Every digit lies beyond the rounding place, so zeros stand in for the digits before it.
         digits.splice(0..0, std::iter::repeat_n(0, keep.unsigned_abs() as usize));
         point -= keep;
         0
     } else {
-        keep as usize
+        keep.min(digits.len() as i64) as usize
     };
     let away = rounds_away(&digits[kept..], mode);
     digits.truncate(kept);
@@ -177,11 +179,26 @@ fn round(x: f64, places: f64, mode: Word) -> f64 {
     if x < 0.0 { -value } else { value }
 }
 
-/// The digits of `x`, which is finite and not negative, as the shortest decimal that reads back as
-/// `x`, and the place of the decimal point among them: `x` is `0.d1d2... × 10^point`.
-fn shortest_digits(x: f64) -> (Vec<u8>, i64) {
-    let written = format!("{x:e}");
-    let (mantissa, exponent) = written.split_once('e').unwrap_or((written.as_str(), "0"));
+/// The digits of `x`, which is finite and not negative, and the place of the decimal point among
+/// them: its 15 significant digits when they read back less than two units in the last place of
+/// `x` away from it, and otherwise its shortest decimal that reads back as `x`.
+fn decimal_digits(x: f64) -> (Vec<u8>, i64) {
+    let fifteen = format!("{x:.14e}");
+    let ulp = f64::from_bits(x.to_bits() + 1) - x;
+    let near = fifteen
+        .parse::<f64>()
+        .is_ok_and(|value| value.is_finite() && (value - x).abs() < 2.0 * ulp);
+    if near {
+        digits_of(&fifteen)
+    } else {
+        digits_of(&format!("{x:e}"))
+    }
+}
+
+/// The digits of a number written in exponent form, such as `1.5e-7`, and the place of its point
+/// among them: the number is `0.d1d2... × 10^point`.
+fn digits_of(written: &str) -> (Vec<u8>, i64) {
+    let (mantissa, exponent) = written.split_once('e').unwrap_or((written, "0"));
     let digits = mantissa
         .bytes()
         .filter(u8::is_ascii_digit)
