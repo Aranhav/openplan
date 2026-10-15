@@ -62,7 +62,7 @@ pnpm --dir e2e test                     # screenshots land in e2e/screenshots
 
 ## Deploy
 
-See [docs/deploy.md](docs/deploy.md) for the hosted demo (Vercel, Render and Supabase) and for self-hosting with Docker Compose.
+See [docs/deploy.md](docs/deploy.md) for the hosted demo, which runs on Render (web app and API) with Supabase Postgres, with Vercel in front as an option, and for self-hosting with Docker Compose.
 
 ## License
 
