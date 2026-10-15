@@ -27,7 +27,7 @@ use crate::{
     error::AppError,
     models,
     openapi::ApiDoc,
-    static_files, users, workspaces,
+    static_files, structure_api, users, workspaces,
 };
 
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
@@ -129,6 +129,7 @@ pub fn build_router(state: AppState) -> Router {
         .merge(users::router())
         .merge(workspaces::router())
         .merge(models::router())
+        .merge(structure_api::router())
         .layer(middleware::from_fn(csrf::require_csrf));
     let api_v1: Router<AppState> = csrf_protected
         .merge(auth::routes::session_router())

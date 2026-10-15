@@ -12,6 +12,7 @@ pub mod logging;
 pub mod models;
 pub mod openapi;
 pub mod static_files;
+pub mod structure_api;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub mod users;

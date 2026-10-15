@@ -100,6 +100,214 @@ export interface paths {
         patch: operations["update_model"];
         trace?: never;
     };
+    "/api/v1/models/{id}/calendar": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["update_calendar"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/models/{id}/lists": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["create_list"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/models/{id}/lists/{list_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["delete_list"];
+        options?: never;
+        head?: never;
+        patch: operations["update_list"];
+        trace?: never;
+    };
+    "/api/v1/models/{id}/lists/{list_id}/items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_items"];
+        put?: never;
+        post: operations["create_items"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/models/{id}/lists/{list_id}/items/delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["delete_items"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/models/{id}/lists/{list_id}/items/{item_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["update_item"];
+        trace?: never;
+    };
+    "/api/v1/models/{id}/structure": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_structure"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/models/{id}/subsets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["create_subset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/models/{id}/subsets/{subset_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["delete_subset"];
+        options?: never;
+        head?: never;
+        patch: operations["update_subset"];
+        trace?: never;
+    };
+    "/api/v1/models/{id}/time-ranges": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["create_time_range"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/models/{id}/time-ranges/{range_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["delete_time_range"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/models/{id}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["create_version"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/models/{id}/versions/{version_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["upsert_version"];
+        post?: never;
+        delete: operations["delete_version"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/setup": {
         parameters: {
             query?: never;
@@ -271,9 +479,33 @@ export interface components {
         ChangeRoleRequest: {
             role: components["schemas"]["WorkspaceRole"];
         };
+        CreateItemsRequest: {
+            items: components["schemas"]["ItemInput"][];
+        };
+        CreateListRequest: {
+            name: string;
+            numbered?: boolean;
+            /** Format: uuid */
+            parent_list_id?: string | null;
+            production_data?: boolean;
+            top_level_name?: string | null;
+        };
         CreateModelRequest: {
             description?: string | null;
             name: string;
+        };
+        CreateSubsetRequest: {
+            item_ids?: string[];
+            /** Format: uuid */
+            list_id: string;
+            name: string;
+        };
+        CreateTimeRangeRequest: {
+            /** Format: int32 */
+            first_year: number;
+            name: string;
+            /** Format: int32 */
+            years: number;
         };
         CreateUserRequest: {
             email: string;
@@ -287,6 +519,9 @@ export interface components {
             id: string;
             is_instance_admin: boolean;
             name: string;
+        };
+        DeleteItemsRequest: {
+            ids: string[];
         };
         FieldError: {
             field: string;
@@ -307,6 +542,41 @@ export interface components {
         HealthResponse: {
             status: string;
             version: string;
+        };
+        /** @description An item of a list. */
+        ItemDto: {
+            code?: string | null;
+            /** Format: uuid */
+            id: string;
+            name: string;
+            /**
+             * Format: uuid
+             * @description The item of the parent list this item belongs to.
+             */
+            parent_id?: string | null;
+        };
+        /** @description An item to add to a list; its id is generated by the server. */
+        ItemInput: {
+            code?: string | null;
+            name: string;
+            /** Format: uuid */
+            parent_id?: string | null;
+        };
+        /** @description A list of the model. */
+        ListDto: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            numbered: boolean;
+            /**
+             * Format: uuid
+             * @description The list one level up: every item of this list has a parent item in it.
+             */
+            parent_list_id?: string | null;
+            production_data: boolean;
+            selective_access: boolean;
+            /** @description The name of the single total item above all items, if the list has one. */
+            top_level_name?: string | null;
         };
         LoginRequest: {
             email: string;
@@ -380,6 +650,56 @@ export interface components {
         SetupStatus: {
             needs_setup: boolean;
         };
+        /** @description The structure document of the model: calendar, lists with their items, subsets, versions, time ranges, modules and line items. Its fields follow the engine's structure document (format_version 1); months and periods are indices from the start of the calendar. */
+        StructureDto: {
+            [key: string]: unknown;
+        };
+        /** @description A named selection of the items of one list. */
+        SubsetDto: {
+            /** Format: uuid */
+            id: string;
+            item_ids: string[];
+            /** Format: uuid */
+            list_id: string;
+            name: string;
+        };
+        /** @description A named run of whole fiscal years. */
+        TimeRangeDto: {
+            /** Format: int32 */
+            first_year: number;
+            /** Format: uuid */
+            id: string;
+            name: string;
+            /** Format: int32 */
+            years: number;
+        };
+        UpdateCalendarRequest: {
+            /** @description The current month, as a month label such as `Jun 27`. */
+            current_period?: string | null;
+            /** Format: int32 */
+            first_year: number;
+            /** Format: int32 */
+            fiscal_year_start_month: number;
+            /** Format: int32 */
+            years: number;
+        };
+        UpdateItemRequest: {
+            /** @description Absent leaves the code as it is; `null` clears it. */
+            code?: string | null;
+            name?: string | null;
+            /**
+             * Format: uuid
+             * @description Absent leaves the parent as it is; `null` clears it.
+             */
+            parent_id?: string | null;
+        };
+        UpdateListRequest: {
+            name?: string | null;
+            production_data?: boolean | null;
+            selective_access?: boolean | null;
+            /** @description Absent leaves the top level name as it is; `null` clears it. */
+            top_level_name?: string | null;
+        };
         UpdateModelRequest: {
             description?: string | null;
             mode?: null | components["schemas"]["ModelMode"];
@@ -387,6 +707,11 @@ export interface components {
         };
         UpdateProfileRequest: {
             name: string;
+        };
+        UpdateSubsetRequest: {
+            /** @description Replaces the items of the subset. */
+            item_ids?: string[] | null;
+            name?: string | null;
         };
         UpdateUserRequest: {
             disabled?: boolean | null;
@@ -403,6 +728,26 @@ export interface components {
             id: string;
             is_instance_admin: boolean;
             name: string;
+        };
+        /** @description A scenario of the model. */
+        VersionDto: {
+            /** Format: uuid */
+            id: string;
+            is_actual: boolean;
+            is_current: boolean;
+            name: string;
+            /**
+             * @description The first month that shows this version's own values, as a month label such as `Jan 26`;
+             *     null when it has none.
+             */
+            switchover?: string | null;
+        };
+        VersionRequest: {
+            is_actual: boolean;
+            is_current: boolean;
+            name: string;
+            /** @description The first month that shows this version's own values, as a month label such as `Jan 26`. */
+            switchover?: string | null;
         };
         WorkspaceNameRequest: {
             name: string;
@@ -799,6 +1144,1139 @@ export interface operations {
                 };
             };
             /** @description Some fields are invalid (validation) */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    update_calendar: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The model's id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateCalendarRequest"];
+            };
+        };
+        responses: {
+            /** @description The calendar now in place */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Calendar"];
+                };
+            };
+            /** @description Not signed in (auth.unauthenticated) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not a workspace builder (auth.forbidden). It is also returned when the CSRF token is missing or invalid (auth.csrf). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such model, or the caller is not a member of its workspace (not_found) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The model is in production mode (model.production_locked) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The calendar is invalid, or the current period is not a month of it (structure.invalid, validation) */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    create_list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The model's id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateListRequest"];
+            };
+        };
+        responses: {
+            /** @description The list was created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListDto"];
+                };
+            };
+            /** @description Not signed in (auth.unauthenticated) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not a workspace builder (auth.forbidden). It is also returned when the CSRF token is missing or invalid (auth.csrf). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such model or parent list, or the caller is not a member of the workspace (not_found) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The model is in production mode (model.production_locked), or the name is taken (structure.name_taken) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Some fields are invalid (validation, structure.invalid) */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The model's id */
+                id: string;
+                /** @description The list's id */
+                list_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The list was deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not signed in (auth.unauthenticated) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not a workspace builder (auth.forbidden). It is also returned when the CSRF token is missing or invalid (auth.csrf). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such model or list, or the caller is not a member of the workspace (not_found) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The model is in production mode (model.production_locked), or the list is used by a module, subset or list (structure.in_use) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    update_list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The model's id */
+                id: string;
+                /** @description The list's id */
+                list_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateListRequest"];
+            };
+        };
+        responses: {
+            /** @description The updated list */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListDto"];
+                };
+            };
+            /** @description Not signed in (auth.unauthenticated) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not a workspace builder (auth.forbidden). It is also returned when the CSRF token is missing or invalid (auth.csrf). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such model or list, or the caller is not a member of the workspace (not_found) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The model is in production mode (model.production_locked), or the name is taken (structure.name_taken) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Some fields are invalid (validation, structure.invalid) */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    list_items: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The model's id */
+                id: string;
+                /** @description The list's id */
+                list_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The items of the list, in order */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemDto"][];
+                };
+            };
+            /** @description Not signed in (auth.unauthenticated) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such model or list, or the caller is not a member of the workspace (not_found) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    create_items: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The model's id */
+                id: string;
+                /** @description The list's id */
+                list_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateItemsRequest"];
+            };
+        };
+        responses: {
+            /** @description The items were created, in the order given */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemDto"][];
+                };
+            };
+            /** @description Not signed in (auth.unauthenticated) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not a workspace builder (auth.forbidden). It is also returned when the CSRF token is missing or invalid (auth.csrf). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such model or list, or the caller is not a member of the workspace (not_found) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The model is in production mode (model.production_locked), or a code or name is taken (structure.name_taken) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Some fields are invalid, or a parent is missing or not in the parent list (validation, structure.invalid) */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_items: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The model's id */
+                id: string;
+                /** @description The list's id */
+                list_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeleteItemsRequest"];
+            };
+        };
+        responses: {
+            /** @description The items were deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not signed in (auth.unauthenticated) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not a workspace builder (auth.forbidden). It is also returned when the CSRF token is missing or invalid (auth.csrf). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such model or list, or an item is not in the list (not_found) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The model is in production mode (model.production_locked) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Items with child items cannot be deleted (structure.invalid) */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    update_item: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The model's id */
+                id: string;
+                /** @description The list's id */
+                list_id: string;
+                /** @description The item's id */
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateItemRequest"];
+            };
+        };
+        responses: {
+            /** @description The updated item */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemDto"];
+                };
+            };
+            /** @description Not signed in (auth.unauthenticated) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not a workspace builder (auth.forbidden). It is also returned when the CSRF token is missing or invalid (auth.csrf). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such model, list or item in the list, or the caller is not a member of the workspace (not_found) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The model is in production mode (model.production_locked), or a code or name is taken (structure.name_taken) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Some fields are invalid, or the parent is missing or not in the parent list (validation, structure.invalid) */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    get_structure: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The model's id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The structure: calendar, lists with their items, subsets, versions, time ranges, modules and line items. Its shape is the engine's structure document (format_version 1); months and periods are indices from the start of the calendar. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructureDto"];
+                };
+            };
+            /** @description Not signed in (auth.unauthenticated) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such model, or the caller is not a member of its workspace (not_found) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    create_subset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The model's id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateSubsetRequest"];
+            };
+        };
+        responses: {
+            /** @description The subset was created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubsetDto"];
+                };
+            };
+            /** @description Not signed in (auth.unauthenticated) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not a workspace builder (auth.forbidden). It is also returned when the CSRF token is missing or invalid (auth.csrf). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such model, list or item, or the caller is not a member of the workspace (not_found) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The model is in production mode (model.production_locked), or the name is taken (structure.name_taken) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Some fields are invalid, or an item appears twice (validation, structure.invalid) */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_subset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The model's id */
+                id: string;
+                /** @description The subset's id */
+                subset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The subset was deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not signed in (auth.unauthenticated) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not a workspace builder (auth.forbidden). It is also returned when the CSRF token is missing or invalid (auth.csrf). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such model or subset, or the caller is not a member of the workspace (not_found) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The model is in production mode (model.production_locked), or the subset is used by a module or line item (structure.in_use) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    update_subset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The model's id */
+                id: string;
+                /** @description The subset's id */
+                subset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateSubsetRequest"];
+            };
+        };
+        responses: {
+            /** @description The updated subset */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubsetDto"];
+                };
+            };
+            /** @description Not signed in (auth.unauthenticated) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not a workspace builder (auth.forbidden). It is also returned when the CSRF token is missing or invalid (auth.csrf). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such model, subset or item, or the caller is not a member of the workspace (not_found) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The model is in production mode (model.production_locked), or the name is taken (structure.name_taken) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Some fields are invalid, or an item appears twice (validation, structure.invalid) */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    create_time_range: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The model's id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateTimeRangeRequest"];
+            };
+        };
+        responses: {
+            /** @description The time range was created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TimeRangeDto"];
+                };
+            };
+            /** @description Not signed in (auth.unauthenticated) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not a workspace builder (auth.forbidden). It is also returned when the CSRF token is missing or invalid (auth.csrf). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such model, or the caller is not a member of the workspace (not_found) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The model is in production mode (model.production_locked), or the name is taken (structure.name_taken) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Some fields are invalid (validation, structure.invalid) */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_time_range: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The model's id */
+                id: string;
+                /** @description The time range's id */
+                range_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The time range was deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not signed in (auth.unauthenticated) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not a workspace builder (auth.forbidden). It is also returned when the CSRF token is missing or invalid (auth.csrf). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such model or time range, or the caller is not a member of the workspace (not_found) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The model is in production mode (model.production_locked), or the time range is used by a module (structure.in_use) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    create_version: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The model's id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VersionRequest"];
+            };
+        };
+        responses: {
+            /** @description The version was created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VersionDto"];
+                };
+            };
+            /** @description Not signed in (auth.unauthenticated) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not a workspace builder (auth.forbidden). It is also returned when the CSRF token is missing or invalid (auth.csrf). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such model, or the caller is not a member of the workspace (not_found) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The model is in production mode (model.production_locked), or the name is taken (structure.name_taken) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Some fields are invalid, or the switchover is not a month of the calendar (validation, structure.invalid) */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    upsert_version: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The model's id */
+                id: string;
+                /** @description The version's id; a new id creates the version */
+                version_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VersionRequest"];
+            };
+        };
+        responses: {
+            /** @description The version as it now is */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VersionDto"];
+                };
+            };
+            /** @description Not signed in (auth.unauthenticated) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not a workspace builder (auth.forbidden). It is also returned when the CSRF token is missing or invalid (auth.csrf). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such model, or the caller is not a member of the workspace (not_found) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The model is in production mode (model.production_locked), or the name is taken (structure.name_taken) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Some fields are invalid, or the switchover is not a month of the calendar (validation, structure.invalid) */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_version: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The model's id */
+                id: string;
+                /** @description The version's id */
+                version_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The version was deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not signed in (auth.unauthenticated) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not a workspace builder (auth.forbidden). It is also returned when the CSRF token is missing or invalid (auth.csrf). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such model or version, or the caller is not a member of the workspace (not_found) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The model is in production mode (model.production_locked), or the version is used by a line item (structure.in_use) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The actual and current versions cannot be deleted (structure.invalid) */
             422: {
                 headers: {
                     [name: string]: unknown;

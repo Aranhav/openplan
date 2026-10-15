@@ -1,0 +1,1094 @@
+//! The structure of a model over HTTP: its lists and their items, subsets, versions, calendar and
+//! time ranges. Reading needs the Viewer role; changing needs the Builder role and a model in
+//! development mode, since production models change through ALM sync. Each change is one engine
+//! command applied through the model's actor, which stores it before the response is sent.
+
+use axum::{
+    Json, Router,
+    extract::State,
+    http::StatusCode,
+    routing::{delete, get, patch, post, put},
+};
+use openplan_engine::{
+    Calendar as EngineCalendar, Command, Item, ItemId, ItemSpec, List, ListId, StructureDoc,
+    Subset, SubsetId, TimeLevel, TimeRange, TimeRangeId, Version, VersionId,
+};
+use serde::{Deserialize, Deserializer, Serialize};
+use sqlx::PgPool;
+use utoipa::{
+    PartialSchema, ToSchema,
+    openapi::{ObjectBuilder, RefOr, Schema, schema::AdditionalProperties},
+};
+use uuid::Uuid;
+
+use crate::{
+    actor::ModelHandle,
+    app::AppState,
+    auth::CurrentUser,
+    authz::{WorkspaceRole, require_workspace_role},
+    error::{AppError, AppResult, FieldError},
+    extract::{ApiJson, ApiPath},
+    models::{Calendar, ModelMode},
+    validate,
+};
+
+const PRODUCTION_LOCKED: &str =
+    "This model is in production mode. Structural changes arrive through ALM sync.";
+
+pub fn router() -> Router<AppState> {
+    Router::new()
+        .route("/models/{id}/structure", get(get_structure))
+        .route("/models/{id}/calendar", put(update_calendar))
+        .route("/models/{id}/lists", post(create_list))
+        .route(
+            "/models/{id}/lists/{list_id}",
+            patch(update_list).delete(delete_list),
+        )
+        .route(
+            "/models/{id}/lists/{list_id}/items",
+            get(list_items).post(create_items),
+        )
+        .route(
+            "/models/{id}/lists/{list_id}/items/delete",
+            post(delete_items),
+        )
+        .route(
+            "/models/{id}/lists/{list_id}/items/{item_id}",
+            patch(update_item),
+        )
+        .route("/models/{id}/subsets", post(create_subset))
+        .route(
+            "/models/{id}/subsets/{subset_id}",
+            patch(update_subset).delete(delete_subset),
+        )
+        .route("/models/{id}/versions", post(create_version))
+        .route(
+            "/models/{id}/versions/{version_id}",
+            put(upsert_version).delete(delete_version),
+        )
+        .route("/models/{id}/time-ranges", post(create_time_range))
+        .route(
+            "/models/{id}/time-ranges/{range_id}",
+            delete(delete_time_range),
+        )
+}
+
+/// Reads a field that may also be sent as `null`: absent is `None`, `null` is `Some(None)` and a
+/// value is `Some(Some(value))`.
+fn nullable<'de, T, D>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: Deserializer<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
+/// The structure document of a model, as the engine stores it: calendar, lists with their items,
+/// subsets, versions, time ranges, modules and line items.
+#[derive(Serialize)]
+#[serde(transparent)]
+pub struct StructureDto(StructureDoc);
+
+/// Documented as an open object rather than field by field: the engine owns the document's shape.
+impl PartialSchema for StructureDto {
+    fn schema() -> RefOr<Schema> {
+        ObjectBuilder::new()
+            .additional_properties(Some(AdditionalProperties::FreeForm(true)))
+            .description(Some(
+                "The structure document of the model: calendar, lists with their items, \
+                 subsets, versions, time ranges, modules and line items. Its fields follow \
+                 the engine's structure document (format_version 1); months and periods are \
+                 indices from the start of the calendar.",
+            ))
+            .into()
+    }
+}
+
+impl ToSchema for StructureDto {}
+
+/// A list of the model.
+#[derive(Serialize, ToSchema)]
+pub struct ListDto {
+    id: Uuid,
+    name: String,
+    /// The list one level up: every item of this list has a parent item in it.
+    parent_list_id: Option<Uuid>,
+    /// The name of the single total item above all items, if the list has one.
+    top_level_name: Option<String>,
+    numbered: bool,
+    production_data: bool,
+    selective_access: bool,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct CreateListRequest {
+    name: String,
+    parent_list_id: Option<Uuid>,
+    top_level_name: Option<String>,
+    #[serde(default)]
+    numbered: bool,
+    #[serde(default)]
+    production_data: bool,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct UpdateListRequest {
+    name: Option<String>,
+    /// Absent leaves the top level name as it is; `null` clears it.
+    #[serde(default, deserialize_with = "nullable")]
+    top_level_name: Option<Option<String>>,
+    production_data: Option<bool>,
+    selective_access: Option<bool>,
+}
+
+/// An item of a list.
+#[derive(Serialize, ToSchema)]
+pub struct ItemDto {
+    id: Uuid,
+    code: Option<String>,
+    name: String,
+    /// The item of the parent list this item belongs to.
+    parent_id: Option<Uuid>,
+}
+
+/// An item to add to a list; its id is generated by the server.
+#[derive(Deserialize, ToSchema)]
+pub struct ItemInput {
+    code: Option<String>,
+    name: String,
+    parent_id: Option<Uuid>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct CreateItemsRequest {
+    items: Vec<ItemInput>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct UpdateItemRequest {
+    /// Absent leaves the code as it is; `null` clears it.
+    #[serde(default, deserialize_with = "nullable")]
+    code: Option<Option<String>>,
+    name: Option<String>,
+    /// Absent leaves the parent as it is; `null` clears it.
+    #[serde(default, deserialize_with = "nullable")]
+    parent_id: Option<Option<Uuid>>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct DeleteItemsRequest {
+    ids: Vec<Uuid>,
+}
+
+/// A named selection of the items of one list.
+#[derive(Serialize, ToSchema)]
+pub struct SubsetDto {
+    id: Uuid,
+    list_id: Uuid,
+    name: String,
+    item_ids: Vec<Uuid>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct CreateSubsetRequest {
+    list_id: Uuid,
+    name: String,
+    #[serde(default)]
+    item_ids: Vec<Uuid>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct UpdateSubsetRequest {
+    name: Option<String>,
+    /// Replaces the items of the subset.
+    item_ids: Option<Vec<Uuid>>,
+}
+
+/// A scenario of the model.
+#[derive(Serialize, ToSchema)]
+pub struct VersionDto {
+    id: Uuid,
+    name: String,
+    is_actual: bool,
+    is_current: bool,
+    /// The first month that shows this version's own values, as a month label such as `Jan 26`;
+    /// null when it has none.
+    switchover: Option<String>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct VersionRequest {
+    name: String,
+    is_actual: bool,
+    is_current: bool,
+    /// The first month that shows this version's own values, as a month label such as `Jan 26`.
+    switchover: Option<String>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct UpdateCalendarRequest {
+    fiscal_year_start_month: u8,
+    first_year: i32,
+    years: u8,
+    /// The current month, as a month label such as `Jun 27`.
+    current_period: Option<String>,
+}
+
+/// A named run of whole fiscal years.
+#[derive(Serialize, ToSchema)]
+pub struct TimeRangeDto {
+    id: Uuid,
+    name: String,
+    first_year: i32,
+    years: u8,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct CreateTimeRangeRequest {
+    name: String,
+    first_year: i32,
+    years: u8,
+}
+
+fn list_dto(list: &List) -> ListDto {
+    ListDto {
+        id: list.id.0,
+        name: list.name.clone(),
+        parent_list_id: list.parent.map(|parent| parent.0),
+        top_level_name: list.top_level_name.clone(),
+        numbered: list.numbered,
+        production_data: list.production_data,
+        selective_access: list.selective_access,
+    }
+}
+
+fn item_dto(item: &Item) -> ItemDto {
+    ItemDto {
+        id: item.id.0,
+        code: item.code.clone(),
+        name: item.name.clone(),
+        parent_id: item.parent.map(|parent| parent.0),
+    }
+}
+
+fn item_dto_of_spec(spec: &ItemSpec) -> ItemDto {
+    ItemDto {
+        id: spec.id.0,
+        code: spec.code.clone(),
+        name: spec.name.clone(),
+        parent_id: spec.parent.map(|parent| parent.0),
+    }
+}
+
+fn subset_dto(subset: &Subset) -> SubsetDto {
+    SubsetDto {
+        id: subset.id.0,
+        list_id: subset.list.0,
+        name: subset.name.clone(),
+        item_ids: subset.items.iter().map(|item| item.0).collect(),
+    }
+}
+
+fn version_dto(version: &Version, calendar: &EngineCalendar) -> VersionDto {
+    VersionDto {
+        id: version.id.0,
+        name: version.name.clone(),
+        is_actual: version.is_actual,
+        is_current: version.is_current,
+        switchover: version
+            .switchover
+            .map(|month| calendar.label(TimeLevel::Month, month)),
+    }
+}
+
+fn time_range_dto(range: &TimeRange) -> TimeRangeDto {
+    TimeRangeDto {
+        id: range.id.0,
+        name: range.name.clone(),
+        first_year: range.first_year,
+        years: range.years,
+    }
+}
+
+/// A code as the engine keeps it: trimmed, and absent when blank.
+fn code_of(raw: Option<String>) -> Option<String> {
+    raw.map(|code| code.trim().to_string())
+        .filter(|code| !code.is_empty())
+}
+
+fn item_ids(ids: Vec<Uuid>) -> Vec<ItemId> {
+    ids.into_iter().map(ItemId).collect()
+}
+
+/// The month a label such as `Jan 26` names. Anything else, including a month outside the
+/// calendar, is refused on `field`.
+fn month_of(calendar: &EngineCalendar, label: &str, field: &str) -> Result<u32, FieldError> {
+    match calendar.parse_label(label) {
+        Some((TimeLevel::Month, month)) => Ok(month),
+        _ => Err(FieldError {
+            field: field.to_string(),
+            message: format!(
+                "{} must be a month of the calendar, such as Jan 26.",
+                validate::label(field)
+            ),
+        }),
+    }
+}
+
+/// The model's row: its workspace and mode. `NotFound` when there is no such model.
+async fn model_row(db: &PgPool, model_id: Uuid) -> AppResult<(Uuid, ModelMode)> {
+    sqlx::query_as::<_, (Uuid, ModelMode)>("SELECT workspace_id, mode FROM models WHERE id = $1")
+        .bind(model_id)
+        .fetch_optional(db)
+        .await?
+        .ok_or(AppError::NotFound)
+}
+
+/// The model's actor, for a caller who may read its structure.
+async fn read_handle(
+    state: &AppState,
+    user: &CurrentUser,
+    model_id: Uuid,
+) -> AppResult<ModelHandle> {
+    let (workspace_id, _) = model_row(&state.db, model_id).await?;
+    require_workspace_role(&state.db, user, workspace_id, WorkspaceRole::Viewer).await?;
+    state.models.get(model_id).await
+}
+
+/// The model's actor, for a caller who may change its structure: a builder, while the model is in
+/// development mode.
+async fn write_handle(
+    state: &AppState,
+    user: &CurrentUser,
+    model_id: Uuid,
+) -> AppResult<ModelHandle> {
+    let (workspace_id, mode) = model_row(&state.db, model_id).await?;
+    require_workspace_role(&state.db, user, workspace_id, WorkspaceRole::Builder).await?;
+    if mode == ModelMode::Prod {
+        return Err(AppError::Conflict {
+            code: "model.production_locked",
+            detail: PRODUCTION_LOCKED.into(),
+        });
+    }
+    state.models.get(model_id).await
+}
+
+/// Stores the version `id` as the request says and returns it as the model now holds it.
+async fn store_version(
+    handle: &ModelHandle,
+    user_id: Uuid,
+    id: VersionId,
+    body: VersionRequest,
+) -> AppResult<VersionDto> {
+    let name = validate::entity_name("name", &body.name);
+    let calendar = handle.snapshot().structure().calendar;
+    let switchover = body
+        .switchover
+        .as_deref()
+        .map(|label| month_of(&calendar, label, "switchover"))
+        .transpose();
+    validate::collect(vec![name.clone().map(drop), switchover.clone().map(drop)])?;
+    let (name, switchover) = (name?, switchover?);
+
+    handle
+        .apply(
+            user_id,
+            vec![Command::UpsertVersion {
+                id,
+                name,
+                is_actual: body.is_actual,
+                is_current: body.is_current,
+                switchover,
+            }],
+        )
+        .await?;
+    let model = handle.snapshot();
+    let version = model.structure().version(id).ok_or(AppError::NotFound)?;
+    Ok(version_dto(version, &calendar))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/models/{id}/structure",
+    tag = "structure",
+    params(("id" = Uuid, Path, description = "The model's id")),
+    responses(
+        (status = 200, description = "The structure: calendar, lists with their items, subsets, versions, time ranges, modules and line items. Its shape is the engine's structure document (format_version 1); months and periods are indices from the start of the calendar.", body = StructureDto),
+        (status = 401, description = "Not signed in (auth.unauthenticated)"),
+        (status = 404, description = "No such model, or the caller is not a member of its workspace (not_found)"),
+    )
+)]
+pub(crate) async fn get_structure(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    ApiPath(model_id): ApiPath<Uuid>,
+) -> AppResult<Json<StructureDto>> {
+    let handle = read_handle(&state, &user, model_id).await?;
+    Ok(Json(StructureDto(handle.snapshot().export_structure())))
+}
+
+#[utoipa::path(
+    put,
+    path = "/api/v1/models/{id}/calendar",
+    tag = "structure",
+    params(("id" = Uuid, Path, description = "The model's id")),
+    request_body = UpdateCalendarRequest,
+    responses(
+        (status = 200, description = "The calendar now in place", body = Calendar),
+        (status = 401, description = "Not signed in (auth.unauthenticated)"),
+        (status = 403, description = "Not a workspace builder (auth.forbidden)"),
+        (status = 404, description = "No such model, or the caller is not a member of its workspace (not_found)"),
+        (status = 409, description = "The model is in production mode (model.production_locked)"),
+        (status = 422, description = "The calendar is invalid, or the current period is not a month of it (structure.invalid, validation)"),
+    )
+)]
+pub(crate) async fn update_calendar(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    ApiPath(model_id): ApiPath<Uuid>,
+    ApiJson(body): ApiJson<UpdateCalendarRequest>,
+) -> AppResult<Json<Calendar>> {
+    let handle = write_handle(&state, &user, model_id).await?;
+    let mut calendar = EngineCalendar::from(Calendar {
+        fiscal_year_start_month: body.fiscal_year_start_month,
+        first_year: body.first_year,
+        years: body.years,
+    });
+    calendar.validate()?;
+    calendar.current_month = body
+        .current_period
+        .as_deref()
+        .map(|label| month_of(&calendar, label, "current_period"))
+        .transpose()?;
+
+    handle
+        .apply(user.id, vec![Command::SetCalendar { calendar }])
+        .await?;
+    let stored = Calendar::from(calendar);
+    sqlx::query("UPDATE models SET calendar = $2 WHERE id = $1")
+        .bind(model_id)
+        .bind(sqlx::types::Json(&stored))
+        .execute(&state.db)
+        .await?;
+    Ok(Json(stored))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/models/{id}/lists",
+    tag = "structure",
+    params(("id" = Uuid, Path, description = "The model's id")),
+    request_body = CreateListRequest,
+    responses(
+        (status = 201, description = "The list was created", body = ListDto),
+        (status = 401, description = "Not signed in (auth.unauthenticated)"),
+        (status = 403, description = "Not a workspace builder (auth.forbidden)"),
+        (status = 404, description = "No such model or parent list, or the caller is not a member of the workspace (not_found)"),
+        (status = 409, description = "The model is in production mode (model.production_locked), or the name is taken (structure.name_taken)"),
+        (status = 422, description = "Some fields are invalid (validation, structure.invalid)"),
+    )
+)]
+pub(crate) async fn create_list(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    ApiPath(model_id): ApiPath<Uuid>,
+    ApiJson(body): ApiJson<CreateListRequest>,
+) -> AppResult<(StatusCode, Json<ListDto>)> {
+    let handle = write_handle(&state, &user, model_id).await?;
+    let name = validate::entity_name("name", &body.name);
+    let top_level_name = body
+        .top_level_name
+        .as_deref()
+        .map(|raw| validate::entity_name("top_level_name", raw))
+        .transpose();
+    validate::collect(vec![
+        name.clone().map(drop),
+        top_level_name.clone().map(drop),
+    ])?;
+    let (name, top_level_name) = (name?, top_level_name?);
+
+    let id = ListId::new();
+    handle
+        .apply(
+            user.id,
+            vec![Command::CreateList {
+                id,
+                name,
+                parent: body.parent_list_id.map(ListId),
+                top_level_name,
+                numbered: body.numbered,
+                production_data: body.production_data,
+            }],
+        )
+        .await?;
+    let model = handle.snapshot();
+    let list = model.structure().list(id).ok_or(AppError::NotFound)?;
+    Ok((StatusCode::CREATED, Json(list_dto(list))))
+}
+
+#[utoipa::path(
+    patch,
+    path = "/api/v1/models/{id}/lists/{list_id}",
+    tag = "structure",
+    params(
+        ("id" = Uuid, Path, description = "The model's id"),
+        ("list_id" = Uuid, Path, description = "The list's id"),
+    ),
+    request_body = UpdateListRequest,
+    responses(
+        (status = 200, description = "The updated list", body = ListDto),
+        (status = 401, description = "Not signed in (auth.unauthenticated)"),
+        (status = 403, description = "Not a workspace builder (auth.forbidden)"),
+        (status = 404, description = "No such model or list, or the caller is not a member of the workspace (not_found)"),
+        (status = 409, description = "The model is in production mode (model.production_locked), or the name is taken (structure.name_taken)"),
+        (status = 422, description = "Some fields are invalid (validation, structure.invalid)"),
+    )
+)]
+pub(crate) async fn update_list(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    ApiPath((model_id, list_id)): ApiPath<(Uuid, Uuid)>,
+    ApiJson(body): ApiJson<UpdateListRequest>,
+) -> AppResult<Json<ListDto>> {
+    let handle = write_handle(&state, &user, model_id).await?;
+    let name = body
+        .name
+        .as_deref()
+        .map(|raw| validate::entity_name("name", raw))
+        .transpose();
+    let top_level_name = body
+        .top_level_name
+        .as_ref()
+        .map(|value| {
+            value
+                .as_deref()
+                .map(|raw| validate::entity_name("top_level_name", raw))
+                .transpose()
+        })
+        .transpose();
+    validate::collect(vec![
+        name.clone().map(drop),
+        top_level_name.clone().map(drop),
+    ])?;
+    let (name, top_level_name) = (name?, top_level_name?);
+
+    let id = ListId(list_id);
+    handle
+        .apply(
+            user.id,
+            vec![Command::UpdateList {
+                id,
+                name,
+                top_level_name,
+                production_data: body.production_data,
+                selective_access: body.selective_access,
+            }],
+        )
+        .await?;
+    let model = handle.snapshot();
+    let list = model.structure().list(id).ok_or(AppError::NotFound)?;
+    Ok(Json(list_dto(list)))
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/v1/models/{id}/lists/{list_id}",
+    tag = "structure",
+    params(
+        ("id" = Uuid, Path, description = "The model's id"),
+        ("list_id" = Uuid, Path, description = "The list's id"),
+    ),
+    responses(
+        (status = 204, description = "The list was deleted"),
+        (status = 401, description = "Not signed in (auth.unauthenticated)"),
+        (status = 403, description = "Not a workspace builder (auth.forbidden)"),
+        (status = 404, description = "No such model or list, or the caller is not a member of the workspace (not_found)"),
+        (status = 409, description = "The model is in production mode (model.production_locked), or the list is used by a module, subset or list (structure.in_use)"),
+    )
+)]
+pub(crate) async fn delete_list(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    ApiPath((model_id, list_id)): ApiPath<(Uuid, Uuid)>,
+) -> AppResult<StatusCode> {
+    let handle = write_handle(&state, &user, model_id).await?;
+    handle
+        .apply(
+            user.id,
+            vec![Command::DeleteList {
+                id: ListId(list_id),
+            }],
+        )
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/models/{id}/lists/{list_id}/items",
+    tag = "structure",
+    params(
+        ("id" = Uuid, Path, description = "The model's id"),
+        ("list_id" = Uuid, Path, description = "The list's id"),
+    ),
+    responses(
+        (status = 200, description = "The items of the list, in order", body = [ItemDto]),
+        (status = 401, description = "Not signed in (auth.unauthenticated)"),
+        (status = 404, description = "No such model or list, or the caller is not a member of the workspace (not_found)"),
+    )
+)]
+pub(crate) async fn list_items(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    ApiPath((model_id, list_id)): ApiPath<(Uuid, Uuid)>,
+) -> AppResult<Json<Vec<ItemDto>>> {
+    let handle = read_handle(&state, &user, model_id).await?;
+    let model = handle.snapshot();
+    let list = model
+        .structure()
+        .list(ListId(list_id))
+        .ok_or(AppError::NotFound)?;
+    Ok(Json(list.items().map(|(_, item)| item_dto(item)).collect()))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/models/{id}/lists/{list_id}/items",
+    tag = "structure",
+    params(
+        ("id" = Uuid, Path, description = "The model's id"),
+        ("list_id" = Uuid, Path, description = "The list's id"),
+    ),
+    request_body = CreateItemsRequest,
+    responses(
+        (status = 201, description = "The items were created, in the order given", body = [ItemDto]),
+        (status = 401, description = "Not signed in (auth.unauthenticated)"),
+        (status = 403, description = "Not a workspace builder (auth.forbidden)"),
+        (status = 404, description = "No such model or list, or the caller is not a member of the workspace (not_found)"),
+        (status = 409, description = "The model is in production mode (model.production_locked), or a code or name is taken (structure.name_taken)"),
+        (status = 422, description = "Some fields are invalid, or a parent is missing or not in the parent list (validation, structure.invalid)"),
+    )
+)]
+pub(crate) async fn create_items(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    ApiPath((model_id, list_id)): ApiPath<(Uuid, Uuid)>,
+    ApiJson(body): ApiJson<CreateItemsRequest>,
+) -> AppResult<(StatusCode, Json<Vec<ItemDto>>)> {
+    let handle = write_handle(&state, &user, model_id).await?;
+    let names: Vec<Result<(), FieldError>> = body
+        .items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            validate::entity_name(&format!("items[{index}].name"), &item.name).map(drop)
+        })
+        .collect();
+    validate::collect(names)?;
+
+    let specs: Vec<ItemSpec> = body
+        .items
+        .into_iter()
+        .map(|item| ItemSpec {
+            id: ItemId::new(),
+            code: code_of(item.code),
+            name: item.name.trim().to_string(),
+            parent: item.parent_id.map(ItemId),
+        })
+        .collect();
+    let created: Vec<ItemDto> = specs.iter().map(item_dto_of_spec).collect();
+    handle
+        .apply(
+            user.id,
+            vec![Command::UpsertListItems {
+                list: ListId(list_id),
+                items: specs,
+            }],
+        )
+        .await?;
+    Ok((StatusCode::CREATED, Json(created)))
+}
+
+#[utoipa::path(
+    patch,
+    path = "/api/v1/models/{id}/lists/{list_id}/items/{item_id}",
+    tag = "structure",
+    params(
+        ("id" = Uuid, Path, description = "The model's id"),
+        ("list_id" = Uuid, Path, description = "The list's id"),
+        ("item_id" = Uuid, Path, description = "The item's id"),
+    ),
+    request_body = UpdateItemRequest,
+    responses(
+        (status = 200, description = "The updated item", body = ItemDto),
+        (status = 401, description = "Not signed in (auth.unauthenticated)"),
+        (status = 403, description = "Not a workspace builder (auth.forbidden)"),
+        (status = 404, description = "No such model, list or item in the list, or the caller is not a member of the workspace (not_found)"),
+        (status = 409, description = "The model is in production mode (model.production_locked), or a code or name is taken (structure.name_taken)"),
+        (status = 422, description = "Some fields are invalid, or the parent is missing or not in the parent list (validation, structure.invalid)"),
+    )
+)]
+pub(crate) async fn update_item(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    ApiPath((model_id, list_id, item_id)): ApiPath<(Uuid, Uuid, Uuid)>,
+    ApiJson(body): ApiJson<UpdateItemRequest>,
+) -> AppResult<Json<ItemDto>> {
+    let handle = write_handle(&state, &user, model_id).await?;
+    let name = body
+        .name
+        .as_deref()
+        .map(|raw| validate::entity_name("name", raw))
+        .transpose()?;
+
+    // The engine replaces an item whole, so the fields not sent keep their current values.
+    let current = {
+        let model = handle.snapshot();
+        let list = model
+            .structure()
+            .list(ListId(list_id))
+            .ok_or(AppError::NotFound)?;
+        let idx = list.idx(ItemId(item_id)).ok_or(AppError::NotFound)?;
+        list.item(idx).clone()
+    };
+    let spec = ItemSpec {
+        id: ItemId(item_id),
+        code: body.code.map_or(current.code, code_of),
+        name: name.unwrap_or(current.name),
+        parent: body
+            .parent_id
+            .map_or(current.parent, |parent| parent.map(ItemId)),
+    };
+    let updated = item_dto_of_spec(&spec);
+    handle
+        .apply(
+            user.id,
+            vec![Command::UpsertListItems {
+                list: ListId(list_id),
+                items: vec![spec],
+            }],
+        )
+        .await?;
+    Ok(Json(updated))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/models/{id}/lists/{list_id}/items/delete",
+    tag = "structure",
+    params(
+        ("id" = Uuid, Path, description = "The model's id"),
+        ("list_id" = Uuid, Path, description = "The list's id"),
+    ),
+    request_body = DeleteItemsRequest,
+    responses(
+        (status = 204, description = "The items were deleted"),
+        (status = 401, description = "Not signed in (auth.unauthenticated)"),
+        (status = 403, description = "Not a workspace builder (auth.forbidden)"),
+        (status = 404, description = "No such model or list, or an item is not in the list (not_found)"),
+        (status = 409, description = "The model is in production mode (model.production_locked)"),
+        (status = 422, description = "Items with child items cannot be deleted (structure.invalid)"),
+    )
+)]
+pub(crate) async fn delete_items(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    ApiPath((model_id, list_id)): ApiPath<(Uuid, Uuid)>,
+    ApiJson(body): ApiJson<DeleteItemsRequest>,
+) -> AppResult<StatusCode> {
+    let handle = write_handle(&state, &user, model_id).await?;
+    handle
+        .apply(
+            user.id,
+            vec![Command::DeleteListItems {
+                list: ListId(list_id),
+                ids: item_ids(body.ids),
+            }],
+        )
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/models/{id}/subsets",
+    tag = "structure",
+    params(("id" = Uuid, Path, description = "The model's id")),
+    request_body = CreateSubsetRequest,
+    responses(
+        (status = 201, description = "The subset was created", body = SubsetDto),
+        (status = 401, description = "Not signed in (auth.unauthenticated)"),
+        (status = 403, description = "Not a workspace builder (auth.forbidden)"),
+        (status = 404, description = "No such model, list or item, or the caller is not a member of the workspace (not_found)"),
+        (status = 409, description = "The model is in production mode (model.production_locked), or the name is taken (structure.name_taken)"),
+        (status = 422, description = "Some fields are invalid, or an item appears twice (validation, structure.invalid)"),
+    )
+)]
+pub(crate) async fn create_subset(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    ApiPath(model_id): ApiPath<Uuid>,
+    ApiJson(body): ApiJson<CreateSubsetRequest>,
+) -> AppResult<(StatusCode, Json<SubsetDto>)> {
+    let handle = write_handle(&state, &user, model_id).await?;
+    let name = validate::entity_name("name", &body.name)?;
+
+    let id = SubsetId::new();
+    handle
+        .apply(
+            user.id,
+            vec![Command::CreateSubset {
+                id,
+                list: ListId(body.list_id),
+                name,
+                items: item_ids(body.item_ids),
+            }],
+        )
+        .await?;
+    let model = handle.snapshot();
+    let subset = model.structure().subset(id).ok_or(AppError::NotFound)?;
+    Ok((StatusCode::CREATED, Json(subset_dto(subset))))
+}
+
+#[utoipa::path(
+    patch,
+    path = "/api/v1/models/{id}/subsets/{subset_id}",
+    tag = "structure",
+    params(
+        ("id" = Uuid, Path, description = "The model's id"),
+        ("subset_id" = Uuid, Path, description = "The subset's id"),
+    ),
+    request_body = UpdateSubsetRequest,
+    responses(
+        (status = 200, description = "The updated subset", body = SubsetDto),
+        (status = 401, description = "Not signed in (auth.unauthenticated)"),
+        (status = 403, description = "Not a workspace builder (auth.forbidden)"),
+        (status = 404, description = "No such model, subset or item, or the caller is not a member of the workspace (not_found)"),
+        (status = 409, description = "The model is in production mode (model.production_locked), or the name is taken (structure.name_taken)"),
+        (status = 422, description = "Some fields are invalid, or an item appears twice (validation, structure.invalid)"),
+    )
+)]
+pub(crate) async fn update_subset(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    ApiPath((model_id, subset_id)): ApiPath<(Uuid, Uuid)>,
+    ApiJson(body): ApiJson<UpdateSubsetRequest>,
+) -> AppResult<Json<SubsetDto>> {
+    let handle = write_handle(&state, &user, model_id).await?;
+    let name = body
+        .name
+        .as_deref()
+        .map(|raw| validate::entity_name("name", raw))
+        .transpose()?;
+
+    let id = SubsetId(subset_id);
+    handle
+        .apply(
+            user.id,
+            vec![Command::UpdateSubset {
+                id,
+                name,
+                items: body.item_ids.map(item_ids),
+            }],
+        )
+        .await?;
+    let model = handle.snapshot();
+    let subset = model.structure().subset(id).ok_or(AppError::NotFound)?;
+    Ok(Json(subset_dto(subset)))
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/v1/models/{id}/subsets/{subset_id}",
+    tag = "structure",
+    params(
+        ("id" = Uuid, Path, description = "The model's id"),
+        ("subset_id" = Uuid, Path, description = "The subset's id"),
+    ),
+    responses(
+        (status = 204, description = "The subset was deleted"),
+        (status = 401, description = "Not signed in (auth.unauthenticated)"),
+        (status = 403, description = "Not a workspace builder (auth.forbidden)"),
+        (status = 404, description = "No such model or subset, or the caller is not a member of the workspace (not_found)"),
+        (status = 409, description = "The model is in production mode (model.production_locked), or the subset is used by a module or line item (structure.in_use)"),
+    )
+)]
+pub(crate) async fn delete_subset(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    ApiPath((model_id, subset_id)): ApiPath<(Uuid, Uuid)>,
+) -> AppResult<StatusCode> {
+    let handle = write_handle(&state, &user, model_id).await?;
+    handle
+        .apply(
+            user.id,
+            vec![Command::DeleteSubset {
+                id: SubsetId(subset_id),
+            }],
+        )
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/models/{id}/versions",
+    tag = "structure",
+    params(("id" = Uuid, Path, description = "The model's id")),
+    request_body = VersionRequest,
+    responses(
+        (status = 201, description = "The version was created", body = VersionDto),
+        (status = 401, description = "Not signed in (auth.unauthenticated)"),
+        (status = 403, description = "Not a workspace builder (auth.forbidden)"),
+        (status = 404, description = "No such model, or the caller is not a member of the workspace (not_found)"),
+        (status = 409, description = "The model is in production mode (model.production_locked), or the name is taken (structure.name_taken)"),
+        (status = 422, description = "Some fields are invalid, or the switchover is not a month of the calendar (validation, structure.invalid)"),
+    )
+)]
+pub(crate) async fn create_version(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    ApiPath(model_id): ApiPath<Uuid>,
+    ApiJson(body): ApiJson<VersionRequest>,
+) -> AppResult<(StatusCode, Json<VersionDto>)> {
+    let handle = write_handle(&state, &user, model_id).await?;
+    let version = store_version(&handle, user.id, VersionId::new(), body).await?;
+    Ok((StatusCode::CREATED, Json(version)))
+}
+
+#[utoipa::path(
+    put,
+    path = "/api/v1/models/{id}/versions/{version_id}",
+    tag = "structure",
+    params(
+        ("id" = Uuid, Path, description = "The model's id"),
+        ("version_id" = Uuid, Path, description = "The version's id; a new id creates the version"),
+    ),
+    request_body = VersionRequest,
+    responses(
+        (status = 200, description = "The version as it now is", body = VersionDto),
+        (status = 401, description = "Not signed in (auth.unauthenticated)"),
+        (status = 403, description = "Not a workspace builder (auth.forbidden)"),
+        (status = 404, description = "No such model, or the caller is not a member of the workspace (not_found)"),
+        (status = 409, description = "The model is in production mode (model.production_locked), or the name is taken (structure.name_taken)"),
+        (status = 422, description = "Some fields are invalid, or the switchover is not a month of the calendar (validation, structure.invalid)"),
+    )
+)]
+pub(crate) async fn upsert_version(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    ApiPath((model_id, version_id)): ApiPath<(Uuid, Uuid)>,
+    ApiJson(body): ApiJson<VersionRequest>,
+) -> AppResult<Json<VersionDto>> {
+    let handle = write_handle(&state, &user, model_id).await?;
+    let version = store_version(&handle, user.id, VersionId(version_id), body).await?;
+    Ok(Json(version))
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/v1/models/{id}/versions/{version_id}",
+    tag = "structure",
+    params(
+        ("id" = Uuid, Path, description = "The model's id"),
+        ("version_id" = Uuid, Path, description = "The version's id"),
+    ),
+    responses(
+        (status = 204, description = "The version was deleted"),
+        (status = 401, description = "Not signed in (auth.unauthenticated)"),
+        (status = 403, description = "Not a workspace builder (auth.forbidden)"),
+        (status = 404, description = "No such model or version, or the caller is not a member of the workspace (not_found)"),
+        (status = 409, description = "The model is in production mode (model.production_locked), or the version is used by a line item (structure.in_use)"),
+        (status = 422, description = "The actual and current versions cannot be deleted (structure.invalid)"),
+    )
+)]
+pub(crate) async fn delete_version(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    ApiPath((model_id, version_id)): ApiPath<(Uuid, Uuid)>,
+) -> AppResult<StatusCode> {
+    let handle = write_handle(&state, &user, model_id).await?;
+    handle
+        .apply(
+            user.id,
+            vec![Command::DeleteVersion {
+                id: VersionId(version_id),
+            }],
+        )
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/models/{id}/time-ranges",
+    tag = "structure",
+    params(("id" = Uuid, Path, description = "The model's id")),
+    request_body = CreateTimeRangeRequest,
+    responses(
+        (status = 201, description = "The time range was created", body = TimeRangeDto),
+        (status = 401, description = "Not signed in (auth.unauthenticated)"),
+        (status = 403, description = "Not a workspace builder (auth.forbidden)"),
+        (status = 404, description = "No such model, or the caller is not a member of the workspace (not_found)"),
+        (status = 409, description = "The model is in production mode (model.production_locked), or the name is taken (structure.name_taken)"),
+        (status = 422, description = "Some fields are invalid (validation, structure.invalid)"),
+    )
+)]
+pub(crate) async fn create_time_range(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    ApiPath(model_id): ApiPath<Uuid>,
+    ApiJson(body): ApiJson<CreateTimeRangeRequest>,
+) -> AppResult<(StatusCode, Json<TimeRangeDto>)> {
+    let handle = write_handle(&state, &user, model_id).await?;
+    let name = validate::entity_name("name", &body.name)?;
+
+    let id = TimeRangeId::new();
+    handle
+        .apply(
+            user.id,
+            vec![Command::CreateTimeRange {
+                id,
+                name,
+                first_year: body.first_year,
+                years: body.years,
+            }],
+        )
+        .await?;
+    let model = handle.snapshot();
+    let range = model.structure().time_range(id).ok_or(AppError::NotFound)?;
+    Ok((StatusCode::CREATED, Json(time_range_dto(range))))
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/v1/models/{id}/time-ranges/{range_id}",
+    tag = "structure",
+    params(
+        ("id" = Uuid, Path, description = "The model's id"),
+        ("range_id" = Uuid, Path, description = "The time range's id"),
+    ),
+    responses(
+        (status = 204, description = "The time range was deleted"),
+        (status = 401, description = "Not signed in (auth.unauthenticated)"),
+        (status = 403, description = "Not a workspace builder (auth.forbidden)"),
+        (status = 404, description = "No such model or time range, or the caller is not a member of the workspace (not_found)"),
+        (status = 409, description = "The model is in production mode (model.production_locked), or the time range is used by a module (structure.in_use)"),
+    )
+)]
+pub(crate) async fn delete_time_range(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    ApiPath((model_id, range_id)): ApiPath<(Uuid, Uuid)>,
+) -> AppResult<StatusCode> {
+    let handle = write_handle(&state, &user, model_id).await?;
+    handle
+        .apply(
+            user.id,
+            vec![Command::DeleteTimeRange {
+                id: TimeRangeId(range_id),
+            }],
+        )
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
