@@ -8,7 +8,8 @@ use std::sync::Arc;
 use crate::calendar::TimeLevel;
 use crate::error::FormulaError;
 use crate::ids::{ItemId, LineItemId, ListId, VersionId};
-use crate::structure::{Structure, level_name};
+use crate::shape::Axis;
+use crate::structure::Structure;
 use crate::value::{Value, ValueType};
 
 use super::ast::{BinOp, Expr, ModifierKind, Name, Span, UnOp};
@@ -46,15 +47,23 @@ pub enum TExpr {
         item: ItemId,
         span: Span,
     },
+    /// A version, written `Versions.Budget`: an item of the built-in list
+    /// [`ListId::VERSIONS`].
+    VersionConst { version: VersionId, span: Span },
     /// A time period, written `Time.'Jan 26'`.
     PeriodConst {
         level: TimeLevel,
         index: u32,
         span: Span,
     },
-    /// The name of a list, only as the argument of a function that takes one.
+    /// The name of a list, or `Versions` as [`ListId::VERSIONS`], only as the argument of a
+    /// function that takes one. It is not a value.
     ListRef { list: ListId, span: Span },
-    /// A keyword such as `UP`, only as the argument of a function that takes one.
+    /// `Time` at the level of the line item the formula is for, only as the argument of a
+    /// function that takes it. It is not a value.
+    TimeRef { level: TimeLevel, span: Span },
+    /// A keyword such as `UP`, only as the argument of a function that takes one. It is not a
+    /// value.
     Word { word: Word, span: Span },
     Unary {
         op: UnOp,
@@ -85,23 +94,27 @@ pub enum TExpr {
 }
 
 impl TExpr {
-    /// The type of the value of this node. A list name is typed as an item of the list and a
-    /// keyword as Text; neither is a value, and they only occur as function arguments, where
-    /// the function table looks at [`TExpr::arg_type`] instead.
-    pub fn ty(&self) -> ValueType {
+    /// The type of the value of this node, or `None` for the three kinds of node that are not
+    /// values: the name of a list, `Time` and a keyword, which only occur as arguments of
+    /// functions.
+    pub fn ty(&self) -> Option<ValueType> {
         match self {
             TExpr::Const { ty, .. }
             | TExpr::LineItem { ty, .. }
             | TExpr::Unary { ty, .. }
             | TExpr::Binary { ty, .. }
             | TExpr::If { ty, .. }
-            | TExpr::Call { ty, .. } => *ty,
-            TExpr::ListItemConst { list, .. } | TExpr::ListRef { list, .. } => {
-                ValueType::Item(*list)
-            }
-            TExpr::PeriodConst { level, .. } => ValueType::Period(*level),
-            TExpr::Word { .. } => ValueType::Text,
+            | TExpr::Call { ty, .. } => Some(*ty),
+            TExpr::ListItemConst { list, .. } => Some(ValueType::Item(*list)),
+            TExpr::VersionConst { .. } => Some(ValueType::Item(ListId::VERSIONS)),
+            TExpr::PeriodConst { level, .. } => Some(ValueType::Period(*level)),
+            TExpr::ListRef { .. } | TExpr::TimeRef { .. } | TExpr::Word { .. } => None,
         }
+    }
+
+    /// The type of a node known to be a value, as everything `Resolver::expr` returns is.
+    fn value_ty(&self) -> ValueType {
+        self.ty().expect("a resolved expression is a value")
     }
 
     /// The source text this node was made from, including parentheses around it.
@@ -110,8 +123,10 @@ impl TExpr {
             TExpr::Const { span, .. }
             | TExpr::LineItem { span, .. }
             | TExpr::ListItemConst { span, .. }
+            | TExpr::VersionConst { span, .. }
             | TExpr::PeriodConst { span, .. }
             | TExpr::ListRef { span, .. }
+            | TExpr::TimeRef { span, .. }
             | TExpr::Word { span, .. }
             | TExpr::Unary { span, .. }
             | TExpr::Binary { span, .. }
@@ -121,11 +136,12 @@ impl TExpr {
     }
 
     /// What this node is as an argument of a function.
-    pub fn arg_type(&self) -> ArgType {
+    pub(crate) fn arg_type(&self) -> ArgType {
         match self {
             TExpr::ListRef { list, .. } => ArgType::List(*list),
+            TExpr::TimeRef { level, .. } => ArgType::Time(*level),
             TExpr::Word { word, .. } => ArgType::Word(*word),
-            other => ArgType::Value(other.ty()),
+            other => ArgType::Value(other.value_ty()),
         }
     }
 }
@@ -172,19 +188,26 @@ pub fn resolve(
         .line_item(target)
         .expect("the line item whose formula is resolved is in the structure");
     let wanted = line_item.format.value_type();
+    let time_level = structure.layout(line_item).ok().and_then(|layout| {
+        layout.axes.iter().find_map(|axis| match axis {
+            Axis::Time { level, .. } => Some(*level),
+            _ => None,
+        })
+    });
     let mut resolver = Resolver {
         structure,
         names: Names::new(structure, line_item.module),
+        time_level,
         errors: Vec::new(),
     };
     let typed = resolver.expr(expr, Some(wanted));
     if let Some(typed) = &typed
-        && typed.ty() != wanted
+        && typed.value_ty() != wanted
     {
         let message = format!(
             "Formula returns {} but the line item is {}.",
-            type_name(structure, typed.ty()),
-            type_name(structure, wanted)
+            structure.type_name(typed.value_ty()),
+            structure.type_name(wanted)
         );
         resolver.push(TYPE_MISMATCH, typed.span(), message);
     }
@@ -211,21 +234,6 @@ fn formula_error(
         start: span.start,
         end: span.end,
         suggestion,
-    }
-}
-
-/// A type as it reads in an error message.
-pub(super) fn type_name(structure: &Structure, ty: ValueType) -> String {
-    match ty {
-        ValueType::Number => "Number".to_string(),
-        ValueType::Boolean => "Boolean".to_string(),
-        ValueType::Text => "Text".to_string(),
-        ValueType::Date => "Date".to_string(),
-        ValueType::Item(list) => {
-            let name = structure.list(list).map_or("?", |list| list.name.as_str());
-            format!("List '{name}'")
-        }
-        ValueType::Period(level) => format!("Time period ({})", level_name(level)),
     }
 }
 
@@ -309,6 +317,8 @@ impl Operator {
 struct Resolver<'a> {
     structure: &'a Structure,
     names: Names<'a>,
+    /// The level of the Time dimension of the line item the formula is for, if it has one.
+    time_level: Option<TimeLevel>,
     errors: Vec<FormulaError>,
 }
 
@@ -376,6 +386,22 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// Resolves an expression that goes with `sibling`, which has already been resolved or has
+    /// failed: a `BLANK` takes the type of the sibling. When the sibling failed, a `BLANK` is
+    /// left alone, because the problem has been reported and its type is not known.
+    fn expr_beside(
+        &mut self,
+        expr: &Expr,
+        sibling: Option<&TExpr>,
+        fallback: Option<ValueType>,
+    ) -> Option<TExpr> {
+        match sibling {
+            Some(sibling) => self.expr(expr, Some(sibling.value_ty())),
+            None if matches!(expr, Expr::Blank(_)) => None,
+            None => self.expr(expr, fallback),
+        }
+    }
+
     fn reference(&mut self, parts: &[Name], span: Span) -> Option<TExpr> {
         match self.names.lookup(parts) {
             Ok(referent) => self.value_of(referent, span),
@@ -394,14 +420,10 @@ impl<'a> Resolver<'a> {
             }),
             Referent::ListItem { list, item } => Some(TExpr::ListItemConst { list, item, span }),
             Referent::Period { level, index } => Some(TExpr::PeriodConst { level, index, span }),
-            Referent::Version(version) => {
-                let message = format!(
-                    "The version '{}' can only be used to fix a dimension, as in SELECT: Versions.{}.",
-                    version.name,
-                    display_name(&version.name)
-                );
-                self.mismatch(span, message)
-            }
+            Referent::Version(version) => Some(TExpr::VersionConst {
+                version: version.id,
+                span,
+            }),
             Referent::List(list) => {
                 let message = format!(
                     "'{}' is a list, which can only be a function argument where the function asks for a list, as in ITEM({}).",
@@ -419,11 +441,11 @@ impl<'a> Resolver<'a> {
             UnOp::Not => ("NOT", ValueType::Boolean),
         };
         let operand = self.expr(operand, Some(needs))?;
-        if operand.ty() != needs {
+        if operand.value_ty() != needs {
             let message = format!(
                 "{label} needs a {}, but this is {}.",
-                type_name(self.structure, needs),
-                type_name(self.structure, operand.ty())
+                self.structure.type_name(needs),
+                self.structure.type_name(operand.value_ty())
             );
             return self.mismatch(operand.span(), message);
         }
@@ -468,14 +490,14 @@ impl<'a> Resolver<'a> {
     }
 
     fn operand_fits(&mut self, op: BinOp, operator: &Operator, operand: &TExpr) -> bool {
-        if (operator.accepts)(operand.ty()) {
+        if (operator.accepts)(operand.value_ty()) {
             return true;
         }
         let message = format!(
             "{} needs {}, but this is {}.",
             symbol(op),
             operator.needs,
-            type_name(self.structure, operand.ty())
+            self.structure.type_name(operand.value_ty())
         );
         self.push(TYPE_MISMATCH, operand.span(), message);
         false
@@ -484,22 +506,22 @@ impl<'a> Resolver<'a> {
     /// Both sides of a comparison have one type. A `BLANK` on one side takes the type of the
     /// other.
     fn comparison(&mut self, op: BinOp, lhs: &Expr, rhs: &Expr, span: Span) -> Option<TExpr> {
-        let (left, right) = if matches!(lhs, Expr::Blank(_)) {
+        let (left, right) = if matches!(lhs, Expr::Blank(_)) && !matches!(rhs, Expr::Blank(_)) {
             let right = self.expr(rhs, None);
-            let left = self.expr(lhs, right.as_ref().map(TExpr::ty));
+            let left = self.expr_beside(lhs, right.as_ref(), None);
             (left, right)
         } else {
             let left = self.expr(lhs, None);
-            let right = self.expr(rhs, left.as_ref().map(TExpr::ty));
+            let right = self.expr_beside(rhs, left.as_ref(), None);
             (left, right)
         };
         let (left, right) = (left?, right?);
-        let ty = left.ty();
-        if ty != right.ty() {
+        let ty = left.value_ty();
+        if ty != right.value_ty() {
             let message = format!(
                 "Cannot compare {} with {}.",
-                type_name(self.structure, ty),
-                type_name(self.structure, right.ty())
+                self.structure.type_name(ty),
+                self.structure.type_name(right.value_ty())
             );
             return self.mismatch(span, message);
         }
@@ -508,7 +530,7 @@ impl<'a> Resolver<'a> {
             let message = format!(
                 "{} cannot compare {} values by size; use = or <>.",
                 symbol(op),
-                type_name(self.structure, ty)
+                self.structure.type_name(ty)
             );
             return self.mismatch(span, message);
         }
@@ -534,28 +556,28 @@ impl<'a> Resolver<'a> {
         let cond = self.expr(cond, Some(ValueType::Boolean));
         let (then, els) = if matches!(then, Expr::Blank(_)) && !matches!(els, Expr::Blank(_)) {
             let els = self.expr(els, hint);
-            let then = self.expr(then, els.as_ref().map(TExpr::ty).or(hint));
+            let then = self.expr_beside(then, els.as_ref(), hint);
             (then, els)
         } else {
             let then = self.expr(then, hint);
-            let els = self.expr(els, then.as_ref().map(TExpr::ty).or(hint));
+            let els = self.expr_beside(els, then.as_ref(), hint);
             (then, els)
         };
         let (cond, then, els) = (cond?, then?, els?);
         let mut fits = true;
-        if cond.ty() != ValueType::Boolean {
+        if cond.value_ty() != ValueType::Boolean {
             let message = format!(
                 "IF needs a Boolean condition, but this is {}.",
-                type_name(self.structure, cond.ty())
+                self.structure.type_name(cond.value_ty())
             );
             self.push(TYPE_MISMATCH, cond.span(), message);
             fits = false;
         }
-        if then.ty() != els.ty() {
+        if then.value_ty() != els.value_ty() {
             let message = format!(
                 "The branches of IF must have the same type, but THEN gives {} and ELSE gives {}.",
-                type_name(self.structure, then.ty()),
-                type_name(self.structure, els.ty())
+                self.structure.type_name(then.value_ty()),
+                self.structure.type_name(els.value_ty())
             );
             self.push(TYPE_MISMATCH, els.span(), message);
             fits = false;
@@ -563,7 +585,7 @@ impl<'a> Resolver<'a> {
         if !fits {
             return None;
         }
-        let ty = then.ty();
+        let ty = then.value_ty();
         Some(TExpr::If {
             cond: Box::new(cond),
             then: Box::new(then),

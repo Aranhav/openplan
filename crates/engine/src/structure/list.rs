@@ -128,6 +128,11 @@ impl Structure {
         numbered: bool,
         production_data: bool,
     ) -> Result<(), EngineError> {
+        if id == ListId::VERSIONS {
+            return Err(invalid(
+                "That list id is reserved for the Versions dimension.",
+            ));
+        }
         if self.lists.contains_key(&id) {
             return Err(already_exists("list", id.0));
         }

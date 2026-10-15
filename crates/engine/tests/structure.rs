@@ -303,6 +303,44 @@ fn create_hierarchy_lists_and_items() {
 }
 
 #[test]
+fn the_id_of_the_versions_dimension_is_reserved() {
+    let mut model = model();
+    let before = snapshot(&model);
+    let versions = model.apply(Command::CreateList {
+        id: ListId::VERSIONS,
+        name: "Releases".to_string(),
+        parent: None,
+        top_level_name: None,
+        numbered: false,
+        production_data: false,
+    });
+    assert_eq!(error_code(versions), "structure.invalid");
+    assert_eq!(snapshot(&model), before);
+    assert!(model.structure().list(ListId::VERSIONS).is_none());
+    // The same goes for a batch, which is rolled back whole.
+    let batch = model.apply_batch(vec![
+        Command::CreateList {
+            id: ListId::new(),
+            name: "Products".to_string(),
+            parent: None,
+            top_level_name: None,
+            numbered: false,
+            production_data: false,
+        },
+        Command::CreateList {
+            id: ListId::VERSIONS,
+            name: "Releases".to_string(),
+            parent: None,
+            top_level_name: None,
+            numbered: false,
+            production_data: false,
+        },
+    ]);
+    assert_eq!(error_code(batch), "structure.invalid");
+    assert_eq!(snapshot(&model), before);
+}
+
+#[test]
 fn upsert_updates_existing_items_and_appends_new_ones_in_order() {
     let mut model = model();
     let products = new_list(&mut model, "Products");

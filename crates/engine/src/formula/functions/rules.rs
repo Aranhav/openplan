@@ -2,7 +2,6 @@
 //! call returns. The table in the parent module says which function has which rules.
 
 use crate::calendar::TimeLevel;
-use crate::formula::resolve::type_name;
 use crate::ids::ListId;
 use crate::structure::Structure;
 use crate::value::ValueType;
@@ -38,14 +37,16 @@ impl Word {
 pub enum ArgType {
     /// An expression with a value of this type.
     Value(ValueType),
-    /// The name of a list, for functions that work on a whole list.
+    /// The name of a list, or `Versions`, for functions that work on a whole dimension.
     List(ListId),
+    /// `Time`, at the level of the line item the formula is for.
+    Time(TimeLevel),
     /// A keyword such as `UP`.
     Word(Word),
 }
 
-/// A call that `check` rejected. `arg` is the position of the offending argument, or `None`
-/// when the problem is the call as a whole.
+/// One problem `check` found in a call. `arg` is the position of the offending argument, or
+/// `None` when the problem is the call as a whole.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CheckError {
     pub arg: Option<usize>,
@@ -68,6 +69,8 @@ pub enum Param {
     Printable,
     /// The name of a list.
     List,
+    /// The name of a list, or `Versions` or `Time`.
+    Dimension,
     /// `UP`, `DOWN` or `NEAREST`.
     RoundMode,
     /// `ASCENDING` or `DESCENDING`.
@@ -114,7 +117,8 @@ impl Param {
                 Param::Printable,
                 ArgType::Value(ValueType::Number | ValueType::Date | ValueType::Item(_)),
             )
-            | (Param::List, ArgType::List(_)) => true,
+            | (Param::List, ArgType::List(_))
+            | (Param::Dimension, ArgType::List(_) | ArgType::Time(_)) => true,
             (Param::RoundMode | Param::RankOrder, ArgType::Word(word)) => {
                 self.keywords().contains(&word)
             }
@@ -133,6 +137,7 @@ impl Param {
             Param::Period => "a time period".to_string(),
             Param::Printable => "a Number, Date or list item".to_string(),
             Param::List => "the name of a list".to_string(),
+            Param::Dimension => "the name of a list, Versions or Time".to_string(),
             Param::RoundMode | Param::RankOrder => keyword_choice(self.keywords()),
             Param::SameAsFirst => {
                 let first = args
@@ -162,11 +167,10 @@ fn join_choice(items: &[&str]) -> String {
 /// How an argument reads in an error message.
 fn describe(structure: &Structure, arg: ArgType) -> String {
     match arg {
-        ArgType::Value(ty) => type_name(structure, ty),
-        ArgType::List(list) => {
-            let name = structure.list(list).map_or("?", |list| list.name.as_str());
-            format!("the list '{name}'")
-        }
+        ArgType::Value(ty) => structure.type_name(ty),
+        ArgType::List(ListId::VERSIONS) => "the dimension Versions".to_string(),
+        ArgType::List(list) => format!("the list '{}'", structure.list_name(list)),
+        ArgType::Time(_) => "the dimension Time".to_string(),
         ArgType::Word(word) => format!("the keyword {}", word.text()),
     }
 }
@@ -182,7 +186,7 @@ pub(super) enum Ret {
     Month,
     /// The type of the argument at this position.
     SameAs(usize),
-    /// An item of the list named by the argument at this position.
+    /// An item of the list named by the argument at this position, or a period when it is Time.
     ItemOf(usize),
     /// An item of the list above that of the item argument at this position.
     ParentOf(usize),
@@ -267,62 +271,66 @@ pub fn arity_message(func: FuncId, given: usize) -> String {
 }
 
 /// Checks the arguments of a call to `func` against the function table and returns the type
-/// of its result.
+/// of its result, or every problem found.
 pub fn check(
     structure: &Structure,
     func: FuncId,
     args: &[ArgType],
-) -> Result<ValueType, CheckError> {
+) -> Result<ValueType, Vec<CheckError>> {
     let Some(expected) = params(func, args.len()) else {
-        return Err(CheckError {
+        return Err(vec![CheckError {
             arg: None,
             message: arity_message(func, args.len()),
-        });
+        }]);
     };
-    for (index, (param, arg)) in expected.iter().zip(args).enumerate() {
-        if !param.accepts(*arg, args) {
-            return Err(CheckError {
-                arg: Some(index),
-                message: format!(
-                    "Argument {} of {} must be {}, but is {}.",
-                    index + 1,
-                    func.def().name,
-                    param.expectation(structure, args),
-                    describe(structure, *arg),
-                ),
-            });
-        }
+    let mut errors: Vec<CheckError> = expected
+        .iter()
+        .zip(args)
+        .enumerate()
+        .filter(|(_, (param, arg))| !param.accepts(**arg, args))
+        .map(|(index, (param, arg))| CheckError {
+            arg: Some(index),
+            message: format!(
+                "Argument {} of {} must be {}, but is {}.",
+                index + 1,
+                func.def().name,
+                param.expectation(structure, args),
+                describe(structure, *arg),
+            ),
+        })
+        .collect();
+    if errors.is_empty() && func == FuncId::IsAncestor {
+        errors.extend(check_same_hierarchy(structure, args));
     }
-    if func == FuncId::IsAncestor {
-        check_same_hierarchy(structure, args)?;
+    if !errors.is_empty() {
+        return Err(errors);
     }
-    result_type(structure, func.signature().ret, args)
+    result_type(structure, func.signature().ret, args).map_err(|error| vec![error])
 }
 
 /// `ISANCESTOR` compares items of lists in one hierarchy: the first item's list is the second
 /// item's list or one of the lists above it.
-fn check_same_hierarchy(structure: &Structure, args: &[ArgType]) -> Result<(), CheckError> {
+fn check_same_hierarchy(structure: &Structure, args: &[ArgType]) -> Option<CheckError> {
     let [
         ArgType::Value(ValueType::Item(ancestor)),
         ArgType::Value(ValueType::Item(descendant)),
     ] = args
     else {
-        return Ok(());
+        return None;
     };
     let mut current = Some(*descendant);
     while let Some(list) = current {
         if list == *ancestor {
-            return Ok(());
+            return None;
         }
         current = structure.list(list).and_then(|list| list.parent);
     }
-    let name = |list: &ListId| structure.list(*list).map_or("?", |list| list.name.as_str());
-    Err(CheckError {
+    Some(CheckError {
         arg: Some(0),
         message: format!(
             "ISANCESTOR needs the list '{}' to be above the list '{}' in a hierarchy.",
-            name(ancestor),
-            name(descendant)
+            structure.list_name(*ancestor),
+            structure.list_name(*descendant)
         ),
     })
 }
@@ -340,25 +348,121 @@ fn result_type(structure: &Structure, ret: Ret, args: &[ArgType]) -> Result<Valu
         },
         Ret::ItemOf(position) => match args.get(position) {
             Some(ArgType::List(list)) => ValueType::Item(*list),
-            _ => unreachable!("the parameter at {position} takes a list"),
+            Some(ArgType::Time(level)) => ValueType::Period(*level),
+            _ => unreachable!("the parameter at {position} takes a dimension"),
         },
         Ret::ParentOf(position) => {
             let Some(ArgType::Value(ValueType::Item(list))) = args.get(position) else {
                 unreachable!("the parameter at {position} takes an item");
             };
-            let list = structure.list(*list);
-            match list.and_then(|list| list.parent) {
+            match structure.list(*list).and_then(|list| list.parent) {
                 Some(parent) => ValueType::Item(parent),
                 None => {
-                    let name = list.map_or("?", |list| list.name.as_str());
                     return Err(CheckError {
                         arg: Some(position),
                         message: format!(
-                            "PARENT needs an item of a list that has a parent list, but '{name}' has none."
+                            "PARENT needs an item of a list that has a parent list, but '{}' has none.",
+                            structure.list_name(*list)
                         ),
                     });
                 }
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::calendar::Calendar;
+
+    fn structure() -> Structure {
+        Structure::new(Calendar {
+            fiscal_year_start_month: 1,
+            first_year: 2026,
+            years: 1,
+            current_month: None,
+        })
+    }
+
+    const NUMBER: ArgType = ArgType::Value(ValueType::Number);
+    const TEXT: ArgType = ArgType::Value(ValueType::Text);
+
+    #[test]
+    fn results_follow_the_signature() {
+        let structure = structure();
+        assert_eq!(
+            check(&structure, FuncId::Abs, &[NUMBER]),
+            Ok(ValueType::Number)
+        );
+        assert_eq!(
+            check(&structure, FuncId::Min, &[NUMBER; 6]),
+            Ok(ValueType::Number)
+        );
+        assert_eq!(
+            check(&structure, FuncId::Previous, &[TEXT]),
+            Ok(ValueType::Text)
+        );
+        assert_eq!(
+            check(
+                &structure,
+                FuncId::Round,
+                &[NUMBER, NUMBER, ArgType::Word(Word::Down)]
+            ),
+            Ok(ValueType::Number)
+        );
+        assert_eq!(
+            check(
+                &structure,
+                FuncId::Period,
+                &[ArgType::Value(ValueType::Date)]
+            ),
+            Ok(ValueType::Period(TimeLevel::Month))
+        );
+    }
+
+    #[test]
+    fn items_of_a_dimension_have_the_type_of_that_dimension() {
+        let structure = structure();
+        let dimension = |arg| check(&structure, FuncId::Item, &[arg]);
+        assert_eq!(
+            dimension(ArgType::List(ListId::VERSIONS)),
+            Ok(ValueType::Item(ListId::VERSIONS))
+        );
+        assert_eq!(
+            dimension(ArgType::Time(TimeLevel::Quarter)),
+            Ok(ValueType::Period(TimeLevel::Quarter))
+        );
+        assert!(dimension(NUMBER).is_err());
+        // Only ITEM takes Time and Versions; FINDITEM needs a list of the model.
+        let errors = check(
+            &structure,
+            FuncId::FindItem,
+            &[ArgType::Time(TimeLevel::Month), TEXT],
+        )
+        .unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].arg, Some(0));
+    }
+
+    #[test]
+    fn every_bad_argument_is_reported_by_position() {
+        let structure = structure();
+        let errors = check(&structure, FuncId::Mid, &[NUMBER, TEXT, TEXT]).unwrap_err();
+        let positions: Vec<_> = errors.iter().map(|error| error.arg).collect();
+        assert_eq!(positions, [Some(0), Some(1), Some(2)]);
+    }
+
+    #[test]
+    fn a_wrong_number_of_arguments_is_a_problem_of_the_call() {
+        let structure = structure();
+        let errors = check(&structure, FuncId::Abs, &[NUMBER, NUMBER]).unwrap_err();
+        assert_eq!(
+            errors,
+            [CheckError {
+                arg: None,
+                message: "ABS takes 1 argument, but 2 were given.".to_string(),
+            }]
+        );
+    }
 }

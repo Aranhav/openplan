@@ -6,7 +6,8 @@ use crate::structure::same_name;
 
 mod rules;
 
-pub use rules::{ArgType, CheckError, Word, check};
+pub use rules::Word;
+pub(crate) use rules::{ArgType, check};
 pub(super) use rules::{Param, arity_message, keyword_choice, params};
 use rules::{Ret, Signature, max_arity, min_arity};
 
@@ -270,8 +271,8 @@ functions! {
     Item {
         name: "ITEM",
         category: "List",
-        signature: [List] => Ret::ItemOf(0),
-        doc: "Returns the item of a list at the cell being calculated.",
+        signature: [Dimension] => Ret::ItemOf(0),
+        doc: "Returns the item of a list, the version or the time period at the cell being calculated.",
         example: "ITEM(Products)",
     }
     Parent {
@@ -285,14 +286,14 @@ functions! {
         name: "NAME",
         category: "List",
         signature: [Item] => Ret::Text,
-        doc: "Returns the name of a list item.",
+        doc: "Returns the name of a list item or version.",
         example: "NAME(ITEM(Products))",
     }
     Code {
         name: "CODE",
         category: "List",
         signature: [Item] => Ret::Text,
-        doc: "Returns the code of a list item.",
+        doc: "Returns the code of a list item, which is blank for a version.",
         example: "CODE(ITEM(Products))",
     }
     FindItem {

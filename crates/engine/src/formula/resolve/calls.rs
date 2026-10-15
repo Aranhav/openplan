@@ -3,17 +3,21 @@
 
 use crate::formula::functions::{self, ArgType, FuncId, Param, keyword_choice};
 use crate::formula::{Expr, Name, Span};
+use crate::ids::ListId;
+use crate::structure::same_name;
 
 use super::names::{closest, did_you_mean};
 use super::{Resolver, TExpr, TYPE_MISMATCH, formula_error};
 
 const UNKNOWN_FUNCTION: &str = "formula.unknown_function";
 const ARITY: &str = "formula.arity";
+const DIMENSION: &str = "formula.dimension";
 
 impl Resolver<'_> {
     pub(super) fn call(&mut self, name: &Name, args: &[Expr], span: Span) -> Option<TExpr> {
-        let Some(func) = functions::lookup(&name.text) else {
-            return self.unknown_function(name);
+        let func = match functions::lookup(&name.text) {
+            Some(func) if !name.quoted => func,
+            found => return self.unknown_function(name, found),
         };
         let Some(params) = functions::params(func, args.len()) else {
             return self.fail(ARITY, span, functions::arity_message(func, args.len()));
@@ -32,17 +36,36 @@ impl Resolver<'_> {
                 ty,
                 span,
             }),
-            Err(error) => {
-                let at = error
-                    .arg
-                    .and_then(|index| args.get(index))
-                    .map_or(span, TExpr::span);
-                self.mismatch(at, error.message)
+            Err(errors) => {
+                for error in errors {
+                    let at = error
+                        .arg
+                        .and_then(|index| args.get(index))
+                        .map_or(span, TExpr::span);
+                    self.push(TYPE_MISMATCH, at, error.message);
+                }
+                None
             }
         }
     }
 
-    fn unknown_function(&mut self, name: &Name) -> Option<TExpr> {
+    /// A name before `(` that is not a function. `quoted` is the function the name would be
+    /// if it were not in quotes.
+    fn unknown_function(&mut self, name: &Name, quoted: Option<FuncId>) -> Option<TExpr> {
+        if let Some(func) = quoted {
+            let written = func.def().name;
+            let message = format!(
+                "A function name is not put in quotes: write {written}(...) instead of '{}'(...).",
+                name.text
+            );
+            let error = formula_error(
+                UNKNOWN_FUNCTION,
+                name.span,
+                message,
+                Some(written.to_string()),
+            );
+            return self.report(error);
+        }
         let found = closest(
             &name.text,
             functions::all().iter().map(|def| (def.name, def.name)),
@@ -70,38 +93,68 @@ impl Resolver<'_> {
         arg: &Expr,
         earlier: &[Option<TExpr>],
     ) -> Option<TExpr> {
-        if param == Param::List {
-            return self.list_argument(func, index, arg);
+        if matches!(param, Param::List | Param::Dimension) {
+            return self.list_argument(func, index, param, arg);
         }
         if !param.keywords().is_empty() {
             return self.keyword_argument(func, index, param, arg);
         }
-        let first = earlier.first().and_then(Option::as_ref).map(TExpr::ty);
-        let hint = param
-            .fixed_type()
-            .or(first.filter(|_| param.is_same_as_first()));
-        self.expr(arg, hint)
+        if param.is_same_as_first() {
+            let first = earlier.first().and_then(Option::as_ref);
+            return self.expr_beside(arg, first, None);
+        }
+        self.expr(arg, param.fixed_type())
     }
 
-    fn list_argument(&mut self, func: FuncId, index: usize, arg: &Expr) -> Option<TExpr> {
+    /// A list name, or for a `Dimension` position also `Versions` and `Time`. A list of the
+    /// model is found before the built-in dimensions, as it is in a qualified name.
+    fn list_argument(
+        &mut self,
+        func: FuncId,
+        index: usize,
+        param: Param,
+        arg: &Expr,
+    ) -> Option<TExpr> {
+        let dimension = param == Param::Dimension;
         if let Expr::Ref { parts, span } = arg
             && let [name] = parts.as_slice()
         {
-            return match self.structure.list_by_name(&name.text) {
-                Some(list) => Some(TExpr::ListRef {
+            if let Some(list) = self.structure.list_by_name(&name.text) {
+                return Some(TExpr::ListRef {
                     list: list.id,
                     span: *span,
-                }),
-                None => {
-                    let error = self.names.unknown_list(name);
-                    self.report(error)
-                }
-            };
+                });
+            }
+            if dimension && same_name(name.text.trim(), "Versions") {
+                return Some(TExpr::ListRef {
+                    list: ListId::VERSIONS,
+                    span: *span,
+                });
+            }
+            if dimension && same_name(name.text.trim(), "Time") {
+                return match self.time_level {
+                    Some(level) => Some(TExpr::TimeRef { level, span: *span }),
+                    None => {
+                        let message = format!(
+                            "{}(Time) needs the line item to have a Time dimension.",
+                            func.def().name
+                        );
+                        self.fail(DIMENSION, *span, message)
+                    }
+                };
+            }
+            let error = self.names.unknown_list(name, dimension);
+            return self.report(error);
         }
         let message = format!(
-            "Argument {} of {} must be the name of a list.",
+            "Argument {} of {} must be {}.",
             index + 1,
-            func.def().name
+            func.def().name,
+            if dimension {
+                "the name of a list, Versions or Time"
+            } else {
+                "the name of a list"
+            }
         );
         self.mismatch(arg.span(), message)
     }

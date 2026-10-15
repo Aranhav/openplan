@@ -100,14 +100,20 @@ impl<'a> Names<'a> {
         }
     }
 
-    /// The error for a list name that is not a list.
-    pub(super) fn unknown_list(&self, name: &Name) -> FormulaError {
-        let found = closest(
-            &name.text,
-            self.structure
-                .lists()
-                .map(|list| (list.name.as_str(), list.name.as_str())),
-        );
+    /// The error for a list name that is not a list. `dimensions` also offers `Versions` and
+    /// `Time`, for the arguments that take them.
+    pub(super) fn unknown_list(&self, name: &Name, dimensions: bool) -> FormulaError {
+        let built_in: &[&str] = if dimensions {
+            &["Versions", "Time"]
+        } else {
+            &[]
+        };
+        let lists = self
+            .structure
+            .lists()
+            .map(|list| list.name.as_str())
+            .chain(built_in.iter().copied());
+        let found = closest(&name.text, lists.map(|list| (list, list)));
         let message = format!("Unknown list '{}'.", name.text);
         unknown(name.span, message, found.map(Form::of_name))
     }

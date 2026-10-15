@@ -35,6 +35,14 @@ define_ids! {
     TimeRangeId,
 }
 
+impl ListId {
+    /// The id of the built-in Versions dimension, which formulas see as a list whose items
+    /// are the versions: `ITEM(Versions)` is an item of it and so is `Versions.Budget`.
+    ///
+    /// No user list has this id, and it is not a UUID v7, which every generated id is.
+    pub const VERSIONS: ListId = ListId(Uuid::from_u128(1));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -45,6 +53,12 @@ mod tests {
         let b = ListId::new();
         assert_ne!(a, b);
         assert_eq!(a.0.get_version_num(), 7);
+    }
+
+    #[test]
+    fn the_versions_list_id_is_never_generated() {
+        assert_ne!(ListId::VERSIONS.0.get_version_num(), 7);
+        assert_ne!(ListId::new(), ListId::VERSIONS);
     }
 
     #[test]

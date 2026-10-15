@@ -6,7 +6,7 @@ use crate::structure::LineItem;
 use crate::value::ValueType;
 
 use super::names::Referent;
-use super::{Resolver, SelectTarget, TExpr, TModifier, TYPE_MISMATCH, type_name};
+use super::{Resolver, SelectTarget, TExpr, TModifier, TYPE_MISMATCH};
 
 fn kind_name(kind: ModifierKind) -> &'static str {
     match kind {
@@ -102,8 +102,8 @@ impl<'a> Resolver<'a> {
             let message = format!(
                 "{} needs a {} line item, but this is {}.",
                 kind_name(modifier.kind),
-                type_name(self.structure, wanted),
-                type_name(self.structure, actual)
+                self.structure.type_name(wanted),
+                self.structure.type_name(actual)
             );
             return self.mismatch(span, message);
         }
@@ -135,7 +135,7 @@ impl<'a> Resolver<'a> {
             let message = format!(
                 "The mapping line item '{}' must be list-formatted or time-period-formatted, but is {}.",
                 line_item.name,
-                type_name(self.structure, ty)
+                self.structure.type_name(ty)
             );
             return self.mismatch(*span, message);
         }

@@ -7,6 +7,7 @@ use crate::calendar::{Calendar, TimeLevel, TimeRange};
 use crate::command::Command;
 use crate::error::EngineError;
 use crate::ids::{ItemId, LineItemId, ListId, ModuleId, SubsetId, TimeRangeId, VersionId};
+use crate::value::ValueType;
 
 mod layout;
 mod list;
@@ -409,6 +410,30 @@ impl Structure {
             .get(&line_item.module)
             .map_or("?", |module| module.name.as_str());
         format!("{module}.{}", line_item.name)
+    }
+}
+
+impl Structure {
+    /// A type as it reads in a message about a formula.
+    pub(crate) fn type_name(&self, ty: ValueType) -> String {
+        match ty {
+            ValueType::Number => "Number".to_string(),
+            ValueType::Boolean => "Boolean".to_string(),
+            ValueType::Text => "Text".to_string(),
+            ValueType::Date => "Date".to_string(),
+            ValueType::Item(ListId::VERSIONS) => "Version".to_string(),
+            ValueType::Item(list) => format!("List '{}'", self.list_name(list)),
+            ValueType::Period(level) => format!("Time period ({})", level_name(level)),
+        }
+    }
+
+    /// The name of a list in a message: `Versions` for the built-in dimension and `?` for a
+    /// list that does not exist.
+    pub(crate) fn list_name(&self, list: ListId) -> &str {
+        if list == ListId::VERSIONS {
+            return "Versions";
+        }
+        self.lists.get(&list).map_or("?", |list| list.name.as_str())
     }
 }
 

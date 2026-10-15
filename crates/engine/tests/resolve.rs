@@ -1,4 +1,4 @@
-use openplan_engine::functions::{self, ArgType, FuncId, Word};
+use openplan_engine::functions::{self, FuncId, Word};
 use openplan_engine::{
     AxisSpec, Calendar, Command, Expr, Format, FormulaError, ItemId, ItemSpec, LineItem,
     LineItemId, ListId, Model, ModifierKind, ModuleId, SelectTarget, Span, SummaryMethod, TExpr,
@@ -273,6 +273,17 @@ impl World {
     }
 }
 
+/// The type of a node that is a value, which is all but the names of lists, `Time` and keywords.
+trait ValueNode {
+    fn vty(&self) -> ValueType;
+}
+
+impl ValueNode for TExpr {
+    fn vty(&self) -> ValueType {
+        self.ty().expect("the node is a value")
+    }
+}
+
 fn span(start: usize, end: usize) -> Span {
     Span { start, end }
 }
@@ -461,7 +472,7 @@ fn list_item_literal_and_property() {
             span: span(14, 26),
         }
     );
-    assert_eq!(rhs.ty(), ValueType::Item(world.regions));
+    assert_eq!(rhs.vty(), ValueType::Item(world.regions));
 
     // Items are found by name in any case, or by code.
     for src in ["regions.emea", "Regions.EU", "'Regions'.'EMEA'"] {
@@ -536,10 +547,10 @@ fn versions_and_time_literals() {
             span: span(9, 22),
         }
     );
-    assert_eq!(rhs.ty(), ValueType::Period(TimeLevel::Month));
+    assert_eq!(rhs.vty(), ValueType::Period(TimeLevel::Month));
     // A period is a value of a time-period line item, at the level of its label.
     let typed = world.ok(world.period, "Time.'Mar 27'");
-    assert_eq!(typed.ty(), ValueType::Period(TimeLevel::Month));
+    assert_eq!(typed.vty(), ValueType::Period(TimeLevel::Month));
     assert!(matches!(typed, TExpr::PeriodConst { index: 14, .. }));
     assert_eq!(
         world.errors(world.period, "Time.FY26")[0].message,
@@ -560,12 +571,20 @@ fn versions_and_time_literals() {
 }
 
 #[test]
-fn versions_and_lists_are_not_values() {
+fn versions_are_values_and_lists_are_not() {
     let world = World::new();
     let error = world.error("Versions.Actual + 1");
     assert_eq!(error.code, "formula.type_mismatch");
-    assert!(error.message.contains("SELECT"), "{}", error.message);
+    assert_eq!(
+        error.message,
+        "'+' needs Number operands, but this is Version."
+    );
     assert_eq!(at(&error), span(0, 15));
+    let errors = world.errors(world.num, "Versions.Actual");
+    assert_eq!(
+        errors[0].message,
+        "Formula returns Version but the line item is Number."
+    );
 
     let error = world.error("Products + 1");
     assert_eq!(error.code, "formula.type_mismatch");
@@ -574,6 +593,10 @@ fn versions_and_lists_are_not_values() {
         "{}",
         error.message
     );
+    // Neither `Versions` nor `Time` is a value by itself.
+    for src in ["Versions + 1", "Time + 1"] {
+        assert_eq!(world.error(src).code, "formula.unknown_name", "{src}");
+    }
 }
 
 #[test]
@@ -605,10 +628,10 @@ fn type_mismatch_text_target() {
         "Formula returns Date but the line item is Time period (month)."
     );
     // The same types pass, whatever the number's format.
-    assert_eq!(world.ok(world.txt, "\"a\"").ty(), ValueType::Text);
-    assert_eq!(world.ok(world.num, "1").ty(), ValueType::Number);
+    assert_eq!(world.ok(world.txt, "\"a\"").vty(), ValueType::Text);
+    assert_eq!(world.ok(world.num, "1").vty(), ValueType::Number);
     assert_eq!(
-        world.ok(world.region, "Region").ty(),
+        world.ok(world.region, "Region").vty(),
         ValueType::Item(world.regions)
     );
 }
@@ -628,7 +651,7 @@ fn if_branch_types_must_match() {
         panic!("expected an IF, got {typed:?}");
     };
     assert_eq!(*ty, ValueType::Number);
-    assert_eq!(cond.ty(), ValueType::Boolean);
+    assert_eq!(cond.vty(), ValueType::Boolean);
     assert_eq!(reference(then).0, world.revenue);
     assert_eq!(**els, number(0.0, 26, 27));
 
@@ -748,7 +771,6 @@ fn round_mode_word() {
             matches!(&args[2], TExpr::Word { word: found, .. } if *found == word),
             "{src}"
         );
-        assert_eq!(args[2].arg_type(), ArgType::Word(word));
     }
     let typed = world.ok(world.num, "ROUND(Revenue, -1)");
     let TExpr::Call { args, .. } = &typed else {
@@ -867,7 +889,7 @@ fn comparisons_need_equal_types() {
         "Day < Day",
     ] {
         let typed = world.ok(world.flag, src);
-        assert_eq!(typed.ty(), ValueType::Boolean, "{src}");
+        assert_eq!(typed.vty(), ValueType::Boolean, "{src}");
     }
     // Nothing coerces: not numbers to text, booleans to numbers, nor periods of other levels.
     for src in [
@@ -932,7 +954,7 @@ fn operators_check_their_operands() {
         "OR needs Boolean operands, but this is Number."
     );
     for src in ["NOT Flag", "Flag AND Revenue > 1 OR NOT Flag", "(Flag)"] {
-        assert_eq!(world.ok(world.flag, src).ty(), ValueType::Boolean, "{src}");
+        assert_eq!(world.ok(world.flag, src).vty(), ValueType::Boolean, "{src}");
     }
     // Dates have functions of their own; they do not take part in arithmetic.
     assert_eq!(world.error("Day + 1").code, "formula.type_mismatch");
@@ -949,7 +971,7 @@ fn concatenation_accepts_text_numbers_dates_and_items() {
         "Txt & Txt & Revenue",
     ] {
         let typed = world.ok(world.txt, src);
-        assert_eq!(typed.ty(), ValueType::Text, "{src}");
+        assert_eq!(typed.vty(), ValueType::Text, "{src}");
     }
     let error = &world.errors(world.txt, "Txt & Flag")[0];
     assert_eq!(error.code, "formula.type_mismatch");
@@ -1031,29 +1053,31 @@ fn blank_takes_the_type_it_is_used_with() {
     // Inside IF, comparisons and function defaults it follows the other side.
     let typed = world.ok(world.region, "IF Flag THEN BLANK ELSE Region");
     assert!(matches!(&typed, TExpr::If { then, ty, .. }
-        if *ty == ValueType::Item(world.regions) && then.ty() == *ty));
+        if *ty == ValueType::Item(world.regions) && then.vty() == *ty));
     let typed = world.ok(world.txt, "IF Flag THEN Txt ELSE BLANK");
-    assert!(matches!(&typed, TExpr::If { els, .. } if els.ty() == ValueType::Text));
+    assert!(matches!(&typed, TExpr::If { els, .. } if els.vty() == ValueType::Text));
     let typed = world.ok(world.flag, "Region = BLANK");
     assert!(
-        matches!(&typed, TExpr::Binary { rhs, .. } if rhs.ty() == ValueType::Item(world.regions))
+        matches!(&typed, TExpr::Binary { rhs, .. } if rhs.vty() == ValueType::Item(world.regions))
     );
     let typed = world.ok(world.flag, "BLANK = Day");
-    assert!(matches!(&typed, TExpr::Binary { lhs, .. } if lhs.ty() == ValueType::Date));
+    assert!(matches!(&typed, TExpr::Binary { lhs, .. } if lhs.vty() == ValueType::Date));
     let typed = world.ok(world.day, "OFFSET(Day, -1, BLANK)");
-    assert!(matches!(&typed, TExpr::Call { args, .. } if args[2].ty() == ValueType::Date));
+    assert!(matches!(&typed, TExpr::Call { args, .. } if args[2].vty() == ValueType::Date));
 
     // With nothing to take the type from it is an error.
     let error = world.errors(world.flag, "ISBLANK(BLANK)");
     assert_eq!(error[0].code, "formula.type_mismatch");
     assert!(error[0].message.contains("BLANK"), "{}", error[0].message);
-    assert_eq!(world.errors(world.flag, "BLANK = BLANK").len(), 2);
+    let errors = world.errors(world.flag, "BLANK = BLANK");
+    assert_eq!(errors.len(), 1, "one problem is reported once: {errors:?}");
+    assert_eq!(at(&errors[0]), span(0, 5));
 }
 
 #[test]
 fn literals_and_grouping() {
     let world = World::new();
-    assert_eq!(world.ok(world.txt, "\"a\" & \"b\"").ty(), ValueType::Text);
+    assert_eq!(world.ok(world.txt, "\"a\" & \"b\"").vty(), ValueType::Text);
     let typed = world.ok(world.txt, "\"hello\"");
     assert_eq!(
         typed,
@@ -1138,7 +1162,7 @@ fn modifiers_map_dimensions() {
     );
     // A modified reference is a value like any other.
     let typed = world.ok(world.num, "Salary[SUM: Department] * 2 + 1");
-    assert_eq!(typed.ty(), ValueType::Number);
+    assert_eq!(typed.vty(), ValueType::Number);
 }
 
 #[test]
@@ -1297,8 +1321,7 @@ fn list_arguments() {
             span: span(5, 13)
         }
     );
-    assert_eq!(args[0].arg_type(), ArgType::List(world.products));
-    assert_eq!(args[0].ty(), ValueType::Item(world.products));
+    assert_eq!(args[0].ty(), None, "a list name is not a value");
 
     // A list is looked up by name in an argument position that wants one, ahead of line items.
     let mut world = World::new();
@@ -1306,18 +1329,18 @@ fn list_arguments() {
     world.add(calc, "Products", Format::number());
     let target = world.product;
     assert_eq!(
-        world.ok(target, "ITEM(Products)").ty(),
+        world.ok(target, "ITEM(Products)").vty(),
         ValueType::Item(world.products)
     );
     assert_eq!(
-        world.ok(target, "ITEM('products')").ty(),
+        world.ok(target, "ITEM('products')").vty(),
         ValueType::Item(world.products)
     );
 
     let typed = world.ok(world.flag, "ISFIRSTOCCURRENCE(Region, Regions)");
     assert!(matches!(&typed, TExpr::Call { args, .. } if matches!(args[1], TExpr::ListRef { .. })));
     let typed = world.ok(world.product, "FINDITEM(Products, \"Widget\")");
-    assert_eq!(typed.ty(), ValueType::Item(world.products));
+    assert_eq!(typed.vty(), ValueType::Item(world.products));
 
     let error = &world.errors(world.product, "ITEM(Prodcts)")[0];
     assert_eq!(error.code, "formula.unknown_name");
@@ -1341,7 +1364,7 @@ fn list_arguments() {
     }
     assert_eq!(
         world.errors(world.product, "ITEM(1)")[0].message,
-        "Argument 1 of ITEM must be the name of a list."
+        "Argument 1 of ITEM must be the name of a list, Versions or Time."
     );
 }
 
@@ -1423,12 +1446,12 @@ fn function_results_are_typed() {
     ];
     for (target, src, ty) in cases {
         let typed = world.ok(target, src);
-        assert_eq!(typed.ty(), ty, "{src}");
+        assert_eq!(typed.vty(), ty, "{src}");
     }
     let typed = world.ok(world.region, "PARENT(ITEM(Countries))");
-    assert_eq!(typed.ty(), ValueType::Item(world.regions));
+    assert_eq!(typed.vty(), ValueType::Item(world.regions));
     let typed = world.ok(world.flag, "ISANCESTOR(Regions.EMEA, ITEM(Countries))");
-    assert_eq!(typed.ty(), ValueType::Boolean);
+    assert_eq!(typed.vty(), ValueType::Boolean);
 }
 
 #[test]
@@ -1470,13 +1493,9 @@ fn function_arguments_are_type_checked() {
         world.errors(world.flag, "INPERIOD(Revenue, Time.FY26)")[0].message,
         "Argument 1 of INPERIOD must be a Date, but is Number."
     );
-    // Calls nest, and every argument is reported.
+    // Calls nest, and each one reports the arguments that are wrong.
     let errors = world.errors(world.num, "POWER(Txt, Flag)");
-    assert_eq!(
-        errors.len(),
-        1,
-        "an argument error ends the check of its call"
-    );
+    assert_eq!(errors.len(), 2);
     let errors = world.errors(world.num, "ABS(Txt) + ABS(Flag)");
     assert_eq!(errors.len(), 2);
     assert_eq!((errors[0].start, errors[1].start), (4, 15));
@@ -1500,7 +1519,7 @@ fn function_arguments_are_type_checked() {
     let error = &world.errors(world.flag, "ISANCESTOR(ITEM(Countries), ITEM(Regions))")[0];
     assert_eq!(error.code, "formula.type_mismatch");
     assert_eq!(
-        world.ok(world.flag, "ISANCESTOR(Region, Region)").ty(),
+        world.ok(world.flag, "ISANCESTOR(Region, Region)").vty(),
         ValueType::Boolean
     );
 }
@@ -1523,7 +1542,7 @@ fn calls_report_the_type_of_their_result_in_formulas() {
     assert_eq!(
         world
             .ok(world.num, "IF ISBLANK(Txt) THEN 0 ELSE LEN(Txt)")
-            .ty(),
+            .vty(),
         ValueType::Number
     );
 }
@@ -1713,6 +1732,227 @@ fn resolving_for_a_missing_line_item_panics() {
     let _ = resolve(world.model.structure(), LineItemId::new(), &expr);
 }
 
+#[test]
+fn versions_are_items_that_can_be_compared() {
+    let world = World::new();
+    for src in [
+        "ITEM(Versions) = Versions.Budget",
+        "Versions.Budget = ITEM(Versions)",
+        "ITEM(Versions) <> Versions.Actual",
+        "NAME(ITEM(Versions)) = \"Budget\"",
+        "CODE(ITEM(Versions)) = \"\"",
+        "versions.FORECAST = item(versions)",
+    ] {
+        assert_eq!(world.ok(world.flag, src).vty(), ValueType::Boolean, "{src}");
+    }
+    let typed = world.ok(
+        world.num,
+        "IF ITEM(Versions) = Versions.Budget THEN 1 ELSE 0",
+    );
+    assert_eq!(typed.vty(), ValueType::Number);
+    // Versions are not ordered, and not items of a user list.
+    let error = &world.errors(world.flag, "ITEM(Versions) < Versions.Budget")[0];
+    assert_eq!(error.code, "formula.type_mismatch");
+    assert!(error.message.contains("= or <>"), "{}", error.message);
+    let error = &world.errors(world.flag, "ITEM(Versions) = Regions.EMEA")[0];
+    assert_eq!(error.code, "formula.type_mismatch");
+    assert!(error.message.contains("Version"), "{}", error.message);
+    assert_eq!(
+        world.errors(world.flag, "Region = Versions.Budget")[0].code,
+        "formula.type_mismatch"
+    );
+    // A version is an item of the built-in list of versions, and `Versions` is that list.
+    let budget = world
+        .model
+        .structure()
+        .version_by_name("Budget")
+        .unwrap()
+        .id;
+    let typed = world.ok(world.flag, "ITEM(Versions) = Versions.Budget");
+    let TExpr::Binary { lhs, rhs, .. } = &typed else {
+        panic!("expected a comparison, got {typed:?}");
+    };
+    assert_eq!(
+        **rhs,
+        TExpr::VersionConst {
+            version: budget,
+            span: span(17, 32),
+        }
+    );
+    assert_eq!(rhs.vty(), ValueType::Item(ListId::VERSIONS));
+    let TExpr::Call { func, args, ty, .. } = &**lhs else {
+        panic!("expected a call, got {lhs:?}");
+    };
+    assert_eq!(
+        (*func, *ty),
+        (FuncId::Item, ValueType::Item(ListId::VERSIONS))
+    );
+    assert_eq!(
+        args[0],
+        TExpr::ListRef {
+            list: ListId::VERSIONS,
+            span: span(5, 13)
+        }
+    );
+    // FINDITEM and ISFIRSTOCCURRENCE work on the lists of the model only.
+    let error = &world.errors(world.flag, "ISFIRSTOCCURRENCE(Region, Versions)")[0];
+    assert_eq!(error.code, "formula.unknown_name");
+    assert_eq!(
+        world
+            .error("ITEM(Versionz) = Versions.Actual")
+            .suggestion
+            .as_deref(),
+        Some("Versions")
+    );
+    assert_eq!(
+        world.errors(world.flag, "ITEM(Tim) = Time.'Jan 26'")[0]
+            .suggestion
+            .as_deref(),
+        Some("Time")
+    );
+
+    // The names of the versions are checked as other names are.
+    let error = world.errors(world.flag, "ITEM(Versions) = Versions.Budgt");
+    assert_eq!(error[0].code, "formula.unknown_name");
+    assert_eq!(error[0].suggestion.as_deref(), Some("Budget"));
+}
+
+#[test]
+fn item_of_time_is_a_period_at_the_level_of_the_target() {
+    let mut world = World::new();
+    let typed = world.ok(world.period, "ITEM(Time)");
+    assert_eq!(typed.vty(), ValueType::Period(TimeLevel::Month));
+    assert_eq!(
+        world.ok(world.flag, "ITEM(Time) = Time.'Jan 26'").vty(),
+        ValueType::Boolean
+    );
+    assert_eq!(
+        world.ok(world.flag, "ITEM(time) = Time.'Jan 26'").vty(),
+        ValueType::Boolean
+    );
+
+    // A line item that rolls up to years has years.
+    let calc = world.calc;
+    let yearly = world.add(
+        calc,
+        "Yearly",
+        Format::TimePeriod {
+            level: TimeLevel::Year,
+        },
+    );
+    world
+        .model
+        .apply(Command::UpdateLineItem {
+            id: yearly,
+            patch: openplan_engine::LineItemPatch {
+                time_scale: Some(TimeScale::Level(TimeLevel::Year)),
+                ..Default::default()
+            },
+        })
+        .unwrap();
+    assert_eq!(
+        world.ok(yearly, "ITEM(Time)").vty(),
+        ValueType::Period(TimeLevel::Year)
+    );
+    let error = &world.errors(world.period, "ITEM(Time) + 1")[0];
+    assert_eq!(error.code, "formula.type_mismatch");
+    assert!(
+        error.message.contains("Time period (month)"),
+        "{}",
+        error.message
+    );
+
+    // Without a Time dimension there is no period to be.
+    let pricing = world
+        .model
+        .structure()
+        .module_by_name("Pricing")
+        .unwrap()
+        .id;
+    let target = world.add(
+        pricing,
+        "When",
+        Format::TimePeriod {
+            level: TimeLevel::Month,
+        },
+    );
+    let errors = world.errors(target, "ITEM(Time)");
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].code, "formula.dimension");
+    assert_eq!(at(&errors[0]), span(5, 9));
+    let untimed = world.add(
+        calc,
+        "Untimed",
+        Format::TimePeriod {
+            level: TimeLevel::Month,
+        },
+    );
+    world
+        .model
+        .apply(Command::UpdateLineItem {
+            id: untimed,
+            patch: openplan_engine::LineItemPatch {
+                time_scale: Some(TimeScale::None),
+                ..Default::default()
+            },
+        })
+        .unwrap();
+    assert_eq!(
+        world.errors(untimed, "ITEM(Time)")[0].code,
+        "formula.dimension"
+    );
+}
+
+#[test]
+fn blank_next_to_a_failed_operand_adds_no_second_error() {
+    let world = World::new();
+    for (target, src) in [
+        (world.flag, "BLANK = Nope"),
+        (world.flag, "Nope = BLANK"),
+        (world.num, "OFFSET(Nope, 1, BLANK)"),
+        (world.num, "IF Flag THEN BLANK ELSE Nope"),
+        (world.num, "IF Flag THEN Nope ELSE BLANK"),
+        (world.flag, "IF Flag THEN BLANK ELSE Nope = 1"),
+    ] {
+        let errors = world.errors(target, src);
+        assert_eq!(errors.len(), 1, "{src}: {errors:?}");
+        assert_eq!(errors[0].code, "formula.unknown_name", "{src}");
+    }
+}
+
+#[test]
+fn quoted_names_are_not_function_names() {
+    let world = World::new();
+    let error = world.error("'ABS'(1)");
+    assert_eq!(error.code, "formula.unknown_function");
+    assert_eq!(at(&error), span(0, 5));
+    assert_eq!(error.suggestion.as_deref(), Some("ABS"));
+    assert!(error.message.contains("quote"), "{}", error.message);
+    assert_eq!(
+        world.error("'Round'(1, 2)").suggestion.as_deref(),
+        Some("ROUND")
+    );
+}
+
+#[test]
+fn every_bad_argument_of_a_call_is_reported() {
+    let world = World::new();
+    let errors = world.errors(world.num, "POWER(Txt, Flag)");
+    let found: Vec<_> = errors.iter().map(|e| (e.code, e.start, e.end)).collect();
+    assert_eq!(
+        found,
+        [
+            ("formula.type_mismatch", 6, 9),
+            ("formula.type_mismatch", 11, 15)
+        ]
+    );
+    assert!(errors[0].message.starts_with("Argument 1 of POWER"));
+    assert!(errors[1].message.starts_with("Argument 2 of POWER"));
+    // The good arguments in between say nothing.
+    let errors = world.errors(world.num, "MIN(Txt, 1, Flag, 2)");
+    assert_eq!(errors.len(), 2, "{errors:?}");
+}
+
 mod function_table {
     use super::*;
 
@@ -1851,69 +2091,6 @@ mod function_table {
         assert_eq!(arity("PMT"), (3, 3));
         assert_eq!(arity("PV"), (3, 3));
         assert_eq!(arity("FV"), (4, 4));
-    }
-
-    #[test]
-    fn check_rejects_what_the_table_does_not_accept() {
-        let world = World::new();
-        let structure = world.model.structure();
-        let number = ArgType::Value(ValueType::Number);
-        let text = ArgType::Value(ValueType::Text);
-
-        assert_eq!(
-            functions::check(structure, FuncId::Abs, &[number]),
-            Ok(ValueType::Number)
-        );
-        let error = functions::check(structure, FuncId::Abs, &[text]).unwrap_err();
-        assert_eq!(error.arg, Some(0));
-        assert_eq!(
-            error.message,
-            "Argument 1 of ABS must be a Number, but is Text."
-        );
-        let error = functions::check(structure, FuncId::Abs, &[number, number]).unwrap_err();
-        assert_eq!(error.arg, None);
-        assert_eq!(error.message, "ABS takes 1 argument, but 2 were given.");
-        let list = ArgType::List(world.products);
-        assert_eq!(
-            functions::check(structure, FuncId::Item, &[list]),
-            Ok(ValueType::Item(world.products))
-        );
-        assert!(functions::check(structure, FuncId::Item, &[number]).is_err());
-        assert!(functions::check(structure, FuncId::Abs, &[list]).is_err());
-        assert_eq!(
-            functions::check(
-                structure,
-                FuncId::Round,
-                &[number, number, ArgType::Word(Word::Up)]
-            ),
-            Ok(ValueType::Number)
-        );
-        assert!(
-            functions::check(
-                structure,
-                FuncId::Round,
-                &[number, number, ArgType::Word(Word::Ascending)]
-            )
-            .is_err()
-        );
-        assert!(functions::check(structure, FuncId::Abs, &[ArgType::Word(Word::Up)]).is_err());
-        assert_eq!(
-            functions::check(structure, FuncId::Min, &[number; 6]),
-            Ok(ValueType::Number)
-        );
-        let items = ArgType::Value(ValueType::Item(world.regions));
-        assert_eq!(
-            functions::check(structure, FuncId::Previous, &[items]),
-            Ok(ValueType::Item(world.regions))
-        );
-        assert_eq!(
-            functions::check(
-                structure,
-                FuncId::Period,
-                &[ArgType::Value(ValueType::Date)]
-            ),
-            Ok(ValueType::Period(TimeLevel::Month))
-        );
     }
 
     #[test]
