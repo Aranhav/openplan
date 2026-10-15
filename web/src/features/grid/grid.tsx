@@ -714,6 +714,7 @@ export function Grid({
                         label={cellLabel(reader, editorCell.pos.row, editorCell.pos.col) ?? label}
                         initial={editorCell.initial}
                         align={editorTarget.lineItem.format.type === "number" ? "right" : "left"}
+                        entered={editorCell.entered}
                         options={listOptions(editorTarget.lineItem.format, reference)}
                         currentItem={editorValue.value.t === "item" ? editorValue.value.v : null}
                         currentDate={editorValue.value.t === "date" ? editorValue.value.v : null}

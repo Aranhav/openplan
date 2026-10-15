@@ -23,8 +23,16 @@ import { useCellEdits } from "./use-cell-edits"
 /** The most cells one paste, fill, clear or copy takes. */
 const MAX_CELLS = 10_000
 
-/** What the open editor is for: the cell, the kind of editor and the text it opens with. */
-type EditorState = { pos: Pos; kind: "text" | "list" | "date"; initial: string }
+/**
+ * What the open editor is for: the cell, the kind of editor and the text it opens with, and
+ * whether it was opened by typing over the value (`entered`) rather than on the value.
+ */
+type EditorState = {
+  pos: Pos
+  kind: "text" | "list" | "date"
+  initial: string
+  entered: boolean
+}
 
 type Options = {
   modelId: string
@@ -164,6 +172,7 @@ export function useGridEditing({
       pos,
       kind: format.type === "list" ? "list" : format.type === "date" ? "date" : "text",
       initial: typed ?? (format.type === "list" ? "" : editText(shown.value, format, shown.text)),
+      entered: typed !== undefined,
     })
   }
 

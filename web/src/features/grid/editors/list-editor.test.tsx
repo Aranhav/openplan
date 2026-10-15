@@ -94,15 +94,43 @@ describe("ListEditor", () => {
 
     await userEvent.keyboard("{ArrowDown}{Enter}")
 
-    expect(onPick).toHaveBeenCalledExactlyOnceWith("r-apac", null)
+    expect(onPick).toHaveBeenCalledExactlyOnceWith("r-apac", "down")
   })
 
-  it("picks the item whose code was typed", async () => {
+  it("picks with Shift+Enter and moves up", async () => {
+    const { onPick } = setup()
+
+    await userEvent.keyboard("{ArrowDown}{Shift>}{Enter}{/Shift}")
+
+    expect(onPick).toHaveBeenCalledExactlyOnceWith("r-apac", "up")
+  })
+
+  it("picks the item whose code was typed, and moves down", async () => {
     const { onPick } = setup()
 
     await userEvent.keyboard("eu{Enter}")
 
-    expect(onPick).toHaveBeenCalledExactlyOnceWith("r-emea", null)
+    expect(onPick).toHaveBeenCalledExactlyOnceWith("r-emea", "down")
+  })
+
+  it("stays on the cell after a click, which has no direction", async () => {
+    const { onPick } = setup()
+
+    await userEvent.keyboard("{ArrowDown}")
+    await userEvent.click(screen.getByRole("option", { name: /Latin America/ }))
+
+    expect(onPick).toHaveBeenCalledExactlyOnceWith("r-latam", null)
+  })
+
+  it("does not carry the direction of an Enter that found nothing to a click after it", async () => {
+    const { onPick, search } = setup()
+
+    await userEvent.keyboard("zzz{Enter}")
+    expect(onPick).not.toHaveBeenCalled()
+    await userEvent.clear(search)
+    await userEvent.click(screen.getByRole("option", { name: /North America/ }))
+
+    expect(onPick).toHaveBeenCalledExactlyOnceWith("r-na", null)
   })
 
   it("picks the highlighted item with Tab and moves right", async () => {
@@ -129,7 +157,7 @@ describe("ListEditor", () => {
     ).toBeInTheDocument()
     await userEvent.keyboard("{Enter}")
 
-    expect(onPick).toHaveBeenCalledExactlyOnceWith("r-na", null)
+    expect(onPick).toHaveBeenCalledExactlyOnceWith("r-na", "down")
   })
 
   it("gives up with Escape", async () => {

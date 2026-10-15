@@ -10,6 +10,12 @@ export type TextEditorProps = {
   /** Names the input for assistive technology. */
   label: string
   align: "left" | "right"
+  /**
+   * The editor was opened by typing over the value, so the arrow keys save and move on, as in
+   * Excel, until F2 switches to editing the value, where they move the caret. Opened on the
+   * value (F2, Enter, a double click) it is the other way round.
+   */
+  entered?: boolean
   /** Enter or Tab: saves the text and moves the selection. Answers whether the text was taken. */
   onCommit: (text: string, move: Direction) => boolean
   /** Escape. */
@@ -27,12 +33,14 @@ export type TextEditorProps = {
 
 /**
  * The editor of a cell that takes typed text: Enter saves and moves down, Tab moves right (with
- * Shift the other way), Escape gives up, and leaving the input hands over what was typed.
+ * Shift the other way), Escape gives up, F2 switches between typing and editing, and leaving the
+ * input hands over what was typed.
  */
 export function TextEditor({
   initial,
   label,
   align,
+  entered = false,
   onCommit,
   onCancel,
   onLeave,
@@ -42,6 +50,7 @@ export function TextEditor({
   // Saving or giving up closes the editor, and closing it blurs the input: once is enough.
   const settled = useRef(false)
   const [invalid, setInvalid] = useState(false)
+  const [entering, setEntering] = useState(entered)
 
   const open = useCallback(
     (input: HTMLInputElement | null) => {
@@ -55,8 +64,11 @@ export function TextEditor({
     if (onKey?.(event)) {
       return
     }
-    const command = resolveKey(keyInput(event.nativeEvent), "edit")
-    if (command.type === "cancel") {
+    const command = resolveKey(keyInput(event.nativeEvent), entering ? "enter" : "edit")
+    if (command.type === "switchMode") {
+      event.preventDefault()
+      setEntering((now) => !now)
+    } else if (command.type === "cancel") {
       event.preventDefault()
       settled.current = true
       onCancel()

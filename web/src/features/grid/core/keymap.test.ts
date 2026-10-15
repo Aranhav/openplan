@@ -336,12 +336,62 @@ describe("resolveKey in edit mode", () => {
       "Delete",
       "Backspace",
       " ",
-      "F2",
       "a",
       "7",
     ]) {
       expect(edit(key)).toEqual(none)
     }
+  })
+
+  it("switches to entering on F2, which Excel does too", () => {
+    expect(edit("F2")).toEqual({ type: "switchMode" })
+    expect(edit("F2", { ctrlKey: true })).toEqual(none)
+    expect(edit("F2", { altKey: true })).toEqual(none)
+  })
+})
+
+describe("resolveKey while a cell is being typed into (enter mode)", () => {
+  const enter = (key: string, mods?: Mods) => resolve(key, "enter", mods)
+
+  it.each([
+    ["ArrowUp", "up"],
+    ["ArrowDown", "down"],
+    ["ArrowLeft", "left"],
+    ["ArrowRight", "right"],
+  ] as const)("commits and moves %s on %s", (key, move) => {
+    expect(enter(key)).toEqual({ type: "commit", move })
+  })
+
+  it.each([
+    ["Shift", { shiftKey: true }],
+    ["Ctrl", { ctrlKey: true }],
+    ["Command", { metaKey: true }],
+    ["Alt", { altKey: true }],
+  ] as const)("leaves an arrow with %s to the input", (_name, mods) => {
+    expect(enter("ArrowDown", mods)).toEqual(none)
+    expect(enter("ArrowLeft", mods)).toEqual(none)
+  })
+
+  it("keeps the keys of edit mode: Enter, Tab and Escape", () => {
+    expect(enter("Enter")).toEqual({ type: "commit", move: "down" })
+    expect(enter("Enter", { shiftKey: true })).toEqual({ type: "commit", move: "up" })
+    expect(enter("Tab")).toEqual({ type: "commit", move: "right" })
+    expect(enter("Escape")).toEqual({ type: "cancel" })
+  })
+
+  it("switches to editing on F2", () => {
+    expect(enter("F2")).toEqual({ type: "switchMode" })
+  })
+
+  it("leaves Home, End, Delete and typing to the input", () => {
+    for (const key of ["Home", "End", "Delete", "Backspace", "a", " "]) {
+      expect(enter(key)).toEqual(none)
+    }
+  })
+
+  it("ignores every key while an input method is composing", () => {
+    expect(enter("ArrowDown", { isComposing: true })).toEqual(none)
+    expect(enter("Enter", { isComposing: true })).toEqual(none)
   })
 })
 

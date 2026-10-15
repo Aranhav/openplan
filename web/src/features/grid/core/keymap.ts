@@ -27,8 +27,13 @@ export function keyInput(event: KeyInput & { keyCode?: number }): KeyInput {
   }
 }
 
-/** `navigate` while cells are selected, `edit` while a cell editor has focus. */
-export type KeyMode = "navigate" | "edit"
+/**
+ * `navigate` while cells are selected. In an editor, `enter` while the cell is being typed into
+ * (the editor was opened by typing over the value), where the arrow keys save and move on as in
+ * Excel, and `edit` while its value is being edited (opened by F2, Enter or a double click),
+ * where they move the caret.
+ */
+export type KeyMode = "navigate" | "enter" | "edit"
 
 export type GridCommand =
   /** Not a grid key: leave the event to the browser or the editor. */
@@ -51,6 +56,8 @@ export type GridCommand =
   /** Save the editor's text, close it and move the selection. */
   | { type: "commit"; move: Direction }
   | { type: "cancel" }
+  /** Between entering and editing, in an editor: F2. */
+  | { type: "switchMode" }
   | { type: "toggle" }
   | { type: "clear" }
   | { type: "copy" }
@@ -78,7 +85,23 @@ export function resolveKey(event: KeyInput, mode: KeyMode): GridCommand {
   if (event.isComposing) {
     return NONE
   }
-  return mode === "edit" ? resolveEditKey(event) : resolveNavigateKey(event)
+  switch (mode) {
+    case "navigate":
+      return resolveNavigateKey(event)
+    case "enter":
+      return resolveEnterKey(event)
+    case "edit":
+      return resolveEditKey(event)
+  }
+}
+
+/** Typing into a cell: the arrow keys save and move, unlike editing a value. */
+function resolveEnterKey(event: KeyInput): GridCommand {
+  const arrow = ARROWS.get(event.key)
+  if (arrow && !event.shiftKey && !hasShortcutModifier(event)) {
+    return { type: "commit", move: arrow }
+  }
+  return resolveEditKey(event)
 }
 
 function resolveEditKey(event: KeyInput): GridCommand {
@@ -89,6 +112,8 @@ function resolveEditKey(event: KeyInput): GridCommand {
     return NONE
   }
   switch (event.key) {
+    case "F2":
+      return { type: "switchMode" }
     case "Enter":
       return { type: "commit", move: event.shiftKey ? "up" : "down" }
     case "Tab":

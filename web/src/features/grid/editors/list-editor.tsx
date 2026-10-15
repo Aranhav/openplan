@@ -1,5 +1,5 @@
 import { Check } from "lucide-react"
-import { type KeyboardEvent, useState } from "react"
+import { type KeyboardEvent, useRef, useState } from "react"
 import {
   Command,
   CommandEmpty,
@@ -20,7 +20,10 @@ export type ListEditorProps = {
   current: string | null
   /** The text that opened the editor, when the cell was typed into. */
   initialSearch: string
-  /** An item was chosen; `move` is where the selection goes, or null to stay. */
+  /**
+   * An item was chosen; `move` is where the selection goes: down for Enter, up for Shift+Enter,
+   * right and left for Tab, and none for a click.
+   */
   onPick: (id: string, move: Direction | null) => void
   /** Escape. */
   onCancel: () => void
@@ -57,8 +60,18 @@ export function ListEditor({
 }: ListEditorProps) {
   const [search, setSearch] = useState(initialSearch)
   const [highlighted, setHighlighted] = useState(current ?? "")
+  // Enter picks through the list's own selection, which does not say how it was made.
+  const enterMove = useRef<"up" | "down" | null>(null)
 
   function handleKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Enter" && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      enterMove.current = event.shiftKey ? "up" : "down"
+      // The list picks while this key is handled, if there is anything to pick; a later pick,
+      // with the pointer, must not take the direction of an Enter that found nothing.
+      queueMicrotask(() => {
+        enterMove.current = null
+      })
+    }
     if (event.key === "Tab" && !event.ctrlKey && !event.metaKey && !event.altKey) {
       event.preventDefault()
       if (highlighted !== "") {
@@ -116,7 +129,11 @@ export function ListEditor({
                   className="group"
                   value={option.id}
                   keywords={option.code ? [option.name, option.code] : [option.name]}
-                  onSelect={() => onPick(option.id, null)}
+                  onSelect={() => {
+                    const move = enterMove.current
+                    enterMove.current = null
+                    onPick(option.id, move)
+                  }}
                 >
                   <span className="flex-1 truncate">{option.name}</span>
                   {option.code && (

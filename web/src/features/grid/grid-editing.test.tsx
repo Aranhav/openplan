@@ -578,6 +578,17 @@ describe("list cells", () => {
       expect(bodies).toEqual([{ edits: [written("li-region", 1, { t: "item", v: "r-apac" })] }]),
     )
     expect(within(cellAt(grid, 1, REGION)).getByText("Asia Pacific")).toBeInTheDocument()
+    expectActive(grid, 2, REGION)
+  })
+
+  it("pick with Enter and move down, with Shift+Enter and move up", async () => {
+    const { grid, bodies } = await setup()
+    await select(grid, 2, REGION)
+
+    await userEvent.keyboard("{Enter}{ArrowDown}{Shift>}{Enter}{/Shift}")
+
+    await waitFor(() => expect(bodies).toHaveLength(1))
+    expectActive(grid, 1, REGION)
   })
 
   it("open with the typed text as the search", async () => {
@@ -765,5 +776,58 @@ describe("undo and redo", () => {
 
     expect(bodies).toHaveLength(1)
     expect(screen.getByRole("textbox")).toBeInTheDocument()
+  })
+})
+
+describe("typing into a cell and the arrow keys", () => {
+  it.each([
+    ["{ArrowDown}", [1, BUDGET], [2, BUDGET]],
+    ["{ArrowUp}", [1, BUDGET], [0, BUDGET]],
+    ["{ArrowRight}", [1, BUDGET], [1, REGION]],
+    ["{ArrowLeft}", [1, NOTES], [1, ACTIVE]],
+  ] as const)("saves a value that was typed and moves on %s", async (key, from, to) => {
+    const { grid, bodies } = await setup()
+    await select(grid, from[0], from[1])
+
+    await userEvent.keyboard(`5${key}`)
+
+    await waitFor(() => expect(bodies).toHaveLength(1))
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument()
+    expectActive(grid, to[0], to[1])
+  })
+
+  it("moves the caret instead when the editor was opened on the value", async () => {
+    const { grid, bodies } = await setup()
+    await select(grid, 1, BUDGET)
+
+    await userEvent.keyboard("{F2}{ArrowLeft}{ArrowDown}")
+
+    expect(screen.getByRole("textbox")).toBeInTheDocument()
+    expect(bodies).toEqual([])
+    expectActive(grid, 1, BUDGET)
+  })
+
+  it("moves the caret instead when the editor was opened with Enter or a double click", async () => {
+    const { grid } = await setup()
+    await select(grid, 1, NOTES)
+    await userEvent.keyboard("{Enter}{ArrowLeft}")
+    expect(screen.getByRole("textbox")).toBeInTheDocument()
+    await userEvent.keyboard("{Escape}")
+
+    await userEvent.dblClick(cellAt(grid, 2, NOTES))
+    await userEvent.keyboard("{ArrowUp}")
+
+    expect(screen.getByRole("textbox")).toBeInTheDocument()
+  })
+
+  it("lets F2 turn typing into editing, so the arrows move the caret", async () => {
+    const { grid, bodies } = await setup()
+    await select(grid, 1, NOTES)
+
+    await userEvent.keyboard("abc{F2}{ArrowLeft}{ArrowDown}")
+
+    expect(screen.getByRole("textbox")).toHaveValue("abc")
+    expect(bodies).toEqual([])
+    expectActive(grid, 1, NOTES)
   })
 })

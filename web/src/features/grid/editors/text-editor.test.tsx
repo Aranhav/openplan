@@ -32,6 +32,66 @@ function addOutside() {
   return outside
 }
 
+describe("TextEditor when it was opened by typing", () => {
+  it.each([
+    ["{ArrowDown}", "down"],
+    ["{ArrowUp}", "up"],
+    ["{ArrowLeft}", "left"],
+    ["{ArrowRight}", "right"],
+  ])("saves the text and moves on %s, as Excel does", async (keys, move) => {
+    const { onCommit } = setup({ entered: true })
+
+    await userEvent.keyboard(`5${keys}`)
+
+    expect(onCommit).toHaveBeenCalledExactlyOnceWith("12345", move)
+  })
+
+  it("leaves an arrow with Shift, Ctrl or Alt to the text", async () => {
+    const { onCommit, input } = setup({ entered: true })
+
+    await userEvent.keyboard("{Shift>}{ArrowLeft}{/Shift}{Control>}{ArrowLeft}{/Control}")
+
+    expect(onCommit).not.toHaveBeenCalled()
+    expect(input).toHaveFocus()
+  })
+
+  it("keeps the caret keys for the text once F2 has switched to editing", async () => {
+    const { onCommit, input } = setup({ entered: true })
+
+    await userEvent.keyboard("{F2}{ArrowLeft}{ArrowLeft}")
+
+    expect(onCommit).not.toHaveBeenCalled()
+    expect((input as HTMLInputElement).selectionStart).toBe(2)
+  })
+
+  it("goes back to entering on a second F2", async () => {
+    const { onCommit } = setup({ entered: true })
+
+    await userEvent.keyboard("{F2}{F2}{ArrowDown}")
+
+    expect(onCommit).toHaveBeenCalledExactlyOnceWith("1234", "down")
+  })
+})
+
+describe("TextEditor when it was opened on the value", () => {
+  it("moves the caret on the arrows instead of saving", async () => {
+    const { onCommit, input } = setup()
+
+    await userEvent.keyboard("{ArrowLeft}{ArrowLeft}{ArrowDown}{ArrowUp}")
+
+    expect(onCommit).not.toHaveBeenCalled()
+    expect(input).toHaveFocus()
+  })
+
+  it("switches to entering on F2, where the arrows save", async () => {
+    const { onCommit } = setup()
+
+    await userEvent.keyboard("{F2}{ArrowDown}")
+
+    expect(onCommit).toHaveBeenCalledExactlyOnceWith("1234", "down")
+  })
+})
+
 describe("TextEditor", () => {
   it("opens focused on its text with the caret at the end", () => {
     const { input } = setup()

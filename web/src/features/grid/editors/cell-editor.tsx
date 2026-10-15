@@ -12,6 +12,8 @@ export type CellEditorProps = {
   /** The text the editor opens with: the value, or what was typed to open it. */
   initial: string
   align: "left" | "right"
+  /** The editor was opened by typing over the value (see `TextEditor`). */
+  entered: boolean
   /** The items of the list, for a list cell. */
   options: readonly ListOption[]
   /** The item a list cell holds. */
@@ -31,6 +33,7 @@ export function CellEditor({
   label,
   initial,
   align,
+  entered,
   options,
   currentItem,
   currentDate,
@@ -70,6 +73,7 @@ export function CellEditor({
           label={label}
           initial={initial}
           align={align}
+          entered={entered}
           onCommit={onText}
           onCancel={onCancel}
           onLeave={onLeave}
