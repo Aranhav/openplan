@@ -113,11 +113,15 @@ describe("the skip link", () => {
     const skip = screen.getByRole("link", { name: "Skip to content" })
     expect(skip).toHaveFocus()
     expect(skip).toHaveClass("sr-only", "focus:not-sr-only")
+    expect(skip).toHaveAttribute("href", "#content")
     await typist.keyboard("{Enter}")
 
-    const main = screen.getByRole("main")
-    expect(main).toHaveFocus()
-    expect(main).toContainElement(screen.getByRole("heading", { level: 1, name: "Models" }))
+    // Past the header too, which sits in <main> with the search button.
+    const content = document.getElementById("content") as HTMLElement
+    expect(content).toHaveFocus()
+    expect(screen.getByRole("main")).toContainElement(content)
+    expect(content).toContainElement(screen.getByRole("heading", { level: 1, name: "Models" }))
+    expect(content).not.toContainElement(screen.getByRole("button", { name: /^Search/ }))
     // Following it is not a navigation: Back still leaves the page.
     expect(router.state.location.hash).toBe("")
   })

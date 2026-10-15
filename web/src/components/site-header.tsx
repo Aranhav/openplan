@@ -1,6 +1,6 @@
 import { Link, useMatches, useParams } from "@tanstack/react-router"
 import { Search } from "lucide-react"
-import { type ReactNode, useState } from "react"
+import { type ReactNode, useRef, useState } from "react"
 import { CommandMenu } from "@/components/command-menu"
 import {
   Breadcrumb,
@@ -28,12 +28,14 @@ const IS_APPLE = /Mac|iPhone|iPad/.test(navigator.userAgent)
 
 export function SiteHeader() {
   const [searching, setSearching] = useState(false)
+  const searchButton = useRef<HTMLButtonElement>(null)
   return (
     <header className="sticky top-0 z-10 flex h-14 shrink-0 items-center gap-2 border-b bg-background px-4">
       <SidebarTrigger className="-ml-1" />
       <Separator orientation="vertical" className="mr-2 data-[orientation=vertical]:h-4" />
       <Breadcrumbs />
       <Button
+        ref={searchButton}
         variant="outline"
         size="sm"
         className="ml-auto justify-between gap-2 text-muted-foreground md:w-56"
@@ -46,7 +48,7 @@ export function SiteHeader() {
         </span>
         <Kbd className="hidden md:inline-flex">{IS_APPLE ? "⌘K" : "Ctrl K"}</Kbd>
       </Button>
-      <CommandMenu open={searching} onOpenChange={setSearching} />
+      <CommandMenu open={searching} onOpenChange={setSearching} searchButton={searchButton} />
     </header>
   )
 }

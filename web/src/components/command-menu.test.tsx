@@ -250,3 +250,60 @@ describe("the command palette", () => {
     expect(await within(palette).findByRole("option", { name: "Revenue plan" })).toBeVisible()
   })
 })
+
+describe("the command palette's focus", () => {
+  it("returns to the element that opened it when it is dismissed", async () => {
+    mockSession()
+    mockModels()
+    const typist = userEvent.setup()
+    renderApp(`/w/${workspace.id}`)
+    const members = await screen.findByRole("link", { name: "Members" })
+    members.focus()
+    await openPalette(typist)
+    await typist.keyboard("{Escape}")
+
+    await waitFor(() => expect(members).toHaveFocus())
+  })
+
+  it("returns to the search button when it was opened from there", async () => {
+    mockSession()
+    mockModels()
+    const typist = userEvent.setup()
+    renderApp(`/w/${workspace.id}`)
+    const search = await screen.findByRole("button", { name: /^Search/ })
+    await typist.click(search)
+    await screen.findByRole("dialog", { name: "Command palette" })
+    await typist.keyboard("{Escape}")
+
+    await waitFor(() => expect(search).toHaveFocus())
+  })
+
+  it("goes to the search button when nothing had the focus", async () => {
+    mockSession()
+    mockModels()
+    const typist = userEvent.setup()
+    renderApp(`/w/${workspace.id}`)
+    const search = await screen.findByRole("button", { name: /^Search/ })
+    expect(document.body).toHaveFocus()
+    await openPalette(typist)
+    await typist.keyboard("{Escape}")
+
+    await waitFor(() => expect(search).toHaveFocus())
+  })
+
+  it("goes to the search button when the page that opened it is gone", async () => {
+    mockSession()
+    mockModels()
+    server.use(http.get(`/api/v1/workspaces/${workspace.id}/members`, () => HttpResponse.json([])))
+    const typist = userEvent.setup()
+    const { router } = renderApp(`/w/${workspace.id}`)
+    const card = await screen.findByRole("link", { name: /Revenue plan/ })
+    card.focus()
+    const palette = await openPalette(typist)
+    await typist.click(within(palette).getByRole("option", { name: "Members" }))
+
+    await waitFor(() => expect(router.state.location.pathname).toBe(`/w/${workspace.id}/members`))
+    await waitFor(() => expect(card).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Search/ })).toHaveFocus())
+  })
+})

@@ -25,17 +25,18 @@ export const Route = createFileRoute("/_app")({
   component: AppLayout,
 })
 
-const MAIN_ID = "main"
+// What the skip link jumps to: the page itself, past the header (the search button) in <main>.
+const CONTENT_ID = "content"
 
 function AppLayout() {
   // The sidebar provider saves its state in a cookie; reading it back keeps a collapsed sidebar collapsed.
   return (
     <SidebarProvider defaultOpen={!document.cookie.includes("sidebar_state=false")}>
-      <SkipLink targetId={MAIN_ID} />
+      <SkipLink targetId={CONTENT_ID} />
       <AppSidebar />
-      <SidebarInset id={MAIN_ID} tabIndex={-1} className="min-w-0 outline-none">
+      <SidebarInset className="min-w-0">
         <SiteHeader />
-        <div className="flex-1 p-4 md:p-6">
+        <div id={CONTENT_ID} tabIndex={-1} className="flex-1 p-4 outline-none md:p-6">
           <Outlet />
         </div>
       </SidebarInset>
