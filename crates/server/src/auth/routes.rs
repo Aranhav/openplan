@@ -15,6 +15,7 @@ use uuid::Uuid;
 use crate::{
     app::AppState,
     authz::WorkspaceRole,
+    client_ip::client_ip,
     error::{AppError, AppResult, FieldError},
     extract::ApiJson,
     validate,
@@ -24,7 +25,6 @@ use crate::{
 use super::{CurrentUser, SESSION_COOKIE, clear_cookies, password, session, session_cookies};
 
 const SETUP_LOCK_KEY: i64 = 4242;
-const UNKNOWN_IP: &str = "unknown";
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -227,10 +227,8 @@ pub(crate) async fn login(
     let Ok(email) = validate::email(&body.email) else {
         return Err(AppError::InvalidCredentials);
     };
-    let ip = connect_info.map_or_else(
-        || UNKNOWN_IP.to_string(),
-        |Extension(ConnectInfo(addr))| addr.ip().to_string(),
-    );
+    let peer = connect_info.map(|Extension(ConnectInfo(addr))| addr);
+    let ip = client_ip(&headers, peer, state.config.trusted_proxy_hops);
     let limiter_key = format!("{email}|{ip}");
     state
         .login_limiter

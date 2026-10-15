@@ -4,8 +4,9 @@ use std::net::SocketAddr;
 
 use axum::{
     Extension,
-    extract::ConnectInfo,
-    http::{StatusCode, header},
+    extract::{ConnectInfo, Request},
+    http::{HeaderValue, StatusCode, header},
+    middleware,
 };
 use common::{TestApp, TestResponse};
 use openplan_server::{
@@ -439,6 +440,45 @@ async fn login_rate_limit_is_per_client_ip(pool: PgPool) {
     app.router = from("10.0.0.2:50000");
     let other_ip = login(&mut app, EMAIL, PASSWORD).await;
     assert_eq!(other_ip.status, StatusCode::OK, "{}", other_ip.text);
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn login_rate_limit_keys_on_the_forwarded_client_behind_a_proxy(pool: PgPool) {
+    let config = Config::from_lookup(|name| match name {
+        "DATABASE_URL" => Some("postgres://invalid".to_string()),
+        "OPENPLAN_PUBLIC_URL" => Some("http://localhost:8080".to_string()),
+        "OPENPLAN_TRUSTED_PROXY_HOPS" => Some("1".to_string()),
+        _ => None,
+    })
+    .unwrap();
+    let mut app = TestApp::new(pool.clone());
+    setup_admin(&mut app).await;
+    let router = build_router(AppState::new(pool, config));
+    let proxy: SocketAddr = "10.0.0.1:50000".parse().unwrap();
+    let proxied = |client: &'static str| {
+        router
+            .clone()
+            .layer(Extension(ConnectInfo(proxy)))
+            .layer(middleware::map_request(
+                move |mut request: Request| async move {
+                    request
+                        .headers_mut()
+                        .insert("x-forwarded-for", HeaderValue::from_static(client));
+                    request
+                },
+            ))
+    };
+
+    app.router = proxied("203.0.113.9");
+    for _ in 0..10 {
+        login(&mut app, EMAIL, "not the password").await;
+    }
+    let blocked = login(&mut app, EMAIL, PASSWORD).await;
+    assert_eq!(blocked.status, StatusCode::TOO_MANY_REQUESTS);
+
+    app.router = proxied("203.0.113.10");
+    let other_client = login(&mut app, EMAIL, PASSWORD).await;
+    assert_eq!(other_client.status, StatusCode::OK, "{}", other_client.text);
 }
 
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]

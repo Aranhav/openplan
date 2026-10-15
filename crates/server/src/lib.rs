@@ -1,6 +1,7 @@
 pub mod app;
 pub mod auth;
 pub mod authz;
+pub mod client_ip;
 pub mod config;
 pub mod db;
 pub mod error;

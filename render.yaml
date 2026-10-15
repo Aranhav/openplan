@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: openplan-api
+    runtime: docker
+    dockerfilePath: ./docker/Dockerfile
+    region: singapore
+    plan: free
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: OPENPLAN_PUBLIC_URL
+        sync: false
+      - key: OPENPLAN_LOG
+        value: info
+      # Vercel and Render each append to X-Forwarded-For, so the client is the second entry from the right.
+      - key: OPENPLAN_TRUSTED_PROXY_HOPS
+        value: "2"
