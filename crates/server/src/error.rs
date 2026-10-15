@@ -61,15 +61,22 @@ impl From<FieldError> for AppError {
     }
 }
 
-#[derive(Serialize)]
-struct Problem {
+/// The body of every error response, served as `application/problem+json`.
+#[derive(Serialize, ToSchema)]
+pub struct Problem {
+    /// Always `about:blank`.
     #[serde(rename = "type")]
     kind: &'static str,
+    /// The reason phrase of the HTTP status.
     title: &'static str,
     status: u16,
+    /// A stable code such as `auth.csrf` that clients can match on.
     code: &'static str,
+    /// A sentence for people.
     detail: String,
+    /// What is wrong with each field; only on 422 responses.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
     errors: Option<Vec<FieldError>>,
 }
 

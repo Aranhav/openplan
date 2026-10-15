@@ -1079,6 +1079,51 @@ async fn delete_all_for_user_keeps_other_users_sessions(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn documented_csrf_rejections_match_what_the_routes_do(pool: PgPool) {
+    let mut app = TestApp::new(pool);
+    let document = app.get("/api/openapi.json").await.json;
+    let mut checked = 0;
+
+    for (path, item) in document["paths"].as_object().unwrap() {
+        for method in ["post", "put", "patch", "delete"] {
+            let Some(operation) = item.get(method) else {
+                continue;
+            };
+            let documented = match &operation["responses"]["403"] {
+                Value::Object(response) => {
+                    let description = response.get("description").and_then(Value::as_str);
+                    response.get("$ref").is_some()
+                        || description.is_some_and(|text| text.contains("auth.csrf"))
+                }
+                _ => false,
+            };
+            let concrete_path = path
+                .replace("{id}", &Uuid::nil().to_string())
+                .replace("{user_id}", &Uuid::nil().to_string());
+            // Signing out clears the cookie, so every request sets it again.
+            app.set_cookie("op_session", "any-session");
+            let response = app
+                .request_without_csrf(
+                    method.to_uppercase().parse().unwrap(),
+                    &concrete_path,
+                    Some(json!({})),
+                )
+                .await;
+            let rejected =
+                response.status == StatusCode::FORBIDDEN && response.json["code"] == "auth.csrf";
+            assert_eq!(
+                rejected, documented,
+                "{method} {path}: {} {}",
+                response.status, response.text
+            );
+            checked += 1;
+        }
+    }
+
+    assert!(checked >= 12, "only {checked} mutating routes were checked");
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn openapi_documents_the_auth_routes(pool: PgPool) {
     let mut app = TestApp::new(pool);
 

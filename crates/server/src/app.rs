@@ -79,6 +79,7 @@ pub struct HealthResponse {
 #[utoipa::path(
     get,
     path = "/api/health",
+    tag = "health",
     responses((status = 200, description = "The server is up", body = HealthResponse))
 )]
 pub(crate) async fn health() -> Json<HealthResponse> {

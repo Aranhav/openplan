@@ -349,6 +349,7 @@ pub(crate) async fn update_me(
         (status = 204, description = "The password was changed and the other sessions are signed out"),
         (status = 401, description = "Not signed in (auth.unauthenticated)"),
         (status = 422, description = "The current password is wrong or the new one is invalid (validation)"),
+        (status = 429, description = "Too many wrong current passwords (auth.rate_limited)"),
     )
 )]
 pub(crate) async fn change_password(
