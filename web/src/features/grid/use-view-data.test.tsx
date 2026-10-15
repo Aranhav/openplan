@@ -813,6 +813,54 @@ describe("useViewData load", () => {
     expect(result.current.peek(far)?.cell(505, 2)?.value).toEqual({ t: "number", v: 505002 })
   })
 
+  it("loads a block again when the model's queries were invalidated, and shows what it now holds", async () => {
+    const served = serveViewQuery()
+    const { Wrapper, queryClient } = wrapper()
+    const { result } = renderHook(() => useViewData(MODEL_ID, salesQuery, topLeft), {
+      wrapper: Wrapper,
+    })
+    await waitFor(() => expect(result.current.isFetching).toBe(false))
+    await act(async () => {
+      await result.current.load(far)
+    })
+    expect(result.current.peek(far)?.cell(505, 2)?.value).toEqual({ t: "number", v: 505002 })
+    served.fixture = salesView({ cell: () => numberCell(7) })
+    const before = served.requests.length
+
+    await act(() => queryClient.invalidateQueries({ queryKey: queryKeys.query(MODEL_ID) }))
+    let lookup!: Awaited<ReturnType<typeof result.current.load>>
+    await act(async () => {
+      lookup = await result.current.load(far)
+    })
+
+    expect(lookup.cell(505, 2)?.value).toEqual({ t: "number", v: 7 })
+    expect(served.requests.length).toBeGreaterThan(before)
+  })
+
+  it("peeks at nothing for a block that was invalidated, until it has loaded again", async () => {
+    const served = serveViewQuery()
+    const { Wrapper, queryClient } = wrapper()
+    const { result } = renderHook(() => useViewData(MODEL_ID, salesQuery, topLeft), {
+      wrapper: Wrapper,
+    })
+    await waitFor(() => expect(result.current.isFetching).toBe(false))
+    await act(async () => {
+      await result.current.load(far)
+    })
+    expect(result.current.peek(far)).toBeDefined()
+
+    // Only the blocks on show are read again; the far one stays invalid and cached.
+    await act(() => queryClient.invalidateQueries({ queryKey: queryKeys.query(MODEL_ID) }))
+
+    expect(result.current.peek(far)).toBeUndefined()
+    expect(result.current.peek(topLeft)).toBeDefined()
+    served.fixture = salesView()
+    await act(async () => {
+      await result.current.load(far)
+    })
+    expect(result.current.peek(far)).toBeDefined()
+  })
+
   it("rejects when a block cannot be loaded", async () => {
     server.use(
       http.post("/api/v1/models/:id/query", async ({ request }) => {

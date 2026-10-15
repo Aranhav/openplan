@@ -108,7 +108,10 @@ export type ViewData = ViewShape & {
    * are loaded, and answers with what they hold. For acting on cells that are not on screen.
    */
   load(range: CellRange): Promise<Lookup>
-  /** What `load` would answer, if every block it needs is loaded already, and nothing if not. */
+  /**
+   * What `load` would answer, if every block it needs is loaded already and current, and nothing
+   * if not (a block that was invalidated counts as not loaded).
+   */
   peek(range: CellRange): Lookup | undefined
 }
 
@@ -385,7 +388,8 @@ export function useViewData(modelId: string, query: GridQuery, visible: CellRang
     const loaded: Loaded[] = []
     for (const block of blocksOf(range)) {
       const state = queryClient.getQueryState<QueryResult>(queryKeys.query(modelId, query, block))
-      if (!state?.data) {
+      // Blocks that were invalidated hold what was true before the change.
+      if (!state?.data || state.isInvalidated) {
         return undefined
       }
       loaded.push({
@@ -412,10 +416,9 @@ export function useViewData(modelId: string, query: GridQuery, visible: CellRang
         .refetchQueries({ queryKey: queryKeys.query(modelId, query), type: "active" })
         .then(() => undefined),
     load: async (range) => {
+      // A block that was invalidated is loaded again, one that is current is taken as it is.
       await Promise.all(
-        blocksOf(range).map((block) =>
-          queryClient.ensureQueryData(blockOptions(modelId, query, block)),
-        ),
+        blocksOf(range).map((block) => queryClient.fetchQuery(blockOptions(modelId, query, block))),
       )
       return read(range) ?? EMPTY_LOOKUP
     },

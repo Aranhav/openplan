@@ -374,9 +374,11 @@ export function useGridEditing({
       return undefined
     }
     // The text is needed at once, so the blocks must have loaded already: a selection can reach
-    // well past what is on screen. If they have not, loading them makes the next try work.
+    // well past what is on screen. The cells on show come first, since they are the ones that
+    // are being read again after an edit, with the edit on top; a block that is not on show and
+    // was invalidated is not used, and loading it makes the next try work.
     const source = peek(range)
-    const rows = source && textOfCells(source, range)
+    const rows = (source && textOfCells(source, range)) ?? textOfCells(reader, range)
     if (!rows) {
       toast.error("Some of the selected cells haven't loaded yet. Try copying again in a moment.")
       void load(range).catch(() => undefined)

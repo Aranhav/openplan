@@ -1,6 +1,6 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { http } from "msw"
+import { HttpResponse, http } from "msw"
 import { toast } from "sonner"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
@@ -24,7 +24,8 @@ import {
 } from "@/test/edit-view"
 import { problem } from "@/test/problem"
 import { server } from "@/test/server"
-import { salesView } from "@/test/view-query"
+import { answer, numberCell, salesView } from "@/test/view-query"
+import type { ViewQuery } from "@/features/grid/view-types"
 import { mockViewport } from "@/test/viewport"
 
 vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }))
@@ -159,6 +160,29 @@ describe("copy", () => {
 
     expect(setData).not.toHaveBeenCalled()
     outside.remove()
+  })
+
+  it("copies the cells on show while they are being read again after an edit", async () => {
+    const { grid, served } = await setup()
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    server.use(
+      http.post("/api/v1/models/:id/query", async ({ request }) => {
+        await gate
+        return HttpResponse.json(answer(served.fixture, (await request.json()) as ViewQuery))
+      }),
+    )
+    await select(grid, 1, BUDGET)
+    await userEvent.keyboard("42{Enter}")
+    await waitFor(() => expect(toast.error).not.toHaveBeenCalled())
+    await select(grid, 1, BUDGET)
+
+    const { setData } = copy(grid)
+
+    expect(setData).toHaveBeenCalledExactlyOnceWith("text/plain", "42\n")
+    release()
   })
 
   it("leaves a copy made inside the editor to the editor", async () => {
@@ -431,6 +455,37 @@ describe("paste", () => {
       value: number(7),
     })
     await waitFor(() => expect(toast.success).toHaveBeenCalledExactlyOnceWith("Pasted 1,000 cells"))
+  })
+
+  it("reads cells that an earlier paste changed, even in blocks that are not on show", async () => {
+    const stored = new Map<string, number>()
+    const fixture = salesView({
+      cell: (row) => numberCell(stored.get(`p${row}`) ?? 0),
+    })
+    const { grid, bodies } = await setup({}, fixture)
+    server.use(
+      http.post("/api/v1/models/:id/cells", async ({ request }) => {
+        const body = (await request.json()) as Body
+        bodies.push(body)
+        for (const edit of body.edits) {
+          stored.set(edit.coords[0], (edit.value as { v: number }).v)
+        }
+        return HttpResponse.json({ seq: bodies.length, changed_line_item_ids: [] })
+      }),
+    )
+    await select(grid, 0, 0)
+    await userEvent.keyboard("{Control>}{Shift>}{ArrowDown}{/Shift}{/Control}")
+
+    paste(grid, "7")
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith("Pasted 1,000 cells"), {
+      timeout: 8000,
+    })
+    paste(grid, "0")
+
+    // The first paste put 7 in every cell, so every cell changes, not only those on show.
+    await waitFor(() => expect(bodies).toHaveLength(2), { timeout: 8000 })
+    expect(bodies[1].edits).toHaveLength(1000)
+    expect(bodies[1].edits.every((edit) => (edit.value as { v: number }).v === 0)).toBe(true)
   })
 
   it("clips a block at the last row", async () => {
