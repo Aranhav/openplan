@@ -17,6 +17,9 @@ use crate::{
 const DESCRIPTION_MAX: usize = 500;
 /// The unique index on a model's name within its workspace, compared without case.
 const NAME_INDEX: &str = "models_workspace_name_key";
+/// The columns `ModelDto` decodes, in the order every model query selects them.
+const MODEL_COLUMNS: &str =
+    "id, workspace_id, name, description, mode, calendar, created_by, created_at, updated_at";
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -102,7 +105,9 @@ fn validate_description(raw: &str) -> Result<String, FieldError> {
     Ok(raw.to_string())
 }
 
-/// A clash with another model's name in the workspace is `model.name_taken`.
+/// A clash with another model's name in the workspace is `model.name_taken`. A
+/// missing workspace is `not_found`: it can be deleted after the caller was
+/// authorized for it.
 fn map_model_write_error(err: sqlx::Error) -> AppError {
     match err {
         sqlx::Error::Database(db_err)
@@ -110,6 +115,7 @@ fn map_model_write_error(err: sqlx::Error) -> AppError {
         {
             name_taken()
         }
+        sqlx::Error::Database(db_err) if db_err.is_foreign_key_violation() => AppError::NotFound,
         other => other.into(),
     }
 }
@@ -140,12 +146,12 @@ pub(crate) async fn list_models(
     ApiPath(workspace_id): ApiPath<Uuid>,
 ) -> AppResult<Json<Vec<ModelDto>>> {
     require_workspace_role(&state.db, &user, workspace_id, WorkspaceRole::Viewer).await?;
-    let models = sqlx::query_as::<_, ModelDto>(
-        "SELECT id, workspace_id, name, description, mode, calendar, created_by, created_at, updated_at
+    let models = sqlx::query_as::<_, ModelDto>(&format!(
+        "SELECT {MODEL_COLUMNS}
          FROM models
          WHERE workspace_id = $1
-         ORDER BY updated_at DESC, id DESC",
-    )
+         ORDER BY updated_at DESC, id DESC"
+    ))
     .bind(workspace_id)
     .fetch_all(&state.db)
     .await?;
@@ -182,11 +188,11 @@ pub(crate) async fn create_model(
     validate::collect(vec![name.clone().map(drop), description.clone().map(drop)])?;
     let (name, description) = (name?, description?);
 
-    let model = sqlx::query_as::<_, ModelDto>(
+    let model = sqlx::query_as::<_, ModelDto>(&format!(
         "INSERT INTO models (id, workspace_id, name, description, calendar, created_by)
          VALUES ($1, $2, $3, $4, $5, $6)
-         RETURNING id, workspace_id, name, description, mode, calendar, created_by, created_at, updated_at",
-    )
+         RETURNING {MODEL_COLUMNS}"
+    ))
     .bind(Uuid::now_v7())
     .bind(workspace_id)
     .bind(name)
@@ -217,11 +223,11 @@ pub(crate) async fn get_model(
 ) -> AppResult<Json<ModelDto>> {
     let workspace_id = model_workspace(&state.db, id).await?;
     require_workspace_role(&state.db, &user, workspace_id, WorkspaceRole::Viewer).await?;
-    let model = sqlx::query_as::<_, ModelDto>(
-        "SELECT id, workspace_id, name, description, mode, calendar, created_by, created_at, updated_at
+    let model = sqlx::query_as::<_, ModelDto>(&format!(
+        "SELECT {MODEL_COLUMNS}
          FROM models
-         WHERE id = $1",
-    )
+         WHERE id = $1"
+    ))
     .bind(id)
     .fetch_one(&state.db)
     .await?;
@@ -264,15 +270,15 @@ pub(crate) async fn update_model(
     validate::collect(vec![name.clone().map(drop), description.clone().map(drop)])?;
     let (name, description) = (name?, description?);
 
-    let model = sqlx::query_as::<_, ModelDto>(
+    let model = sqlx::query_as::<_, ModelDto>(&format!(
         "UPDATE models
          SET name = COALESCE($2, name),
              description = COALESCE($3, description),
              mode = COALESCE($4, mode),
              updated_at = now()
          WHERE id = $1
-         RETURNING id, workspace_id, name, description, mode, calendar, created_by, created_at, updated_at",
-    )
+         RETURNING {MODEL_COLUMNS}"
+    ))
     .bind(id)
     .bind(name)
     .bind(description)
@@ -310,4 +316,19 @@ pub(crate) async fn delete_model(
         return Err(AppError::NotFound);
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{Violation, database_error};
+
+    #[test]
+    fn model_write_maps_foreign_key_violation_to_not_found() {
+        // The workspace was deleted after the caller was authorized for it.
+        assert!(matches!(
+            map_model_write_error(database_error(Violation::ForeignKey)),
+            AppError::NotFound
+        ));
+    }
 }
