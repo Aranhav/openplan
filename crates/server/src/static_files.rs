@@ -1,10 +1,10 @@
 use axum::{
     body::Bytes,
-    http::{StatusCode, Uri, header},
+    http::{HeaderValue, Method, StatusCode, Uri, header},
     response::{IntoResponse, Response},
 };
 use rust_embed::RustEmbed;
-use std::borrow::Cow;
+use std::{borrow::Cow, path::Path};
 
 use crate::error::AppError;
 
@@ -18,14 +18,28 @@ const NOT_BUILT: &str = "Web UI not built. Run `pnpm --dir web build`.";
 #[allow_missing = true]
 struct WebAssets;
 
-pub async fn serve(uri: Uri) -> Response {
-    respond::<WebAssets>(uri.path())
+pub async fn serve(method: Method, uri: Uri) -> Response {
+    respond::<WebAssets>(&method, uri.path())
 }
 
-fn respond<A: RustEmbed>(request_path: &str) -> Response {
+/// Whether the last path segment has a file extension, as `robots.txt` does.
+fn names_a_file(path: &str) -> bool {
+    path.rsplit('/')
+        .next()
+        .is_some_and(|segment| Path::new(segment).extension().is_some())
+}
+
+fn respond<A: RustEmbed>(method: &Method, request_path: &str) -> Response {
     let path = request_path.trim_start_matches('/');
     if path == "api" || path.starts_with("api/") {
         return AppError::NotFound.into_response();
+    }
+    if !matches!(*method, Method::GET | Method::HEAD) {
+        let mut response = AppError::MethodNotAllowed.into_response();
+        response
+            .headers_mut()
+            .insert(header::ALLOW, HeaderValue::from_static("GET, HEAD"));
+        return response;
     }
     if let Some(file) = A::get(path) {
         let cache = if path.starts_with("assets/") {
@@ -35,7 +49,7 @@ fn respond<A: RustEmbed>(request_path: &str) -> Response {
         };
         return asset(path, file.data, cache);
     }
-    if path.starts_with("assets/") {
+    if path.starts_with("assets/") || names_a_file(path) {
         return (StatusCode::NOT_FOUND, "Not found").into_response();
     }
     match A::get("index.html") {
@@ -65,6 +79,7 @@ fn asset(name: &str, data: Cow<'static, [u8]>, cache: &'static str) -> Response 
 mod tests {
     use super::*;
     use axum::body::to_bytes;
+    use axum::http::Method;
 
     #[derive(RustEmbed)]
     #[folder = "tests/fixtures/web"]
@@ -73,6 +88,10 @@ mod tests {
     #[derive(RustEmbed)]
     #[folder = "tests/fixtures/web_no_index"]
     struct NotBuilt;
+
+    fn get<A: RustEmbed>(path: &str) -> Response {
+        respond::<A>(&Method::GET, path)
+    }
 
     async fn text(response: Response) -> String {
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
@@ -85,7 +104,7 @@ mod tests {
 
     #[tokio::test]
     async fn hashed_assets_are_cached_immutably() {
-        let response = respond::<Built>("/assets/app.abc123.js");
+        let response = get::<Built>("/assets/app.abc123.js");
 
         assert_eq!(response.status(), StatusCode::OK);
         assert!(header_value(&response, header::CONTENT_TYPE).contains("javascript"));
@@ -95,7 +114,7 @@ mod tests {
 
     #[test]
     fn other_files_are_served_uncached_with_their_mime_type() {
-        let response = respond::<Built>("/favicon.svg");
+        let response = get::<Built>("/favicon.svg");
 
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
@@ -113,7 +132,7 @@ mod tests {
             "/favicon.svg",
             "/assets/app.abc123.js",
         ] {
-            let response = respond::<Built>(path);
+            let response = get::<Built>(path);
 
             assert_eq!(response.status(), StatusCode::OK, "{path}");
             assert_eq!(
@@ -127,7 +146,7 @@ mod tests {
     #[tokio::test]
     async fn client_routes_fall_back_to_index_html() {
         for path in ["/", "/models/123/settings", "/apiary"] {
-            let response = respond::<Built>(path);
+            let response = get::<Built>(path);
 
             assert_eq!(response.status(), StatusCode::OK, "{path}");
             assert_eq!(
@@ -147,7 +166,7 @@ mod tests {
     #[tokio::test]
     async fn api_paths_never_fall_back_to_index_html() {
         for path in ["/api", "/api/v1/nope"] {
-            let response = respond::<Built>(path);
+            let response = get::<Built>(path);
 
             assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
             assert_eq!(
@@ -160,7 +179,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_assets_are_plain_not_found() {
-        let response = respond::<Built>("/assets/missing.js");
+        let response = get::<Built>("/assets/missing.js");
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         assert!(header_value(&response, header::CONTENT_TYPE).starts_with("text/plain"));
@@ -169,9 +188,70 @@ mod tests {
 
     #[tokio::test]
     async fn missing_index_explains_how_to_build_the_web_ui() {
-        let response = respond::<NotBuilt>("/models");
+        let response = get::<NotBuilt>("/models");
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         assert_eq!(text(response).await, NOT_BUILT);
+    }
+    #[tokio::test]
+    async fn only_get_and_head_are_answered() {
+        for method in [Method::POST, Method::PUT, Method::PATCH, Method::DELETE] {
+            for path in ["/", "/models/123", "/favicon.svg", "/assets/app.abc123.js"] {
+                let response = respond::<Built>(&method, path);
+
+                assert_eq!(
+                    response.status(),
+                    StatusCode::METHOD_NOT_ALLOWED,
+                    "{method} {path}"
+                );
+                assert_eq!(
+                    header_value(&response, header::CONTENT_TYPE),
+                    "application/problem+json",
+                    "{method} {path}"
+                );
+                assert_eq!(header_value(&response, header::ALLOW), "GET, HEAD");
+            }
+        }
+        for path in ["/", "/models/123", "/favicon.svg"] {
+            let response = respond::<Built>(&Method::HEAD, path);
+
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn other_methods_on_api_paths_are_still_not_found() {
+        let response = respond::<Built>(&Method::POST, "/api/v1/nope");
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn missing_files_are_not_found_instead_of_index_html() {
+        for path in [
+            "/robots.txt",
+            "/favicon.png",
+            "/nested/data.json",
+            "/.well-known/security.txt",
+        ] {
+            let response = get::<Built>(path);
+
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+            assert!(
+                header_value(&response, header::CONTENT_TYPE).starts_with("text/plain"),
+                "{path}"
+            );
+            assert_eq!(text(response).await, "Not found", "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn dots_outside_the_last_segment_do_not_make_a_file() {
+        for path in ["/releases/v1.2/notes", "/.hidden", "/models/"] {
+            let response = get::<Built>(path);
+
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            assert!(text(response).await.contains("OpenPlan fixture"), "{path}");
+        }
     }
 }

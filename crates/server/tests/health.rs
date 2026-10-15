@@ -123,6 +123,19 @@ async fn vercel_config_sends_the_same_security_headers() {
     );
 }
 
+#[tokio::test]
+async fn posting_to_a_web_app_path_is_problem_json() {
+    let response = TestApp::without_database()
+        .post_raw("/anything", None, "")
+        .await;
+
+    assert_eq!(response.status, StatusCode::METHOD_NOT_ALLOWED);
+    let content_type = response.headers[header::CONTENT_TYPE].to_str().unwrap();
+    assert!(content_type.starts_with("application/problem+json"));
+    assert_eq!(response.json["code"], "method_not_allowed");
+    assert_eq!(response.headers[header::ALLOW], "GET, HEAD");
+}
+
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn migrations_create_tables(pool: PgPool) {
     let count = sqlx::query_scalar::<_, i64>(
