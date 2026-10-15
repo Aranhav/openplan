@@ -24,6 +24,7 @@ chrono.workspace = true
 clap.workspace = true
 cookie.workspace = true
 mime_guess.workspace = true
+openplan-engine.workspace = true
 rand.workspace = true
 rust-embed.workspace = true
 serde.workspace = true

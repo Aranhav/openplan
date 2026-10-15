@@ -1,0 +1,739 @@
+mod common;
+
+use std::time::Duration;
+
+use axum::http::StatusCode;
+use common::TestApp;
+use openplan_engine::{
+    AxisSpec, Calendar, CellEdit, Command, CoordToken, Format, ItemId, ItemSpec, LineItem,
+    LineItemId, LineItemPatch, ListId, Model, ModuleId, SummaryMethod, TimeLevel, TimeScale, Value,
+    VersionsScope,
+};
+use openplan_server::{
+    engine_store::{self, cell_key},
+    error::AppError,
+};
+use serde_json::json;
+use sqlx::{PgPool, types::Json};
+use uuid::Uuid;
+
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+fn calendar() -> Calendar {
+    Calendar {
+        fiscal_year_start_month: 1,
+        first_year: 2026,
+        years: 1,
+        current_month: None,
+    }
+}
+
+/// A model row, and the user who edits it, in a database of their own.
+struct Stored {
+    id: Uuid,
+    user: Uuid,
+}
+
+/// Inserts a user, a workspace and a model with no stored state, as a model created before
+/// the engine existed would be.
+async fn insert_model(pool: &PgPool) -> Stored {
+    let user = Uuid::now_v7();
+    let workspace = Uuid::now_v7();
+    let id = Uuid::now_v7();
+    sqlx::query("INSERT INTO users (id, email, name) VALUES ($1, 'ada@acme.com', 'Ada')")
+        .bind(user)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO workspaces (id, name) VALUES ($1, 'Acme')")
+        .bind(workspace)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO models (id, workspace_id, name, calendar) VALUES ($1, $2, 'Plan', $3)",
+    )
+    .bind(id)
+    .bind(workspace)
+    .bind(Json(
+        json!({ "fiscal_year_start_month": 1, "first_year": 2026, "years": 1 }),
+    ))
+    .execute(pool)
+    .await
+    .unwrap();
+    Stored { id, user }
+}
+
+/// A model row with the state a new model gets, loaded as the engine would hold it.
+async fn stored_model(pool: &PgPool) -> (Stored, Model) {
+    let stored = insert_model(pool).await;
+    engine_store::create_model_state(pool, stored.id, calendar())
+        .await
+        .unwrap();
+    let (model, seq) = engine_store::load(pool, stored.id).await.unwrap();
+    assert_eq!(seq, 0);
+    (stored, model)
+}
+
+/// The line items of the Sales module the tests build.
+struct Plan {
+    products: Vec<ItemId>,
+    sales: ModuleId,
+    units: LineItemId,
+    price: LineItemId,
+    revenue: LineItemId,
+    note: LineItemId,
+}
+
+fn line_item(module: ModuleId, name: &str, format: Format, formula: Option<&str>) -> LineItem {
+    LineItem {
+        id: LineItemId::new(),
+        module,
+        name: name.to_string(),
+        ordinal: 0,
+        format,
+        formula: formula.map(str::to_string),
+        summary: SummaryMethod::Sum,
+        time_summary: None,
+        applies_to: None,
+        time_scale: TimeScale::Module,
+        versions: VersionsScope::Module,
+        notes: String::new(),
+        code: None,
+        read_access_driver: None,
+        write_access_driver: None,
+    }
+}
+
+/// A structure batch: two products and a Sales module over products, months and versions with
+/// typed numbers, a calculated revenue and typed notes.
+fn plan_structure() -> (Plan, Vec<Command>) {
+    let products = ListId::new();
+    let items: Vec<ItemId> = (0..2).map(|_| ItemId::new()).collect();
+    let sales = ModuleId::new();
+    let units = line_item(sales, "Units", Format::number(), None);
+    let price = line_item(sales, "Price", Format::number(), None);
+    let revenue = line_item(sales, "Revenue", Format::number(), Some("Units * Price"));
+    let note = line_item(sales, "Note", Format::Text, None);
+    let plan = Plan {
+        products: items.clone(),
+        sales,
+        units: units.id,
+        price: price.id,
+        revenue: revenue.id,
+        note: note.id,
+    };
+    let commands = vec![
+        Command::CreateList {
+            id: products,
+            name: "Products".to_string(),
+            parent: None,
+            top_level_name: None,
+            numbered: false,
+            production_data: false,
+        },
+        Command::UpsertListItems {
+            list: products,
+            items: items
+                .iter()
+                .zip(["Widget", "Gadget"])
+                .map(|(&id, name)| ItemSpec {
+                    id,
+                    code: None,
+                    name: name.to_string(),
+                    parent: None,
+                })
+                .collect(),
+        },
+        Command::CreateModule {
+            id: sales,
+            name: "Sales".to_string(),
+            axes: vec![
+                AxisSpec::List { list: products },
+                AxisSpec::Time {
+                    level: TimeLevel::Month,
+                    range: None,
+                },
+                AxisSpec::Versions,
+            ],
+            functional_area: String::new(),
+        },
+        Command::CreateLineItem(units),
+        Command::CreateLineItem(price),
+        Command::CreateLineItem(revenue),
+        Command::CreateLineItem(note),
+    ];
+    (plan, commands)
+}
+
+/// The coordinates of a cell of the Sales module.
+fn cell(
+    model: &Model,
+    plan: &Plan,
+    product: usize,
+    month: usize,
+    version: usize,
+) -> Vec<CoordToken> {
+    vec![
+        CoordToken::Item(plan.products[product]),
+        CoordToken::Period(format!("{} 26", MONTHS[month])),
+        CoordToken::Item(ItemId(model.structure().versions()[version].id.0)),
+    ]
+}
+
+fn number_cells(
+    model: &Model,
+    plan: &Plan,
+    line_item: LineItemId,
+    cells: &[(usize, usize, usize, f64)],
+) -> Command {
+    Command::SetCells {
+        line_item,
+        edits: cells
+            .iter()
+            .map(|&(product, month, version, value)| CellEdit {
+                coords: cell(model, plan, product, month, version),
+                value: Value::Number(value),
+            })
+            .collect(),
+    }
+}
+
+/// Every cell of every line item of the Sales module.
+fn snapshot(model: &Model, plan: &Plan) -> Vec<Vec<Value>> {
+    let grid: Vec<Vec<CoordToken>> = (0..plan.products.len())
+        .flat_map(|product| {
+            (0..12).flat_map(move |month| (0..3).map(move |version| (product, month, version)))
+        })
+        .map(|(product, month, version)| cell(model, plan, product, month, version))
+        .collect();
+    [plan.units, plan.price, plan.revenue, plan.note]
+        .into_iter()
+        .map(|line_item| model.read_cells(line_item, &grid).unwrap())
+        .collect()
+}
+
+fn revenue_at(model: &Model, plan: &Plan, coords: Vec<CoordToken>) -> Value {
+    model.read_cells(plan.revenue, &[coords]).unwrap().remove(0)
+}
+
+fn assert_same(loaded: &Model, expected: &Model, plan: &Plan) {
+    assert_eq!(loaded.export_structure(), expected.export_structure());
+    assert_eq!(snapshot(loaded, plan), snapshot(expected, plan));
+}
+
+/// The old values the batch will overwrite, one per edited cell, read before it is applied.
+fn previous_values(model: &Model, cmds: &[Command]) -> Vec<Value> {
+    cmds.iter()
+        .flat_map(|cmd| match cmd {
+            Command::SetCells { line_item, edits } => {
+                let coords: Vec<Vec<CoordToken>> =
+                    edits.iter().map(|edit| edit.coords.clone()).collect();
+                model.read_cells(*line_item, &coords).unwrap()
+            }
+            _ => Vec::new(),
+        })
+        .collect()
+}
+
+/// Applies the batch to the model and records it in the change log, as a model's editor does.
+/// Returns the sequence number of the batch.
+async fn commit(pool: &PgPool, stored: &Stored, model: &mut Model, cmds: Vec<Command>) -> i64 {
+    let previous = previous_values(model, &cmds);
+    model.apply_batch(cmds.clone()).unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    let seq = engine_store::append(&mut tx, stored.id, Some(stored.user), &cmds, &previous)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    seq
+}
+
+async fn count(pool: &PgPool, table: &str, model_id: Uuid) -> i64 {
+    sqlx::query_scalar(&format!("SELECT count(*) FROM {table} WHERE model_id = $1"))
+        .bind(model_id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+async fn setup_admin(app: &mut TestApp) -> String {
+    let response = app
+        .post(
+            "/api/v1/setup",
+            Some(json!({
+                "email": "admin@acme.com",
+                "name": "Ada Admin",
+                "password": "correct horse battery",
+                "workspace_name": "Acme",
+            })),
+        )
+        .await;
+    assert_eq!(response.status, StatusCode::CREATED, "{}", response.text);
+    response.json["workspace"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn new_model_has_state(pool: PgPool) {
+    let mut app = TestApp::new(pool.clone());
+    let workspace_id = setup_admin(&mut app).await;
+
+    let created = app
+        .post(
+            &format!("/api/v1/workspaces/{workspace_id}/models"),
+            Some(json!({ "name": "Plan" })),
+        )
+        .await;
+
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text);
+    let id: Uuid = created.json["id"].as_str().unwrap().parse().unwrap();
+    assert_eq!(count(&pool, "model_structure", id).await, 1);
+    let (model, seq) = engine_store::load(&pool, id).await.unwrap();
+    assert_eq!(seq, 0);
+    let structure = model.structure();
+    let versions: Vec<(&str, bool, bool)> = structure
+        .versions()
+        .iter()
+        .map(|version| (&*version.name, version.is_actual, version.is_current))
+        .collect();
+    assert_eq!(
+        versions,
+        [
+            ("Actual", true, false),
+            ("Budget", false, true),
+            ("Forecast", false, false)
+        ]
+    );
+    assert_eq!(
+        json!({
+            "fiscal_year_start_month": structure.calendar.fiscal_year_start_month,
+            "first_year": structure.calendar.first_year,
+            "years": structure.calendar.years,
+        }),
+        created.json["calendar"]
+    );
+    assert_eq!(structure.calendar.current_month, None);
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn model_without_state_gets_the_default_state_on_first_load(pool: PgPool) {
+    let stored = insert_model(&pool).await;
+    assert_eq!(count(&pool, "model_structure", stored.id).await, 0);
+
+    let (model, seq) = engine_store::load(&pool, stored.id).await.unwrap();
+
+    assert_eq!(seq, 0);
+    assert_eq!(count(&pool, "model_structure", stored.id).await, 1);
+    assert_eq!(model.structure().calendar, calendar());
+    let names: Vec<&str> = model
+        .structure()
+        .versions()
+        .iter()
+        .map(|version| &*version.name)
+        .collect();
+    assert_eq!(names, ["Actual", "Budget", "Forecast"]);
+    let (again, _) = engine_store::load(&pool, stored.id).await.unwrap();
+    assert_eq!(
+        again.export_structure(),
+        model.export_structure(),
+        "the default state is written once, not made up again on every load"
+    );
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn append_then_load_replays(pool: PgPool) {
+    let (stored, mut model) = stored_model(&pool).await;
+    let (plan, structure) = plan_structure();
+    commit(&pool, &stored, &mut model, structure).await;
+    let cells = vec![
+        number_cells(
+            &model,
+            &plan,
+            plan.units,
+            &[(0, 0, 1, 10.0), (1, 2, 1, 4.0)],
+        ),
+        number_cells(&model, &plan, plan.price, &[(0, 0, 1, 3.0), (1, 2, 1, 5.0)]),
+    ];
+    let last = commit(&pool, &stored, &mut model, cells).await;
+
+    let (loaded, seq) = engine_store::load(&pool, stored.id).await.unwrap();
+
+    assert_eq!(seq, last);
+    assert_same(&loaded, &model, &plan);
+    assert_eq!(
+        revenue_at(&loaded, &plan, cell(&loaded, &plan, 0, 0, 1)),
+        Value::Number(30.0)
+    );
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn checkpoint_then_load_equals(pool: PgPool) {
+    let (stored, mut model) = stored_model(&pool).await;
+    let (plan, structure) = plan_structure();
+    commit(&pool, &stored, &mut model, structure).await;
+    let cells = vec![
+        number_cells(
+            &model,
+            &plan,
+            plan.units,
+            &[(0, 0, 1, 10.0), (1, 5, 0, 7.0)],
+        ),
+        number_cells(&model, &plan, plan.price, &[(0, 0, 1, 3.0), (1, 5, 0, 2.0)]),
+        Command::SetCells {
+            line_item: plan.note,
+            edits: vec![CellEdit {
+                coords: cell(&model, &plan, 1, 1, 2),
+                value: Value::Text("rush é".into()),
+            }],
+        },
+    ];
+    let last = commit(&pool, &stored, &mut model, cells).await;
+
+    engine_store::checkpoint(&pool, stored.id, &model, last)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM change_log WHERE model_id = $1")
+        .bind(stored.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (loaded, seq) = engine_store::load(&pool, stored.id).await.unwrap();
+
+    assert_eq!(seq, last);
+    assert_same(&loaded, &model, &plan);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT checkpoint_seq FROM models WHERE id = $1")
+            .bind(stored.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        last
+    );
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn edits_after_checkpoint_survive_restart(pool: PgPool) {
+    let (stored, mut model) = stored_model(&pool).await;
+    let (plan, structure) = plan_structure();
+    commit(&pool, &stored, &mut model, structure).await;
+    let before = vec![
+        number_cells(&model, &plan, plan.units, &[(0, 0, 1, 10.0)]),
+        number_cells(&model, &plan, plan.price, &[(0, 0, 1, 3.0)]),
+    ];
+    let checkpointed = commit(&pool, &stored, &mut model, before).await;
+    engine_store::checkpoint(&pool, stored.id, &model, checkpointed)
+        .await
+        .unwrap();
+
+    let doubled = line_item(plan.sales, "Doubled", Format::number(), Some("Revenue * 2"));
+    commit(
+        &pool,
+        &stored,
+        &mut model,
+        vec![Command::CreateLineItem(doubled)],
+    )
+    .await;
+    let after = vec![
+        number_cells(
+            &model,
+            &plan,
+            plan.units,
+            &[(0, 0, 1, 20.0), (1, 3, 1, 6.0)],
+        ),
+        number_cells(&model, &plan, plan.price, &[(1, 3, 1, 2.0)]),
+    ];
+    let last = commit(&pool, &stored, &mut model, after).await;
+
+    let (loaded, seq) = engine_store::load(&pool, stored.id).await.unwrap();
+
+    assert_eq!(seq, last);
+    assert_same(&loaded, &model, &plan);
+    assert_eq!(
+        revenue_at(&loaded, &plan, cell(&loaded, &plan, 0, 0, 1)),
+        Value::Number(60.0),
+        "revenue is calculated from the edit made after the checkpoint"
+    );
+    assert_eq!(
+        revenue_at(&loaded, &plan, cell(&loaded, &plan, 1, 3, 1)),
+        Value::Number(12.0)
+    );
+}
+
+#[derive(sqlx::FromRow)]
+struct LogRow {
+    kind: String,
+    user_id: Option<Uuid>,
+    line_item_id: Option<Uuid>,
+    cell_key: Option<String>,
+    payload: serde_json::Value,
+}
+
+async fn log_rows(pool: &PgPool, model_id: Uuid, cells: bool) -> Vec<LogRow> {
+    sqlx::query_as::<_, LogRow>(
+        "SELECT kind, user_id, line_item_id, cell_key, payload FROM change_log
+         WHERE model_id = $1 AND (kind = 'cell') = $2 ORDER BY seq",
+    )
+    .bind(model_id)
+    .bind(cells)
+    .fetch_all(pool)
+    .await
+    .unwrap()
+}
+
+fn value_of(payload: &serde_json::Value, side: &str) -> Value {
+    serde_json::from_value(payload[side].clone()).unwrap()
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn audit_rows_have_old_and_new(pool: PgPool) {
+    let (stored, mut model) = stored_model(&pool).await;
+    let (plan, structure) = plan_structure();
+    commit(&pool, &stored, &mut model, structure).await;
+    let first = cell(&model, &plan, 0, 0, 1);
+    let second = cell(&model, &plan, 1, 2, 1);
+    let edits = number_cells(
+        &model,
+        &plan,
+        plan.units,
+        &[(0, 0, 1, 10.0), (1, 2, 1, 20.0)],
+    );
+    commit(&pool, &stored, &mut model, vec![edits]).await;
+    let edit = number_cells(&model, &plan, plan.units, &[(0, 0, 1, 12.0)]);
+    commit(&pool, &stored, &mut model, vec![edit]).await;
+
+    let audit = log_rows(&pool, stored.id, true).await;
+
+    assert_eq!(audit.len(), 3);
+    for row in &audit {
+        assert_eq!(row.kind, "cell");
+        assert_eq!(row.user_id, Some(stored.user));
+        assert_eq!(row.line_item_id, Some(plan.units.0));
+    }
+    assert_eq!(
+        audit[0].cell_key.as_deref(),
+        Some(cell_key(&first).as_str())
+    );
+    assert_eq!(value_of(&audit[0].payload, "old"), Value::Number(0.0));
+    assert_eq!(value_of(&audit[0].payload, "new"), Value::Number(10.0));
+    assert_eq!(
+        audit[1].cell_key.as_deref(),
+        Some(cell_key(&second).as_str())
+    );
+    assert_eq!(value_of(&audit[1].payload, "old"), Value::Number(0.0));
+    assert_eq!(value_of(&audit[1].payload, "new"), Value::Number(20.0));
+    assert_eq!(
+        audit[2].cell_key.as_deref(),
+        Some(cell_key(&first).as_str())
+    );
+    assert_eq!(value_of(&audit[2].payload, "old"), Value::Number(10.0));
+    assert_eq!(value_of(&audit[2].payload, "new"), Value::Number(12.0));
+
+    let batches = log_rows(&pool, stored.id, false).await;
+    let kinds: Vec<&str> = batches.iter().map(|row| row.kind.as_str()).collect();
+    assert_eq!(kinds, ["structure", "cells", "cells"]);
+    for row in &batches {
+        assert_eq!(row.user_id, Some(stored.user));
+        assert_eq!(row.line_item_id, None);
+        assert_eq!(row.cell_key, None);
+    }
+}
+
+async fn chunk_rows(pool: &PgPool, model_id: Uuid) -> Vec<(Uuid, i32)> {
+    sqlx::query_as(
+        "SELECT line_item_id, chunk FROM line_item_data WHERE model_id = $1
+         ORDER BY line_item_id, chunk",
+    )
+    .bind(model_id)
+    .fetch_all(pool)
+    .await
+    .unwrap()
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn checkpoint_replaces_every_stored_chunk(pool: PgPool) {
+    let (stored, mut model) = stored_model(&pool).await;
+    let (plan, structure) = plan_structure();
+    commit(&pool, &stored, &mut model, structure).await;
+    let cells = vec![
+        number_cells(&model, &plan, plan.units, &[(0, 0, 1, 10.0)]),
+        number_cells(&model, &plan, plan.price, &[(0, 0, 1, 3.0)]),
+    ];
+    let last = commit(&pool, &stored, &mut model, cells).await;
+    engine_store::checkpoint(&pool, stored.id, &model, last)
+        .await
+        .unwrap();
+    let first: Vec<Uuid> = chunk_rows(&pool, stored.id)
+        .await
+        .into_iter()
+        .map(|(line_item, _)| line_item)
+        .collect();
+    assert!(first.contains(&plan.units.0) && first.contains(&plan.price.0));
+
+    // Price becomes calculated, so it has no typed cells left; the other rows are chunks of a
+    // line item that no longer exists and a chunk number past the end.
+    let last = commit(
+        &pool,
+        &stored,
+        &mut model,
+        vec![Command::UpdateLineItem {
+            id: plan.price,
+            patch: LineItemPatch {
+                formula: Some(Some("Units * 2".to_string())),
+                ..LineItemPatch::default()
+            },
+        }],
+    )
+    .await;
+    for (line_item, chunk) in [(Uuid::now_v7(), 0), (plan.units.0, 7)] {
+        sqlx::query(
+            "INSERT INTO line_item_data (model_id, line_item_id, chunk, data)
+             VALUES ($1, $2, $3, '\\x00')",
+        )
+        .bind(stored.id)
+        .bind(line_item)
+        .bind(chunk)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    engine_store::checkpoint(&pool, stored.id, &model, last)
+        .await
+        .unwrap();
+
+    let expected: Vec<(Uuid, i32)> = model
+        .export_inputs()
+        .iter()
+        .map(|chunk| (chunk.line_item.0, chunk.chunk as i32))
+        .collect();
+    assert_eq!(chunk_rows(&pool, stored.id).await, expected);
+    assert!(
+        !expected
+            .iter()
+            .any(|&(line_item, _)| line_item == plan.price.0)
+    );
+    assert!(
+        expected
+            .iter()
+            .any(|&(line_item, _)| line_item == plan.units.0)
+    );
+    let (loaded, _) = engine_store::load(&pool, stored.id).await.unwrap();
+    assert_same(&loaded, &model, &plan);
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn append_needs_an_old_value_for_every_edited_cell(pool: PgPool) {
+    let (stored, mut model) = stored_model(&pool).await;
+    let (plan, structure) = plan_structure();
+    commit(&pool, &stored, &mut model, structure).await;
+    let edit = number_cells(
+        &model,
+        &plan,
+        plan.units,
+        &[(0, 0, 1, 10.0), (1, 2, 1, 20.0)],
+    );
+    let before = count(&pool, "change_log", stored.id).await;
+
+    let mut tx = pool.begin().await.unwrap();
+    let result =
+        engine_store::append(&mut tx, stored.id, None, &[edit], &[Value::Number(0.0)]).await;
+    tx.commit().await.unwrap();
+
+    assert!(matches!(result, Err(AppError::Internal(_))));
+    assert_eq!(count(&pool, "change_log", stored.id).await, before);
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn appends_to_one_model_wait_for_each_other(pool: PgPool) {
+    let (stored, mut model) = stored_model(&pool).await;
+    let (plan, structure) = plan_structure();
+    commit(&pool, &stored, &mut model, structure).await;
+    let first = vec![number_cells(&model, &plan, plan.units, &[(0, 0, 1, 1.0)])];
+    let second = vec![number_cells(&model, &plan, plan.units, &[(0, 0, 1, 2.0)])];
+
+    let mut tx = pool.begin().await.unwrap();
+    let first_seq = engine_store::append(&mut tx, stored.id, None, &first, &[Value::Number(0.0)])
+        .await
+        .unwrap();
+    let mut other = tokio::spawn({
+        let pool = pool.clone();
+        let model_id = stored.id;
+        async move {
+            let mut tx = pool.begin().await.unwrap();
+            let seq = engine_store::append(&mut tx, model_id, None, &second, &[Value::Number(1.0)])
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+            seq
+        }
+    });
+
+    let waiting = tokio::time::timeout(Duration::from_millis(300), &mut other).await;
+    assert!(
+        waiting.is_err(),
+        "the second append waits for the first to commit"
+    );
+    tx.commit().await.unwrap();
+    let second_seq = other.await.unwrap();
+    assert!(second_seq > first_seq);
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn unknown_model_is_not_found(pool: PgPool) {
+    let id = Uuid::now_v7();
+
+    let created = engine_store::create_model_state(&pool, id, calendar()).await;
+    let loaded = engine_store::load(&pool, id).await;
+    let checkpointed = engine_store::checkpoint(&pool, id, &Model::new(calendar()), 0).await;
+    let mut tx = pool.begin().await.unwrap();
+    let appended = engine_store::append(&mut tx, id, None, &[], &[]).await;
+
+    assert!(matches!(created, Err(AppError::NotFound)));
+    assert!(matches!(loaded, Err(AppError::NotFound)));
+    assert!(matches!(checkpointed, Err(AppError::NotFound)));
+    assert!(matches!(appended, Err(AppError::NotFound)));
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn deleting_a_model_deletes_its_stored_state(pool: PgPool) {
+    let (stored, mut model) = stored_model(&pool).await;
+    let (plan, structure) = plan_structure();
+    commit(&pool, &stored, &mut model, structure).await;
+    let cells = vec![number_cells(&model, &plan, plan.units, &[(0, 0, 1, 10.0)])];
+    let last = commit(&pool, &stored, &mut model, cells).await;
+    engine_store::checkpoint(&pool, stored.id, &model, last)
+        .await
+        .unwrap();
+    for table in ["model_structure", "line_item_data", "change_log"] {
+        assert!(count(&pool, table, stored.id).await > 0, "{table}");
+    }
+
+    sqlx::query("DELETE FROM models WHERE id = $1")
+        .bind(stored.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    for table in ["model_structure", "line_item_data", "change_log"] {
+        assert_eq!(count(&pool, table, stored.id).await, 0, "{table}");
+    }
+}
+
+#[test]
+fn cell_key_joins_the_coordinates_with_pipes() {
+    let item = ItemId::new();
+    let version = ItemId::new();
+
+    let key = cell_key(&[
+        CoordToken::Item(item),
+        CoordToken::Period("Jan 26".to_string()),
+        CoordToken::Item(version),
+    ]);
+
+    assert_eq!(key, format!("{}|Jan 26|{}", item.0, version.0));
+    assert_eq!(cell_key(&[]), "");
+}

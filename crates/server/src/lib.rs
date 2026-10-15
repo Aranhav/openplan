@@ -4,6 +4,7 @@ pub mod authz;
 pub mod client_ip;
 pub mod config;
 pub mod db;
+pub mod engine_store;
 pub mod error;
 pub mod extract;
 pub mod logging;

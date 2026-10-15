@@ -19,6 +19,7 @@ clap = { version = "4", features = ["derive"] }
 cookie = "0.18"
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 mime_guess = "2"
+openplan-engine = { path = "crates/engine" }
 proptest = { version = "1", default-features = false, features = ["std"] }
 rand = "0.9"
 rayon = "1"
