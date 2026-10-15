@@ -1,8 +1,16 @@
 //! The structure of a model over HTTP: its lists and their items, subsets, versions, calendar and
 //! time ranges. Reading needs the Viewer role; changing needs the Builder role and a model in
 //! development mode, since production models change through ALM sync. Each change is one engine
-//! command applied through the model's actor, which stores it before the response is sent.
+//! command applied through the model's actor, which stores it before the response is sent. A
+//! change that depends on what the model holds, such as the items a name refers to, is made
+//! inside the actor, so that it sees every change applied before it.
 
+use std::{
+    ops::RangeInclusive,
+    sync::{Arc, Mutex, PoisonError},
+};
+
+use anyhow::anyhow;
 use axum::{
     Json, Router,
     extract::State,
@@ -10,10 +18,10 @@ use axum::{
     routing::{delete, get, patch, post, put},
 };
 use openplan_engine::{
-    Calendar as EngineCalendar, Command, Item, ItemId, ItemSpec, List, ListId, Subset, SubsetId,
-    TimeLevel, TimeRange, TimeRangeId, Version, VersionId,
+    Calendar as EngineCalendar, Command, ItemId, ItemSpec, List, ListId, Model, Structure,
+    SubsetId, TimeLevel, TimeRangeId, VersionId,
 };
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -24,7 +32,7 @@ use crate::{
     auth::CurrentUser,
     authz::{WorkspaceRole, require_workspace_role},
     error::{AppError, AppResult, FieldError},
-    extract::{ApiJson, ApiPath},
+    extract::{ApiJson, ApiPath, nullable},
     models::{Calendar, ModelMode},
     structure_dto::StructureDto,
     validate,
@@ -32,6 +40,10 @@ use crate::{
 
 const PRODUCTION_LOCKED: &str =
     "This model is in production mode. Structural changes arrive through ALM sync.";
+
+/// What a change leaves for the handler to answer with: the change runs once inside the actor and
+/// fills this in, and the handler reads it after the change was applied.
+type Answer<T> = Arc<Mutex<Option<T>>>;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -71,16 +83,6 @@ pub fn router() -> Router<AppState> {
         )
 }
 
-/// Reads a field that may also be sent as `null`: absent is `None`, `null` is `Some(None)` and a
-/// value is `Some(Some(value))`.
-fn nullable<'de, T, D>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
-where
-    T: Deserialize<'de>,
-    D: Deserializer<'de>,
-{
-    Option::<T>::deserialize(deserializer).map(Some)
-}
-
 /// A list of the model.
 #[derive(Serialize, ToSchema)]
 pub struct ListDto {
@@ -98,6 +100,7 @@ pub struct ListDto {
 #[derive(Deserialize, ToSchema)]
 pub struct CreateListRequest {
     name: String,
+    /// The list one level up, which must exist.
     parent_list_id: Option<Uuid>,
     top_level_name: Option<String>,
     #[serde(default)]
@@ -131,11 +134,13 @@ pub struct ItemDto {
 pub struct ItemInput {
     code: Option<String>,
     name: String,
+    /// The item of the parent list this item belongs to, which must exist.
     parent_id: Option<Uuid>,
 }
 
 #[derive(Deserialize, ToSchema)]
 pub struct CreateItemsRequest {
+    /// At least one item.
     items: Vec<ItemInput>,
 }
 
@@ -152,6 +157,7 @@ pub struct UpdateItemRequest {
 
 #[derive(Deserialize, ToSchema)]
 pub struct DeleteItemsRequest {
+    /// At least one item of the list.
     ids: Vec<Uuid>,
 }
 
@@ -166,8 +172,10 @@ pub struct SubsetDto {
 
 #[derive(Deserialize, ToSchema)]
 pub struct CreateSubsetRequest {
+    /// The list whose items the subset selects, which must exist.
     list_id: Uuid,
     name: String,
+    /// The items the subset selects, which must be items of that list.
     #[serde(default)]
     item_ids: Vec<Uuid>,
 }
@@ -175,7 +183,7 @@ pub struct CreateSubsetRequest {
 #[derive(Deserialize, ToSchema)]
 pub struct UpdateSubsetRequest {
     name: Option<String>,
-    /// Replaces the items of the subset.
+    /// Replaces the items of the subset, which must be items of its list.
     item_ids: Option<Vec<Uuid>>,
 }
 
@@ -200,12 +208,17 @@ pub struct VersionRequest {
     switchover: Option<String>,
 }
 
-#[derive(Deserialize, ToSchema)]
-pub struct UpdateCalendarRequest {
+/// A model's calendar, as the calendar endpoint takes and returns it.
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct CalendarDto {
+    /// The month the fiscal year starts in: 1 (January) to 12 (December).
     fiscal_year_start_month: u8,
+    /// The year the first fiscal year ends in: 1 to 9999.
     first_year: i32,
+    /// How many fiscal years the calendar covers: 1 to 20.
     years: u8,
-    /// The current month, as a month label such as `Jun 27`.
+    /// The current month as a month label such as `Jun 27`. Absent or null clears the current
+    /// period. Returned as the label the calendar gives that month.
     current_period: Option<String>,
 }
 
@@ -214,85 +227,69 @@ pub struct UpdateCalendarRequest {
 pub struct TimeRangeDto {
     id: Uuid,
     name: String,
+    /// The year the first fiscal year ends in: 1 to 9999.
     first_year: i32,
+    /// How many fiscal years the range covers: 1 to 20.
     years: u8,
 }
 
 #[derive(Deserialize, ToSchema)]
 pub struct CreateTimeRangeRequest {
     name: String,
+    /// The year the first fiscal year ends in: 1 to 9999.
     first_year: i32,
+    /// How many fiscal years the range covers: 1 to 20.
     years: u8,
 }
 
-fn list_dto(list: &List) -> ListDto {
-    ListDto {
-        id: list.id.0,
-        name: list.name.clone(),
-        parent_list_id: list.parent.map(|parent| parent.0),
-        top_level_name: list.top_level_name.clone(),
-        numbered: list.numbered,
-        production_data: list.production_data,
-        selective_access: list.selective_access,
-    }
-}
-
-fn item_dto(item: &Item) -> ItemDto {
+/// An item as a list shows it, from the fields the engine keeps.
+fn item_dto(id: ItemId, code: Option<&str>, name: &str, parent: Option<ItemId>) -> ItemDto {
     ItemDto {
-        id: item.id.0,
-        code: item.code.clone(),
-        name: item.name.clone(),
-        parent_id: item.parent.map(|parent| parent.0),
+        id: id.0,
+        code: code.map(str::to_string),
+        name: name.to_string(),
+        parent_id: parent.map(|parent| parent.0),
     }
-}
-
-fn item_dto_of_spec(spec: &ItemSpec) -> ItemDto {
-    ItemDto {
-        id: spec.id.0,
-        code: spec.code.clone(),
-        name: spec.name.clone(),
-        parent_id: spec.parent.map(|parent| parent.0),
-    }
-}
-
-fn subset_dto(subset: &Subset) -> SubsetDto {
-    SubsetDto {
-        id: subset.id.0,
-        list_id: subset.list.0,
-        name: subset.name.clone(),
-        item_ids: subset.items.iter().map(|item| item.0).collect(),
-    }
-}
-
-fn version_dto(version: &Version, calendar: &EngineCalendar) -> VersionDto {
-    VersionDto {
-        id: version.id.0,
-        name: version.name.clone(),
-        is_actual: version.is_actual,
-        is_current: version.is_current,
-        switchover: version
-            .switchover
-            .map(|month| calendar.label(TimeLevel::Month, month)),
-    }
-}
-
-fn time_range_dto(range: &TimeRange) -> TimeRangeDto {
-    TimeRangeDto {
-        id: range.id.0,
-        name: range.name.clone(),
-        first_year: range.first_year,
-        years: range.years,
-    }
-}
-
-/// A code as the engine keeps it: trimmed, and absent when blank.
-fn code_of(raw: Option<String>) -> Option<String> {
-    raw.map(|code| code.trim().to_string())
-        .filter(|code| !code.is_empty())
 }
 
 fn item_ids(ids: Vec<Uuid>) -> Vec<ItemId> {
     ids.into_iter().map(ItemId).collect()
+}
+
+fn uuids(ids: &[ItemId]) -> Vec<Uuid> {
+    ids.iter().map(|id| id.0).collect()
+}
+
+/// A refusal of a request body that names something the model does not have.
+fn missing(field: &str, message: &str) -> AppError {
+    AppError::MissingReferences(vec![FieldError {
+        field: field.to_string(),
+        message: message.to_string(),
+    }])
+}
+
+/// The same error about another field, such as an entry of a list in the request.
+fn on_field(mut error: FieldError, field: String) -> FieldError {
+    error.field = field;
+    error
+}
+
+/// Fails unless `value` lies in `range`; `what` names the value in the message.
+fn within<T>(field: &str, what: &str, value: T, range: RangeInclusive<T>) -> Result<(), FieldError>
+where
+    T: PartialOrd + Copy + std::fmt::Display,
+{
+    if range.contains(&value) {
+        return Ok(());
+    }
+    Err(FieldError {
+        field: field.to_string(),
+        message: format!(
+            "{what} must be between {} and {}.",
+            range.start(),
+            range.end()
+        ),
+    })
 }
 
 /// The month a label such as `Jan 26` names. Anything else, including a month outside the
@@ -308,6 +305,68 @@ fn month_of(calendar: &EngineCalendar, label: &str, field: &str) -> Result<u32, 
             ),
         }),
     }
+}
+
+/// Fails with `MissingReferences`, naming each field, for the items that are not live items of
+/// `list`. `message` says what is missing.
+fn ensure_items(
+    list: &List,
+    message: &str,
+    items: impl Iterator<Item = (String, ItemId)>,
+) -> AppResult<()> {
+    let missing: Vec<FieldError> = items
+        .filter(|(_, item)| list.idx(*item).is_none())
+        .map(|(field, _)| FieldError {
+            field,
+            message: message.to_string(),
+        })
+        .collect();
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(AppError::MissingReferences(missing))
+    }
+}
+
+/// The parents that items name must be items of the parent list, when the list has one.
+fn ensure_parents(
+    structure: &Structure,
+    list: &List,
+    parents: impl Iterator<Item = (String, ItemId)>,
+) -> AppResult<()> {
+    match list.parent.and_then(|parent| structure.list(parent)) {
+        Some(parent_list) => ensure_items(
+            parent_list,
+            "The parent item does not exist in the parent list.",
+            parents,
+        ),
+        None => Ok(()),
+    }
+}
+
+/// Applies the change that `build` makes from the model, in the actor, and answers 204.
+async fn delete_with(
+    state: &AppState,
+    user: &CurrentUser,
+    model_id: Uuid,
+    build: impl FnOnce(&Model) -> AppResult<Vec<Command>> + Send + 'static,
+) -> AppResult<StatusCode> {
+    let handle = write_handle(state, user, model_id).await?;
+    handle.apply_with(user.id, build).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// What a change left for the handler to answer with. It is there once the change was applied.
+fn answer_of<T>(answer: &Answer<T>) -> AppResult<T> {
+    answer
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take()
+        .ok_or_else(|| AppError::Internal(anyhow!("the change did not leave its answer")))
+}
+
+fn leave<T>(answer: &Answer<T>, value: T) {
+    *answer.lock().unwrap_or_else(PoisonError::into_inner) = Some(value);
 }
 
 /// The model's row: its workspace and mode. `NotFound` when there is no such model.
@@ -348,38 +407,46 @@ pub(crate) async fn write_handle(
     state.models.get(model_id).await
 }
 
-/// Stores the version `id` as the request says and returns it as the model now holds it.
+/// Stores the version `id` as the request says, inside the actor, against the calendar the model
+/// holds then, and returns it as the model now holds it.
 async fn store_version(
     handle: &ModelHandle,
     user_id: Uuid,
     id: VersionId,
     body: VersionRequest,
 ) -> AppResult<VersionDto> {
-    let name = validate::entity_name("name", &body.name);
-    let calendar = handle.snapshot().structure().calendar;
-    let switchover = body
-        .switchover
-        .as_deref()
-        .map(|label| month_of(&calendar, label, "switchover"))
-        .transpose();
-    validate::collect(vec![name.clone().map(drop), switchover.clone().map(drop)])?;
-    let (name, switchover) = (name?, switchover?);
-
+    let name = validate::entity_name("name", &body.name)?;
+    let switchover_label = body.switchover;
+    let (is_actual, is_current) = (body.is_actual, body.is_current);
+    let answer: Answer<VersionDto> = Arc::default();
+    let left = Arc::clone(&answer);
     handle
-        .apply(
-            user_id,
-            vec![Command::UpsertVersion {
+        .apply_with(user_id, move |model| {
+            let calendar = model.structure().calendar;
+            let switchover = switchover_label
+                .as_deref()
+                .map(|label| month_of(&calendar, label, "switchover"))
+                .transpose()?;
+            leave(
+                &left,
+                VersionDto {
+                    id: id.0,
+                    name: name.clone(),
+                    is_actual,
+                    is_current,
+                    switchover: switchover.map(|month| calendar.label(TimeLevel::Month, month)),
+                },
+            );
+            Ok(vec![Command::UpsertVersion {
                 id,
                 name,
-                is_actual: body.is_actual,
-                is_current: body.is_current,
+                is_actual,
+                is_current,
                 switchover,
-            }],
-        )
+            }])
+        })
         .await?;
-    let model = handle.snapshot();
-    let version = model.structure().version(id).ok_or(AppError::NotFound)?;
-    Ok(version_dto(version, &calendar))
+    answer_of(&answer)
 }
 
 #[utoipa::path(
@@ -388,7 +455,7 @@ async fn store_version(
     tag = "structure",
     params(("id" = Uuid, Path, description = "The model's id")),
     responses(
-        (status = 200, description = "The structure: calendar, lists with their items, subsets, versions, time ranges, modules and line items. Its shape is the engine's structure document (format_version 1); months and periods are indices from the start of the calendar.", body = StructureDto),
+        (status = 200, description = "The structure: calendar, lists with their items, subsets, versions, time ranges, modules and line items. Months and periods are indices from the start of the calendar.", body = StructureDto),
         (status = 401, description = "Not signed in (auth.unauthenticated)"),
         (status = 404, description = "No such model, or the caller is not a member of its workspace (not_found)"),
     )
@@ -409,29 +476,38 @@ pub(crate) async fn get_structure(
     path = "/api/v1/models/{id}/calendar",
     tag = "structure",
     params(("id" = Uuid, Path, description = "The model's id")),
-    request_body = UpdateCalendarRequest,
+    request_body = CalendarDto,
     responses(
-        (status = 200, description = "The calendar now in place", body = Calendar),
+        (status = 200, description = "The calendar now in place. A version's switchover stays on its month when the calendar moves, and is cleared when that month is no longer on the timeline.", body = CalendarDto),
         (status = 401, description = "Not signed in (auth.unauthenticated)"),
         (status = 403, description = "Not a workspace builder (auth.forbidden)"),
         (status = 404, description = "No such model, or the caller is not a member of its workspace (not_found)"),
         (status = 409, description = "The model is in production mode (model.production_locked)"),
-        (status = 422, description = "The calendar is invalid, or the current period is not a month of it (structure.invalid, validation)"),
+        (status = 422, description = "A field is out of range, or the current period is not a month of the calendar (validation)"),
     )
 )]
 pub(crate) async fn update_calendar(
     State(state): State<AppState>,
     user: CurrentUser,
     ApiPath(model_id): ApiPath<Uuid>,
-    ApiJson(body): ApiJson<UpdateCalendarRequest>,
-) -> AppResult<Json<Calendar>> {
+    ApiJson(body): ApiJson<CalendarDto>,
+) -> AppResult<Json<CalendarDto>> {
     let handle = write_handle(&state, &user, model_id).await?;
+    validate::collect(vec![
+        within(
+            "fiscal_year_start_month",
+            "Fiscal year start month",
+            body.fiscal_year_start_month,
+            1..=12,
+        ),
+        within("first_year", "First year", body.first_year, 1..=9999),
+        within("years", "Years", body.years, 1..=20),
+    ])?;
     let mut calendar = EngineCalendar::from(Calendar {
         fiscal_year_start_month: body.fiscal_year_start_month,
         first_year: body.first_year,
         years: body.years,
     });
-    calendar.validate()?;
     calendar.current_month = body
         .current_period
         .as_deref()
@@ -447,7 +523,14 @@ pub(crate) async fn update_calendar(
         .bind(sqlx::types::Json(&stored))
         .execute(&state.db)
         .await?;
-    Ok(Json(stored))
+    Ok(Json(CalendarDto {
+        fiscal_year_start_month: stored.fiscal_year_start_month,
+        first_year: stored.first_year,
+        years: stored.years,
+        current_period: calendar
+            .current_month
+            .map(|month| calendar.label(TimeLevel::Month, month)),
+    }))
 }
 
 #[utoipa::path(
@@ -460,9 +543,9 @@ pub(crate) async fn update_calendar(
         (status = 201, description = "The list was created", body = ListDto),
         (status = 401, description = "Not signed in (auth.unauthenticated)"),
         (status = 403, description = "Not a workspace builder (auth.forbidden)"),
-        (status = 404, description = "No such model or parent list, or the caller is not a member of the workspace (not_found)"),
+        (status = 404, description = "No such model, or the caller is not a member of its workspace (not_found)"),
         (status = 409, description = "The model is in production mode (model.production_locked), or the name is taken (structure.name_taken)"),
-        (status = 422, description = "Some fields are invalid (validation, structure.invalid)"),
+        (status = 422, description = "Some fields are invalid, or the parent list does not exist (validation, structure.invalid)"),
     )
 )]
 pub(crate) async fn create_list(
@@ -485,22 +568,35 @@ pub(crate) async fn create_list(
     let (name, top_level_name) = (name?, top_level_name?);
 
     let id = ListId::new();
+    let parent = body.parent_list_id.map(ListId);
+    let list = ListDto {
+        id: id.0,
+        name: name.clone(),
+        parent_list_id: body.parent_list_id,
+        top_level_name: top_level_name.clone(),
+        numbered: body.numbered,
+        production_data: body.production_data,
+        selective_access: false,
+    };
+    let (numbered, production_data) = (body.numbered, body.production_data);
     handle
-        .apply(
-            user.id,
-            vec![Command::CreateList {
+        .apply_with(user.id, move |model| {
+            if let Some(parent) = parent
+                && model.structure().list(parent).is_none()
+            {
+                return Err(missing("parent_list_id", "The list does not exist."));
+            }
+            Ok(vec![Command::CreateList {
                 id,
                 name,
-                parent: body.parent_list_id.map(ListId),
+                parent,
                 top_level_name,
-                numbered: body.numbered,
-                production_data: body.production_data,
-            }],
-        )
+                numbered,
+                production_data,
+            }])
+        })
         .await?;
-    let model = handle.snapshot();
-    let list = model.structure().list(id).ok_or(AppError::NotFound)?;
-    Ok((StatusCode::CREATED, Json(list_dto(list))))
+    Ok((StatusCode::CREATED, Json(list)))
 }
 
 #[utoipa::path(
@@ -549,22 +645,39 @@ pub(crate) async fn update_list(
     ])?;
     let (name, top_level_name) = (name?, top_level_name?);
 
-    let id = ListId(list_id);
+    let (production_data, selective_access) = (body.production_data, body.selective_access);
+    let answer: Answer<ListDto> = Arc::default();
+    let left = Arc::clone(&answer);
     handle
-        .apply(
-            user.id,
-            vec![Command::UpdateList {
-                id,
+        .apply_with(user.id, move |model| {
+            let list = model
+                .structure()
+                .list(ListId(list_id))
+                .ok_or(AppError::NotFound)?;
+            leave(
+                &left,
+                ListDto {
+                    id: list_id,
+                    name: name.clone().unwrap_or_else(|| list.name.clone()),
+                    parent_list_id: list.parent.map(|parent| parent.0),
+                    top_level_name: top_level_name
+                        .clone()
+                        .unwrap_or_else(|| list.top_level_name.clone()),
+                    numbered: list.numbered,
+                    production_data: production_data.unwrap_or(list.production_data),
+                    selective_access: selective_access.unwrap_or(list.selective_access),
+                },
+            );
+            Ok(vec![Command::UpdateList {
+                id: ListId(list_id),
                 name,
                 top_level_name,
-                production_data: body.production_data,
-                selective_access: body.selective_access,
-            }],
-        )
+                production_data,
+                selective_access,
+            }])
+        })
         .await?;
-    let model = handle.snapshot();
-    let list = model.structure().list(id).ok_or(AppError::NotFound)?;
-    Ok(Json(list_dto(list)))
+    Ok(Json(answer_of(&answer)?))
 }
 
 #[utoipa::path(
@@ -588,16 +701,12 @@ pub(crate) async fn delete_list(
     user: CurrentUser,
     ApiPath((model_id, list_id)): ApiPath<(Uuid, Uuid)>,
 ) -> AppResult<StatusCode> {
-    let handle = write_handle(&state, &user, model_id).await?;
-    handle
-        .apply(
-            user.id,
-            vec![Command::DeleteList {
-                id: ListId(list_id),
-            }],
-        )
-        .await?;
-    Ok(StatusCode::NO_CONTENT)
+    delete_with(&state, &user, model_id, move |_| {
+        Ok(vec![Command::DeleteList {
+            id: ListId(list_id),
+        }])
+    })
+    .await
 }
 
 #[utoipa::path(
@@ -625,7 +734,11 @@ pub(crate) async fn list_items(
         .structure()
         .list(ListId(list_id))
         .ok_or(AppError::NotFound)?;
-    Ok(Json(list.items().map(|(_, item)| item_dto(item)).collect()))
+    Ok(Json(
+        list.items()
+            .map(|(_, item)| item_dto(item.id, item.code.as_deref(), &item.name, item.parent))
+            .collect(),
+    ))
 }
 
 #[utoipa::path(
@@ -643,7 +756,7 @@ pub(crate) async fn list_items(
         (status = 403, description = "Not a workspace builder (auth.forbidden)"),
         (status = 404, description = "No such model or list, or the caller is not a member of the workspace (not_found)"),
         (status = 409, description = "The model is in production mode (model.production_locked), or a code or name is taken (structure.name_taken)"),
-        (status = 422, description = "Some fields are invalid, or a parent is missing or not in the parent list (validation, structure.invalid)"),
+        (status = 422, description = "No items, some fields are invalid, or a parent item does not exist in the parent list (validation, structure.invalid)"),
     )
 )]
 pub(crate) async fn create_items(
@@ -653,12 +766,20 @@ pub(crate) async fn create_items(
     ApiJson(body): ApiJson<CreateItemsRequest>,
 ) -> AppResult<(StatusCode, Json<Vec<ItemDto>>)> {
     let handle = write_handle(&state, &user, model_id).await?;
+    if body.items.is_empty() {
+        return Err(AppError::Validation(vec![FieldError {
+            field: "items".to_string(),
+            message: "Add at least one item.".to_string(),
+        }]));
+    }
     let names: Vec<Result<(), FieldError>> = body
         .items
         .iter()
         .enumerate()
         .map(|(index, item)| {
-            validate::entity_name(&format!("items[{index}].name"), &item.name).map(drop)
+            validate::entity_name("name", &item.name)
+                .map(drop)
+                .map_err(|error| on_field(error, format!("items[{index}].name")))
         })
         .collect();
     validate::collect(names)?;
@@ -668,20 +789,30 @@ pub(crate) async fn create_items(
         .into_iter()
         .map(|item| ItemSpec {
             id: ItemId::new(),
-            code: code_of(item.code),
+            code: item.code.as_deref().and_then(validate::code),
             name: item.name.trim().to_string(),
             parent: item.parent_id.map(ItemId),
         })
         .collect();
-    let created: Vec<ItemDto> = specs.iter().map(item_dto_of_spec).collect();
+    let created: Vec<ItemDto> = specs
+        .iter()
+        .map(|spec| item_dto(spec.id, spec.code.as_deref(), &spec.name, spec.parent))
+        .collect();
+    let list = ListId(list_id);
     handle
-        .apply(
-            user.id,
-            vec![Command::UpsertListItems {
-                list: ListId(list_id),
-                items: specs,
-            }],
-        )
+        .apply_with(user.id, move |model| {
+            let structure = model.structure();
+            let target = structure.list(list).ok_or(AppError::NotFound)?;
+            ensure_parents(
+                structure,
+                target,
+                specs.iter().enumerate().filter_map(|(index, spec)| {
+                    spec.parent
+                        .map(|parent| (format!("items[{index}].parent_id"), parent))
+                }),
+            )?;
+            Ok(vec![Command::UpsertListItems { list, items: specs }])
+        })
         .await?;
     Ok((StatusCode::CREATED, Json(created)))
 }
@@ -702,7 +833,7 @@ pub(crate) async fn create_items(
         (status = 403, description = "Not a workspace builder (auth.forbidden)"),
         (status = 404, description = "No such model, list or item in the list, or the caller is not a member of the workspace (not_found)"),
         (status = 409, description = "The model is in production mode (model.production_locked), or a code or name is taken (structure.name_taken)"),
-        (status = 422, description = "Some fields are invalid, or the parent is missing or not in the parent list (validation, structure.invalid)"),
+        (status = 422, description = "Some fields are invalid, or the parent item does not exist in the parent list (validation, structure.invalid)"),
     )
 )]
 pub(crate) async fn update_item(
@@ -717,36 +848,43 @@ pub(crate) async fn update_item(
         .as_deref()
         .map(|raw| validate::entity_name("name", raw))
         .transpose()?;
+    let code = body
+        .code
+        .map(|code| code.as_deref().and_then(validate::code));
+    let parent = body.parent_id.map(|parent| parent.map(ItemId));
 
-    // The engine replaces an item whole, so the fields not sent keep their current values.
-    let current = {
-        let model = handle.snapshot();
-        let list = model
-            .structure()
-            .list(ListId(list_id))
-            .ok_or(AppError::NotFound)?;
-        let idx = list.idx(ItemId(item_id)).ok_or(AppError::NotFound)?;
-        list.item(idx).clone()
-    };
-    let spec = ItemSpec {
-        id: ItemId(item_id),
-        code: body.code.map_or(current.code, code_of),
-        name: name.unwrap_or(current.name),
-        parent: body
-            .parent_id
-            .map_or(current.parent, |parent| parent.map(ItemId)),
-    };
-    let updated = item_dto_of_spec(&spec);
+    let answer: Answer<ItemDto> = Arc::default();
+    let left = Arc::clone(&answer);
     handle
-        .apply(
-            user.id,
-            vec![Command::UpsertListItems {
+        .apply_with(user.id, move |model| {
+            let structure = model.structure();
+            let list = structure.list(ListId(list_id)).ok_or(AppError::NotFound)?;
+            let current = list.item(list.idx(ItemId(item_id)).ok_or(AppError::NotFound)?);
+            // The engine replaces an item whole, so the fields not sent keep their current values.
+            let spec = ItemSpec {
+                id: ItemId(item_id),
+                code: code.unwrap_or_else(|| current.code.clone()),
+                name: name.unwrap_or_else(|| current.name.clone()),
+                parent: parent.unwrap_or(current.parent),
+            };
+            ensure_parents(
+                structure,
+                list,
+                spec.parent
+                    .map(|parent| ("parent_id".to_string(), parent))
+                    .into_iter(),
+            )?;
+            leave(
+                &left,
+                item_dto(spec.id, spec.code.as_deref(), &spec.name, spec.parent),
+            );
+            Ok(vec![Command::UpsertListItems {
                 list: ListId(list_id),
                 items: vec![spec],
-            }],
-        )
+            }])
+        })
         .await?;
-    Ok(Json(updated))
+    Ok(Json(answer_of(&answer)?))
 }
 
 #[utoipa::path(
@@ -762,9 +900,9 @@ pub(crate) async fn update_item(
         (status = 204, description = "The items were deleted"),
         (status = 401, description = "Not signed in (auth.unauthenticated)"),
         (status = 403, description = "Not a workspace builder (auth.forbidden)"),
-        (status = 404, description = "No such model or list, or an item is not in the list (not_found)"),
+        (status = 404, description = "No such model or list, or the caller is not a member of the workspace (not_found)"),
         (status = 409, description = "The model is in production mode (model.production_locked)"),
-        (status = 422, description = "Items with child items cannot be deleted (structure.invalid)"),
+        (status = 422, description = "No items were selected, an item is not in the list, or an item has child items (validation, structure.invalid)"),
     )
 )]
 pub(crate) async fn delete_items(
@@ -773,17 +911,31 @@ pub(crate) async fn delete_items(
     ApiPath((model_id, list_id)): ApiPath<(Uuid, Uuid)>,
     ApiJson(body): ApiJson<DeleteItemsRequest>,
 ) -> AppResult<StatusCode> {
-    let handle = write_handle(&state, &user, model_id).await?;
-    handle
-        .apply(
-            user.id,
-            vec![Command::DeleteListItems {
-                list: ListId(list_id),
-                ids: item_ids(body.ids),
-            }],
-        )
-        .await?;
-    Ok(StatusCode::NO_CONTENT)
+    if body.ids.is_empty() {
+        return Err(AppError::Validation(vec![FieldError {
+            field: "ids".to_string(),
+            message: "Select at least one item.".to_string(),
+        }]));
+    }
+    let ids = body.ids;
+    delete_with(&state, &user, model_id, move |model| {
+        let list = model
+            .structure()
+            .list(ListId(list_id))
+            .ok_or(AppError::NotFound)?;
+        ensure_items(
+            list,
+            "The item does not exist in this list.",
+            ids.iter()
+                .enumerate()
+                .map(|(index, id)| (format!("ids[{index}]"), ItemId(*id))),
+        )?;
+        Ok(vec![Command::DeleteListItems {
+            list: ListId(list_id),
+            ids: item_ids(ids),
+        }])
+    })
+    .await
 }
 
 #[utoipa::path(
@@ -796,9 +948,9 @@ pub(crate) async fn delete_items(
         (status = 201, description = "The subset was created", body = SubsetDto),
         (status = 401, description = "Not signed in (auth.unauthenticated)"),
         (status = 403, description = "Not a workspace builder (auth.forbidden)"),
-        (status = 404, description = "No such model, list or item, or the caller is not a member of the workspace (not_found)"),
+        (status = 404, description = "No such model, or the caller is not a member of the workspace (not_found)"),
         (status = 409, description = "The model is in production mode (model.production_locked), or the name is taken (structure.name_taken)"),
-        (status = 422, description = "Some fields are invalid, or an item appears twice (validation, structure.invalid)"),
+        (status = 422, description = "Some fields are invalid, the list does not exist, an item is not in it, or an item appears twice (validation, structure.invalid)"),
     )
 )]
 pub(crate) async fn create_subset(
@@ -811,20 +963,37 @@ pub(crate) async fn create_subset(
     let name = validate::entity_name("name", &body.name)?;
 
     let id = SubsetId::new();
+    let list = ListId(body.list_id);
+    let items = item_ids(body.item_ids);
+    let subset = SubsetDto {
+        id: id.0,
+        list_id: body.list_id,
+        name: name.clone(),
+        item_ids: uuids(&items),
+    };
     handle
-        .apply(
-            user.id,
-            vec![Command::CreateSubset {
+        .apply_with(user.id, move |model| {
+            let target = model
+                .structure()
+                .list(list)
+                .ok_or_else(|| missing("list_id", "The list does not exist."))?;
+            ensure_items(
+                target,
+                "The item does not exist in this list.",
+                items
+                    .iter()
+                    .enumerate()
+                    .map(|(index, item)| (format!("item_ids[{index}]"), *item)),
+            )?;
+            Ok(vec![Command::CreateSubset {
                 id,
-                list: ListId(body.list_id),
+                list,
                 name,
-                items: item_ids(body.item_ids),
-            }],
-        )
+                items,
+            }])
+        })
         .await?;
-    let model = handle.snapshot();
-    let subset = model.structure().subset(id).ok_or(AppError::NotFound)?;
-    Ok((StatusCode::CREATED, Json(subset_dto(subset))))
+    Ok((StatusCode::CREATED, Json(subset)))
 }
 
 #[utoipa::path(
@@ -840,9 +1009,9 @@ pub(crate) async fn create_subset(
         (status = 200, description = "The updated subset", body = SubsetDto),
         (status = 401, description = "Not signed in (auth.unauthenticated)"),
         (status = 403, description = "Not a workspace builder (auth.forbidden)"),
-        (status = 404, description = "No such model, subset or item, or the caller is not a member of the workspace (not_found)"),
+        (status = 404, description = "No such model or subset, or the caller is not a member of the workspace (not_found)"),
         (status = 409, description = "The model is in production mode (model.production_locked), or the name is taken (structure.name_taken)"),
-        (status = 422, description = "Some fields are invalid, or an item appears twice (validation, structure.invalid)"),
+        (status = 422, description = "Some fields are invalid, an item is not in the subset's list, or an item appears twice (validation, structure.invalid)"),
     )
 )]
 pub(crate) async fn update_subset(
@@ -857,21 +1026,46 @@ pub(crate) async fn update_subset(
         .as_deref()
         .map(|raw| validate::entity_name("name", raw))
         .transpose()?;
+    let items = body.item_ids.map(item_ids);
 
-    let id = SubsetId(subset_id);
+    let answer: Answer<SubsetDto> = Arc::default();
+    let left = Arc::clone(&answer);
     handle
-        .apply(
-            user.id,
-            vec![Command::UpdateSubset {
-                id,
+        .apply_with(user.id, move |model| {
+            let structure = model.structure();
+            let subset = structure
+                .subset(SubsetId(subset_id))
+                .ok_or(AppError::NotFound)?;
+            let list = structure.list(subset.list).ok_or(AppError::NotFound)?;
+            if let Some(items) = &items {
+                ensure_items(
+                    list,
+                    "The item does not exist in this list.",
+                    items
+                        .iter()
+                        .enumerate()
+                        .map(|(index, item)| (format!("item_ids[{index}]"), *item)),
+                )?;
+            }
+            leave(
+                &left,
+                SubsetDto {
+                    id: subset_id,
+                    list_id: subset.list.0,
+                    name: name.clone().unwrap_or_else(|| subset.name.clone()),
+                    item_ids: items
+                        .as_ref()
+                        .map_or_else(|| uuids(&subset.items), |items| uuids(items)),
+                },
+            );
+            Ok(vec![Command::UpdateSubset {
+                id: SubsetId(subset_id),
                 name,
-                items: body.item_ids.map(item_ids),
-            }],
-        )
+                items,
+            }])
+        })
         .await?;
-    let model = handle.snapshot();
-    let subset = model.structure().subset(id).ok_or(AppError::NotFound)?;
-    Ok(Json(subset_dto(subset)))
+    Ok(Json(answer_of(&answer)?))
 }
 
 #[utoipa::path(
@@ -895,16 +1089,12 @@ pub(crate) async fn delete_subset(
     user: CurrentUser,
     ApiPath((model_id, subset_id)): ApiPath<(Uuid, Uuid)>,
 ) -> AppResult<StatusCode> {
-    let handle = write_handle(&state, &user, model_id).await?;
-    handle
-        .apply(
-            user.id,
-            vec![Command::DeleteSubset {
-                id: SubsetId(subset_id),
-            }],
-        )
-        .await?;
-    Ok(StatusCode::NO_CONTENT)
+    delete_with(&state, &user, model_id, move |_| {
+        Ok(vec![Command::DeleteSubset {
+            id: SubsetId(subset_id),
+        }])
+    })
+    .await
 }
 
 #[utoipa::path(
@@ -984,16 +1174,12 @@ pub(crate) async fn delete_version(
     user: CurrentUser,
     ApiPath((model_id, version_id)): ApiPath<(Uuid, Uuid)>,
 ) -> AppResult<StatusCode> {
-    let handle = write_handle(&state, &user, model_id).await?;
-    handle
-        .apply(
-            user.id,
-            vec![Command::DeleteVersion {
-                id: VersionId(version_id),
-            }],
-        )
-        .await?;
-    Ok(StatusCode::NO_CONTENT)
+    delete_with(&state, &user, model_id, move |_| {
+        Ok(vec![Command::DeleteVersion {
+            id: VersionId(version_id),
+        }])
+    })
+    .await
 }
 
 #[utoipa::path(
@@ -1008,7 +1194,7 @@ pub(crate) async fn delete_version(
         (status = 403, description = "Not a workspace builder (auth.forbidden)"),
         (status = 404, description = "No such model, or the caller is not a member of the workspace (not_found)"),
         (status = 409, description = "The model is in production mode (model.production_locked), or the name is taken (structure.name_taken)"),
-        (status = 422, description = "Some fields are invalid (validation, structure.invalid)"),
+        (status = 422, description = "Some fields are out of range (validation)"),
     )
 )]
 pub(crate) async fn create_time_range(
@@ -1018,7 +1204,13 @@ pub(crate) async fn create_time_range(
     ApiJson(body): ApiJson<CreateTimeRangeRequest>,
 ) -> AppResult<(StatusCode, Json<TimeRangeDto>)> {
     let handle = write_handle(&state, &user, model_id).await?;
-    let name = validate::entity_name("name", &body.name)?;
+    let name = validate::entity_name("name", &body.name);
+    validate::collect(vec![
+        name.clone().map(drop),
+        within("first_year", "First year", body.first_year, 1..=9999),
+        within("years", "Years", body.years, 1..=20),
+    ])?;
+    let name = name?;
 
     let id = TimeRangeId::new();
     handle
@@ -1026,15 +1218,21 @@ pub(crate) async fn create_time_range(
             user.id,
             vec![Command::CreateTimeRange {
                 id,
-                name,
+                name: name.clone(),
                 first_year: body.first_year,
                 years: body.years,
             }],
         )
         .await?;
-    let model = handle.snapshot();
-    let range = model.structure().time_range(id).ok_or(AppError::NotFound)?;
-    Ok((StatusCode::CREATED, Json(time_range_dto(range))))
+    Ok((
+        StatusCode::CREATED,
+        Json(TimeRangeDto {
+            id: id.0,
+            name,
+            first_year: body.first_year,
+            years: body.years,
+        }),
+    ))
 }
 
 #[utoipa::path(
@@ -1058,14 +1256,10 @@ pub(crate) async fn delete_time_range(
     user: CurrentUser,
     ApiPath((model_id, range_id)): ApiPath<(Uuid, Uuid)>,
 ) -> AppResult<StatusCode> {
-    let handle = write_handle(&state, &user, model_id).await?;
-    handle
-        .apply(
-            user.id,
-            vec![Command::DeleteTimeRange {
-                id: TimeRangeId(range_id),
-            }],
-        )
-        .await?;
-    Ok(StatusCode::NO_CONTENT)
+    delete_with(&state, &user, model_id, move |_| {
+        Ok(vec![Command::DeleteTimeRange {
+            id: TimeRangeId(range_id),
+        }])
+    })
+    .await
 }

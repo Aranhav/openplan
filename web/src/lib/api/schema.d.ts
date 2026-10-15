@@ -627,6 +627,29 @@ export interface components {
             /** Format: int32 */
             years: number;
         };
+        /** @description A model's calendar, as the calendar endpoint takes and returns it. */
+        CalendarDto: {
+            /**
+             * @description The current month as a month label such as `Jun 27`. Absent or null clears the current
+             *     period. Returned as the label the calendar gives that month.
+             */
+            current_period?: string | null;
+            /**
+             * Format: int32
+             * @description The year the first fiscal year ends in: 1 to 9999.
+             */
+            first_year: number;
+            /**
+             * Format: int32
+             * @description The month the fiscal year starts in: 1 (January) to 12 (December).
+             */
+            fiscal_year_start_month: number;
+            /**
+             * Format: int32
+             * @description How many fiscal years the calendar covers: 1 to 20.
+             */
+            years: number;
+        };
         ChangePasswordRequest: {
             current_password: string;
             new_password: string;
@@ -665,6 +688,7 @@ export interface components {
          */
         CompletionKindDto: "line_item" | "list" | "function" | "keyword";
         CreateItemsRequest: {
+            /** @description At least one item. */
             items: components["schemas"]["ItemInput"][];
         };
         CreateLineItemRequest: {
@@ -692,7 +716,10 @@ export interface components {
         CreateListRequest: {
             name: string;
             numbered?: boolean;
-            /** Format: uuid */
+            /**
+             * Format: uuid
+             * @description The list one level up, which must exist.
+             */
             parent_list_id?: string | null;
             production_data?: boolean;
             top_level_name?: string | null;
@@ -708,16 +735,26 @@ export interface components {
             name: string;
         };
         CreateSubsetRequest: {
+            /** @description The items the subset selects, which must be items of that list. */
             item_ids?: string[];
-            /** Format: uuid */
+            /**
+             * Format: uuid
+             * @description The list whose items the subset selects, which must exist.
+             */
             list_id: string;
             name: string;
         };
         CreateTimeRangeRequest: {
-            /** Format: int32 */
+            /**
+             * Format: int32
+             * @description The year the first fiscal year ends in: 1 to 9999.
+             */
             first_year: number;
             name: string;
-            /** Format: int32 */
+            /**
+             * Format: int32
+             * @description How many fiscal years the range covers: 1 to 20.
+             */
             years: number;
         };
         CreateUserRequest: {
@@ -734,6 +771,7 @@ export interface components {
             name: string;
         };
         DeleteItemsRequest: {
+            /** @description At least one item of the list. */
             ids: string[];
         };
         FieldError: {
@@ -817,7 +855,10 @@ export interface components {
         ItemInput: {
             code?: string | null;
             name: string;
-            /** Format: uuid */
+            /**
+             * Format: uuid
+             * @description The item of the parent list this item belongs to, which must exist.
+             */
             parent_id?: string | null;
         };
         /**
@@ -1132,27 +1173,23 @@ export interface components {
         TimeLevelDto: "month" | "quarter" | "half_year" | "year" | "all";
         /** @description A named run of whole fiscal years. */
         TimeRangeDto: {
-            /** Format: int32 */
+            /**
+             * Format: int32
+             * @description The year the first fiscal year ends in: 1 to 9999.
+             */
             first_year: number;
             /** Format: uuid */
             id: string;
             name: string;
-            /** Format: int32 */
+            /**
+             * Format: int32
+             * @description How many fiscal years the range covers: 1 to 20.
+             */
             years: number;
         };
         /** @description The time axis of a line item relative to its module's: the module's, none, or a coarser level. */
         TimeScaleDto: "module" | "none" | {
             level: components["schemas"]["TimeLevelDto"];
-        };
-        UpdateCalendarRequest: {
-            /** @description The current month, as a month label such as `Jun 27`. */
-            current_period?: string | null;
-            /** Format: int32 */
-            first_year: number;
-            /** Format: int32 */
-            fiscal_year_start_month: number;
-            /** Format: int32 */
-            years: number;
         };
         UpdateItemRequest: {
             /** @description Absent leaves the code as it is; `null` clears it. */
@@ -1219,7 +1256,7 @@ export interface components {
             name: string;
         };
         UpdateSubsetRequest: {
-            /** @description Replaces the items of the subset. */
+            /** @description Replaces the items of the subset, which must be items of its list. */
             item_ids?: string[] | null;
             name?: string | null;
         };
@@ -1735,17 +1772,17 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["UpdateCalendarRequest"];
+                "application/json": components["schemas"]["CalendarDto"];
             };
         };
         responses: {
-            /** @description The calendar now in place */
+            /** @description The calendar now in place. A version's switchover stays on its month when the calendar moves, and is cleared when that month is no longer on the timeline. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Calendar"];
+                    "application/json": components["schemas"]["CalendarDto"];
                 };
             };
             /** @description Not signed in (auth.unauthenticated) */
@@ -1784,7 +1821,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description The calendar is invalid, or the current period is not a month of it (structure.invalid, validation) */
+            /** @description A field is out of range, or the current period is not a month of the calendar (validation) */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -2159,7 +2196,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description No such model or parent list, or the caller is not a member of the workspace (not_found) */
+            /** @description No such model, or the caller is not a member of its workspace (not_found) */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -2177,7 +2214,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description Some fields are invalid (validation, structure.invalid) */
+            /** @description Some fields are invalid, or the parent list does not exist (validation, structure.invalid) */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -2427,7 +2464,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description Some fields are invalid, or a parent is missing or not in the parent list (validation, structure.invalid) */
+            /** @description No items, some fields are invalid, or a parent item does not exist in the parent list (validation, structure.invalid) */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -2481,7 +2518,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description No such model or list, or an item is not in the list (not_found) */
+            /** @description No such model or list, or the caller is not a member of the workspace (not_found) */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -2499,7 +2536,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description Items with child items cannot be deleted (structure.invalid) */
+            /** @description No items were selected, an item is not in the list, or an item has child items (validation, structure.invalid) */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -2575,7 +2612,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description Some fields are invalid, or the parent is missing or not in the parent list (validation, structure.invalid) */
+            /** @description Some fields are invalid, or the parent item does not exist in the parent list (validation, structure.invalid) */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -2877,7 +2914,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description The structure: calendar, lists with their items, subsets, versions, time ranges, modules and line items. Its shape is the engine's structure document (format_version 1); months and periods are indices from the start of the calendar. */
+            /** @description The structure: calendar, lists with their items, subsets, versions, time ranges, modules and line items. Months and periods are indices from the start of the calendar. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2949,7 +2986,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description No such model, list or item, or the caller is not a member of the workspace (not_found) */
+            /** @description No such model, or the caller is not a member of the workspace (not_found) */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -2967,7 +3004,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description Some fields are invalid, or an item appears twice (validation, structure.invalid) */
+            /** @description Some fields are invalid, the list does not exist, an item is not in it, or an item appears twice (validation, structure.invalid) */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -3082,7 +3119,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description No such model, subset or item, or the caller is not a member of the workspace (not_found) */
+            /** @description No such model or subset, or the caller is not a member of the workspace (not_found) */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -3100,7 +3137,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description Some fields are invalid, or an item appears twice (validation, structure.invalid) */
+            /** @description Some fields are invalid, an item is not in the subset's list, or an item appears twice (validation, structure.invalid) */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -3172,7 +3209,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description Some fields are invalid (validation, structure.invalid) */
+            /** @description Some fields are out of range (validation) */
             422: {
                 headers: {
                     [name: string]: unknown;

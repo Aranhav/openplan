@@ -339,6 +339,7 @@ async fn bulk_items_with_parents(pool: PgPool) {
         StatusCode::UNPROCESSABLE_ENTITY,
         "structure.invalid",
     );
+    assert_eq!(stranger.json["errors"][0]["field"], "items[0].parent_id");
 
     let moved = admin
         .patch(
@@ -524,7 +525,12 @@ async fn calendar_is_updated_and_stored(pool: PgPool) {
     assert_eq!(updated.status, StatusCode::OK, "{}", updated.text);
     assert_eq!(
         updated.json,
-        json!({ "fiscal_year_start_month": 4, "first_year": 2027, "years": 2 })
+        json!({
+            "fiscal_year_start_month": 4,
+            "first_year": 2027,
+            "years": 2,
+            "current_period": "Jun 26",
+        })
     );
     let doc = structure(&mut admin, &model).await;
     assert_eq!(doc["calendar"]["first_year"], 2027);
@@ -564,10 +570,10 @@ async fn calendar_rejects_a_current_period_that_is_not_a_month_and_an_invalid_ca
         json!({ "fiscal_year_start_month": 13, "first_year": 2026, "years": 3 }),
     )
     .await;
-    assert_problem(
-        &invalid,
-        StatusCode::UNPROCESSABLE_ENTITY,
-        "structure.invalid",
+    assert_problem(&invalid, StatusCode::UNPROCESSABLE_ENTITY, "validation");
+    assert_eq!(
+        invalid.json["errors"][0]["field"],
+        "fiscal_year_start_month"
     );
 }
 
@@ -601,11 +607,8 @@ async fn time_ranges_are_created_and_deleted(pool: PgPool) {
             Some(json!({ "name": "Nothing", "first_year": 2027, "years": 0 })),
         )
         .await;
-    assert_problem(
-        &invalid,
-        StatusCode::UNPROCESSABLE_ENTITY,
-        "structure.invalid",
-    );
+    assert_problem(&invalid, StatusCode::UNPROCESSABLE_ENTITY, "validation");
+    assert_eq!(invalid.json["errors"][0]["field"], "years");
 
     let deleted = admin
         .delete(&url(&model, &format!("/time-ranges/{range}")))
@@ -726,37 +729,118 @@ async fn viewer_cannot_write_structure(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
-async fn production_mode_blocks_structure(pool: PgPool) {
+async fn production_mode_blocks_every_structure_write(pool: PgPool) {
     let (mut admin, _, model) = plan(&pool).await;
     let regions = create_list(&mut admin, &model, json!({ "name": "Regions" })).await;
+    let items = create_items(&mut admin, &model, &regions, json!([{ "name": "Europe" }])).await;
+    let subset = admin
+        .post(
+            &url(&model, "/subsets"),
+            Some(json!({ "list_id": regions, "name": "Core" })),
+        )
+        .await;
+    let subset = id_of(&subset.json);
+    let range = admin
+        .post(
+            &url(&model, "/time-ranges"),
+            Some(json!({ "name": "Next", "first_year": 2027, "years": 1 })),
+        )
+        .await;
+    let range = id_of(&range.json);
+    let version = admin
+        .post(
+            &url(&model, "/versions"),
+            Some(json!({ "name": "Plan A", "is_actual": false, "is_current": false })),
+        )
+        .await;
+    let version = id_of(&version.json);
+    let (list, item) = (regions.clone(), id_of(&items[0]));
+    let writes: Vec<(Method, String, Option<Value>)> = vec![
+        (
+            Method::PUT,
+            url(&model, "/calendar"),
+            Some(json!({ "fiscal_year_start_month": 1, "first_year": 2026, "years": 3 })),
+        ),
+        (
+            Method::POST,
+            url(&model, "/lists"),
+            Some(json!({ "name": "Countries" })),
+        ),
+        (
+            Method::PATCH,
+            url(&model, &format!("/lists/{list}")),
+            Some(json!({ "name": "X" })),
+        ),
+        (Method::DELETE, url(&model, &format!("/lists/{list}")), None),
+        (
+            Method::POST,
+            url(&model, &format!("/lists/{list}/items")),
+            Some(json!({ "items": [{ "name": "Asia" }] })),
+        ),
+        (
+            Method::PATCH,
+            url(&model, &format!("/lists/{list}/items/{item}")),
+            Some(json!({ "name": "X" })),
+        ),
+        (
+            Method::POST,
+            url(&model, &format!("/lists/{list}/items/delete")),
+            Some(json!({ "ids": [item] })),
+        ),
+        (
+            Method::POST,
+            url(&model, "/subsets"),
+            Some(json!({ "list_id": list, "name": "Other" })),
+        ),
+        (
+            Method::PATCH,
+            url(&model, &format!("/subsets/{subset}")),
+            Some(json!({ "name": "X" })),
+        ),
+        (
+            Method::DELETE,
+            url(&model, &format!("/subsets/{subset}")),
+            None,
+        ),
+        (
+            Method::POST,
+            url(&model, "/versions"),
+            Some(json!({ "name": "Plan B", "is_actual": false, "is_current": false })),
+        ),
+        (
+            Method::PUT,
+            url(&model, &format!("/versions/{version}")),
+            Some(json!({ "name": "Plan A", "is_actual": false, "is_current": false })),
+        ),
+        (
+            Method::DELETE,
+            url(&model, &format!("/versions/{version}")),
+            None,
+        ),
+        (
+            Method::POST,
+            url(&model, "/time-ranges"),
+            Some(json!({ "name": "Later", "first_year": 2030, "years": 1 })),
+        ),
+        (
+            Method::DELETE,
+            url(&model, &format!("/time-ranges/{range}")),
+            None,
+        ),
+    ];
+    assert_eq!(writes.len(), 15, "every write route is in the table");
+
     let production = admin
         .patch(&url(&model, ""), Some(json!({ "mode": "prod" })))
         .await;
     assert_eq!(production.status, StatusCode::OK, "{}", production.text);
-
-    let locked = [
-        admin
-            .post(&url(&model, "/lists"), Some(json!({ "name": "Countries" })))
-            .await,
-        admin
-            .delete(&url(&model, &format!("/lists/{regions}")))
-            .await,
-        put(
-            &mut admin,
-            &url(&model, "/calendar"),
-            json!({ "fiscal_year_start_month": 1, "first_year": 2026, "years": 3 }),
-        )
-        .await,
-        admin
-            .post(
-                &url(&model, "/time-ranges"),
-                Some(json!({ "name": "X", "first_year": 2027, "years": 1 })),
-            )
-            .await,
-    ];
-    for response in &locked {
-        assert_problem(response, StatusCode::CONFLICT, "model.production_locked");
-        assert_eq!(response.json["detail"], PRODUCTION_LOCKED);
+    for (method, path, body) in writes {
+        let response = admin.request(method.clone(), &path, body).await;
+        assert_problem(&response, StatusCode::CONFLICT, "model.production_locked");
+        assert_eq!(
+            response.json["detail"], PRODUCTION_LOCKED,
+            "{method} {path}"
+        );
     }
     assert_eq!(
         structure(&mut admin, &model).await["lists"][0]["name"],
@@ -809,4 +893,453 @@ async fn structure_survives_unloading_the_model(pool: PgPool) {
         structure(&mut admin, &model).await["lists"][0]["name"],
         "Regions"
     );
+}
+
+/// The calendar a model stores in its row, as the database holds it.
+async fn stored_calendar(pool: &PgPool, model: &str) -> Value {
+    sqlx::query_scalar("SELECT calendar FROM models WHERE id = $1")
+        .bind(Uuid::parse_str(model).unwrap())
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn concurrent_patches_to_one_item_keep_both_changes(pool: PgPool) {
+    let (mut admin, _, model) = plan(&pool).await;
+    let regions = create_list(&mut admin, &model, json!({ "name": "Regions" })).await;
+    let items_path = url(&model, &format!("/lists/{regions}/items"));
+
+    for round in 0..20 {
+        let created = create_items(
+            &mut admin,
+            &model,
+            &regions,
+            json!([{ "name": format!("Region {round}") }]),
+        )
+        .await;
+        let item = id_of(&created[0]);
+        let path = format!("{items_path}/{item}");
+        let mut renamer = admin.fork();
+        let mut coder = admin.fork();
+
+        let (renamed, coded) = tokio::join!(
+            renamer.patch(&path, Some(json!({ "name": format!("Renamed {round}") }))),
+            coder.patch(&path, Some(json!({ "code": format!("C{round}") }))),
+        );
+
+        assert_eq!(renamed.status, StatusCode::OK, "{}", renamed.text);
+        assert_eq!(coded.status, StatusCode::OK, "{}", coded.text);
+        let listed = admin.get(&items_path).await;
+        let stored = listed
+            .json
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["id"].as_str() == Some(item.as_str()))
+            .unwrap();
+        assert_eq!(
+            stored["name"],
+            json!(format!("Renamed {round}")),
+            "round {round}"
+        );
+        assert_eq!(stored["code"], json!(format!("C{round}")), "round {round}");
+    }
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn empty_bulk_requests_are_refused_and_change_nothing(pool: PgPool) {
+    let (mut admin, _, model) = plan(&pool).await;
+    let regions = create_list(&mut admin, &model, json!({ "name": "Regions" })).await;
+    let rows = structure_rows(&pool, &model).await;
+
+    let created = admin
+        .post(
+            &url(&model, &format!("/lists/{regions}/items")),
+            Some(json!({ "items": [] })),
+        )
+        .await;
+    assert_problem(&created, StatusCode::UNPROCESSABLE_ENTITY, "validation");
+    assert_eq!(created.json["errors"][0]["field"], "items");
+    assert_eq!(
+        created.json["errors"][0]["message"],
+        "Add at least one item."
+    );
+
+    let deleted = admin
+        .post(
+            &url(&model, &format!("/lists/{regions}/items/delete")),
+            Some(json!({ "ids": [] })),
+        )
+        .await;
+    assert_problem(&deleted, StatusCode::UNPROCESSABLE_ENTITY, "validation");
+    assert_eq!(deleted.json["errors"][0]["field"], "ids");
+    assert_eq!(
+        deleted.json["errors"][0]["message"],
+        "Select at least one item."
+    );
+
+    assert_eq!(structure_rows(&pool, &model).await, rows);
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn a_bulk_create_with_one_bad_name_creates_nothing(pool: PgPool) {
+    let (mut admin, _, model) = plan(&pool).await;
+    let regions = create_list(&mut admin, &model, json!({ "name": "Regions" })).await;
+    let rows = structure_rows(&pool, &model).await;
+
+    let created = admin
+        .post(
+            &url(&model, &format!("/lists/{regions}/items")),
+            Some(json!({ "items": [{ "name": "Europe" }, { "name": "   " }] })),
+        )
+        .await;
+
+    assert_problem(&created, StatusCode::UNPROCESSABLE_ENTITY, "validation");
+    assert_eq!(created.json["errors"][0]["field"], "items[1].name");
+    assert_eq!(created.json["errors"][0]["message"], "Name is required.");
+    let listed = admin
+        .get(&url(&model, &format!("/lists/{regions}/items")))
+        .await;
+    assert_eq!(listed.json, json!([]));
+    assert_eq!(structure_rows(&pool, &model).await, rows);
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn missing_references_in_a_body_are_refused_by_name(pool: PgPool) {
+    let (mut admin, _, model) = plan(&pool).await;
+    let regions = create_list(&mut admin, &model, json!({ "name": "Regions" })).await;
+    let products = create_list(&mut admin, &model, json!({ "name": "Products" })).await;
+    let europe =
+        id_of(&create_items(&mut admin, &model, &regions, json!([{ "name": "Europe" }])).await[0]);
+    let lamp =
+        id_of(&create_items(&mut admin, &model, &products, json!([{ "name": "Lamp" }])).await[0]);
+    let missing = Uuid::now_v7().to_string();
+    let rows = structure_rows(&pool, &model).await;
+
+    let parent_list = admin
+        .post(
+            &url(&model, "/lists"),
+            Some(json!({ "name": "Countries", "parent_list_id": missing })),
+        )
+        .await;
+    assert_problem(
+        &parent_list,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "structure.invalid",
+    );
+    assert_eq!(parent_list.json["errors"][0]["field"], "parent_list_id");
+
+    let subset_list = admin
+        .post(
+            &url(&model, "/subsets"),
+            Some(json!({ "list_id": missing, "name": "Core" })),
+        )
+        .await;
+    assert_problem(
+        &subset_list,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "structure.invalid",
+    );
+    assert_eq!(subset_list.json["errors"][0]["field"], "list_id");
+
+    let subset_item = admin
+        .post(
+            &url(&model, "/subsets"),
+            Some(json!({ "list_id": regions, "name": "Core", "item_ids": [europe, lamp] })),
+        )
+        .await;
+    assert_problem(
+        &subset_item,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "structure.invalid",
+    );
+    assert_eq!(subset_item.json["errors"][0]["field"], "item_ids[1]");
+
+    let deleted = admin
+        .post(
+            &url(&model, &format!("/lists/{regions}/items/delete")),
+            Some(json!({ "ids": [europe, missing] })),
+        )
+        .await;
+    assert_problem(
+        &deleted,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "structure.invalid",
+    );
+    assert_eq!(deleted.json["errors"][0]["field"], "ids[1]");
+    let listed = admin
+        .get(&url(&model, &format!("/lists/{regions}/items")))
+        .await;
+    assert_eq!(
+        listed.json.as_array().unwrap().len(),
+        1,
+        "nothing was deleted"
+    );
+
+    assert_eq!(structure_rows(&pool, &model).await, rows);
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn missing_parents_of_items_are_refused_by_name_and_missing_lists_are_not_found(
+    pool: PgPool,
+) {
+    let (mut admin, _, model) = plan(&pool).await;
+    let regions = create_list(&mut admin, &model, json!({ "name": "Regions" })).await;
+    let europe =
+        id_of(&create_items(&mut admin, &model, &regions, json!([{ "name": "Europe" }])).await[0]);
+    let countries = create_list(
+        &mut admin,
+        &model,
+        json!({ "name": "Countries", "parent_list_id": regions }),
+    )
+    .await;
+    let france = id_of(
+        &create_items(
+            &mut admin,
+            &model,
+            &countries,
+            json!([{ "name": "France", "parent_id": europe }]),
+        )
+        .await[0],
+    );
+    let missing = Uuid::now_v7().to_string();
+
+    let moved = admin
+        .patch(
+            &url(&model, &format!("/lists/{countries}/items/{france}")),
+            Some(json!({ "parent_id": missing })),
+        )
+        .await;
+    assert_problem(
+        &moved,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "structure.invalid",
+    );
+    assert_eq!(moved.json["errors"][0]["field"], "parent_id");
+
+    let bulk = admin
+        .post(
+            &url(&model, &format!("/lists/{countries}/items")),
+            Some(json!({ "items": [{ "name": "Peru", "parent_id": missing }] })),
+        )
+        .await;
+    assert_problem(&bulk, StatusCode::UNPROCESSABLE_ENTITY, "structure.invalid");
+    assert_eq!(bulk.json["errors"][0]["field"], "items[0].parent_id");
+
+    let nowhere = admin
+        .post(
+            &url(&model, &format!("/lists/{missing}/items")),
+            Some(json!({ "items": [{ "name": "Peru" }] })),
+        )
+        .await;
+    assert_problem(&nowhere, StatusCode::NOT_FOUND, "not_found");
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn calendar_and_time_range_limits_are_refused_by_field(pool: PgPool) {
+    let (mut admin, _, model) = plan(&pool).await;
+    let calendars = [
+        (
+            "fiscal_year_start_month",
+            json!({ "fiscal_year_start_month": 0, "first_year": 2026, "years": 3 }),
+        ),
+        (
+            "fiscal_year_start_month",
+            json!({ "fiscal_year_start_month": 13, "first_year": 2026, "years": 3 }),
+        ),
+        (
+            "years",
+            json!({ "fiscal_year_start_month": 1, "first_year": 2026, "years": 0 }),
+        ),
+        (
+            "years",
+            json!({ "fiscal_year_start_month": 1, "first_year": 2026, "years": 21 }),
+        ),
+        (
+            "first_year",
+            json!({ "fiscal_year_start_month": 1, "first_year": 0, "years": 3 }),
+        ),
+        (
+            "first_year",
+            json!({ "fiscal_year_start_month": 1, "first_year": 10000, "years": 3 }),
+        ),
+    ];
+    for (field, body) in calendars {
+        let response = put(&mut admin, &url(&model, "/calendar"), body).await;
+        assert_problem(&response, StatusCode::UNPROCESSABLE_ENTITY, "validation");
+        assert_eq!(
+            response.json["errors"][0]["field"], field,
+            "{}",
+            response.text
+        );
+    }
+    let ranges = [
+        (
+            "years",
+            json!({ "name": "A", "first_year": 2027, "years": 0 }),
+        ),
+        (
+            "years",
+            json!({ "name": "A", "first_year": 2027, "years": 21 }),
+        ),
+        (
+            "first_year",
+            json!({ "name": "B", "first_year": 0, "years": 1 }),
+        ),
+        (
+            "first_year",
+            json!({ "name": "B", "first_year": 10000, "years": 1 }),
+        ),
+    ];
+    for (field, body) in ranges {
+        let response = admin.post(&url(&model, "/time-ranges"), Some(body)).await;
+        assert_problem(&response, StatusCode::UNPROCESSABLE_ENTITY, "validation");
+        assert_eq!(
+            response.json["errors"][0]["field"], field,
+            "{}",
+            response.text
+        );
+    }
+    assert_eq!(
+        structure(&mut admin, &model).await["calendar"]["first_year"],
+        2026
+    );
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn calendar_change_keeps_each_switchover_in_its_month(pool: PgPool) {
+    let (mut admin, _, model) = plan(&pool).await;
+    let created = admin
+        .post(
+            &url(&model, "/versions"),
+            Some(json!({
+                "name": "Plan A",
+                "is_actual": false,
+                "is_current": false,
+                "switchover": "Mar 27",
+            })),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text);
+
+    let moved = put(
+        &mut admin,
+        &url(&model, "/calendar"),
+        json!({ "fiscal_year_start_month": 1, "first_year": 2027, "years": 3 }),
+    )
+    .await;
+
+    assert_eq!(moved.status, StatusCode::OK, "{}", moved.text);
+    let doc = structure(&mut admin, &model).await;
+    let plan_a = doc["versions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|version| version["name"] == "Plan A")
+        .unwrap();
+    assert_eq!(
+        plan_a["switchover"], 2,
+        "March 2027 is the third month of a calendar from January 2027"
+    );
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn calendar_change_clears_switchovers_off_the_timeline(pool: PgPool) {
+    let (mut admin, _, model) = plan(&pool).await;
+    let created = admin
+        .post(
+            &url(&model, "/versions"),
+            Some(json!({
+                "name": "Plan A",
+                "is_actual": false,
+                "is_current": false,
+                "switchover": "Mar 27",
+            })),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text);
+
+    let shorter = put(
+        &mut admin,
+        &url(&model, "/calendar"),
+        json!({ "fiscal_year_start_month": 1, "first_year": 2026, "years": 1 }),
+    )
+    .await;
+
+    assert_eq!(shorter.status, StatusCode::OK, "{}", shorter.text);
+    let doc = structure(&mut admin, &model).await;
+    let plan_a = doc["versions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|version| version["name"] == "Plan A")
+        .unwrap();
+    assert_eq!(plan_a["switchover"], Value::Null);
+    assert_eq!(
+        stored_calendar(&pool, &model).await,
+        json!({ "fiscal_year_start_month": 1, "first_year": 2026, "years": 1 })
+    );
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn an_invalid_current_period_leaves_the_stored_calendar_unchanged(pool: PgPool) {
+    let (mut admin, _, model) = plan(&pool).await;
+    let before = stored_calendar(&pool, &model).await;
+
+    let refused = put(
+        &mut admin,
+        &url(&model, "/calendar"),
+        json!({ "fiscal_year_start_month": 1, "first_year": 2026, "years": 1, "current_period": "Jun 27" }),
+    )
+    .await;
+
+    assert_problem(&refused, StatusCode::UNPROCESSABLE_ENTITY, "validation");
+    assert_eq!(refused.json["errors"][0]["field"], "current_period");
+    assert_eq!(stored_calendar(&pool, &model).await, before);
+    assert_eq!(
+        structure(&mut admin, &model).await["calendar"]["current_month"],
+        Value::Null
+    );
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn planners_are_refused_and_builders_may_write(pool: PgPool) {
+    let (mut admin, workspace, model) = plan(&pool).await;
+    create_member(
+        &mut admin,
+        &workspace,
+        "planner@acme.com",
+        "Pia Planner",
+        "planner",
+    )
+    .await;
+    let mut planner = sign_in(&pool, "planner@acme.com").await;
+
+    let refused = planner
+        .post(&url(&model, "/lists"), Some(json!({ "name": "Regions" })))
+        .await;
+
+    assert_problem(&refused, StatusCode::FORBIDDEN, "auth.forbidden");
+    create_member(
+        &mut admin,
+        &workspace,
+        "builder@acme.com",
+        "Bea Builder",
+        "builder",
+    )
+    .await;
+    let mut builder = sign_in(&pool, "builder@acme.com").await;
+
+    let created = builder
+        .post(&url(&model, "/lists"), Some(json!({ "name": "Regions" })))
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text);
+    let calendar = put(
+        &mut builder,
+        &url(&model, "/calendar"),
+        json!({ "fiscal_year_start_month": 1, "first_year": 2026, "years": 3 }),
+    )
+    .await;
+    assert_eq!(calendar.status, StatusCode::OK, "{}", calendar.text);
 }

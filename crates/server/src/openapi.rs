@@ -26,10 +26,10 @@ use crate::{
         UpdateLineItemRequest, UpdateModuleRequest,
     },
     structure_api::{
-        CreateItemsRequest, CreateListRequest, CreateSubsetRequest, CreateTimeRangeRequest,
-        DeleteItemsRequest, ItemDto, ItemInput, ListDto, SubsetDto, TimeRangeDto,
-        UpdateCalendarRequest, UpdateItemRequest, UpdateListRequest, UpdateSubsetRequest,
-        VersionDto, VersionRequest,
+        CalendarDto, CreateItemsRequest, CreateListRequest, CreateSubsetRequest,
+        CreateTimeRangeRequest, DeleteItemsRequest, ItemDto, ItemInput, ListDto, SubsetDto,
+        TimeRangeDto, UpdateItemRequest, UpdateListRequest, UpdateSubsetRequest, VersionDto,
+        VersionRequest,
     },
     structure_dto::{
         AxisDto, FormatDto, LineItemDto, ModuleDto, NegativeStyleDto, NumberUnitDto,
@@ -158,7 +158,7 @@ const CSRF_EXEMPT_PATHS: [&str; 3] = ["/api/v1/setup", "/api/v1/auth/login", "/a
         UpdateSubsetRequest,
         VersionDto,
         VersionRequest,
-        UpdateCalendarRequest,
+        CalendarDto,
         TimeRangeDto,
         CreateTimeRangeRequest,
         StructureDto,
