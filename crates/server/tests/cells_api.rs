@@ -1707,3 +1707,81 @@ async fn nul_in_a_request_is_422_wherever_it_is(pool: PgPool) {
     assert_eq!(change_rows(&pool, &id).await, rows + 2);
 }
 
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn a_viewer_reads_history(pool: PgPool) {
+    let (mut admin, workspace, id) = plan(&pool).await;
+    let model = budget_model(&mut admin, &id).await;
+    let g = &model.geography;
+    create_member(
+        &mut admin,
+        &workspace,
+        "vera@acme.com",
+        "Vera Viewer",
+        "viewer",
+    )
+    .await;
+    write_ok(
+        &mut admin,
+        &id,
+        vec![edit(
+            &model.units,
+            at([&g.us, "Jan 26", &model.budget]),
+            number(12.0),
+        )],
+    )
+    .await;
+    let mut viewer = sign_in_beside(&admin, "vera@acme.com").await;
+
+    let response = history(
+        &mut viewer,
+        &id,
+        &model.units,
+        &format!("{}|Jan 26|{}", g.us, model.budget),
+    )
+    .await;
+
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text);
+    assert_eq!(response.json.as_array().unwrap().len(), 1);
+    assert_eq!(response.json[0]["new"], number(12.0));
+    assert_eq!(response.json[0]["user"]["name"], "Ada Admin");
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn body_limits_belong_to_their_routes(pool: PgPool) {
+    let (mut admin, _, id) = plan(&pool).await;
+    let module = create_module(&mut admin, &id, "Settings", Vec::new()).await;
+    let rate = create_line_item(&mut admin, &id, &module, json!({ "name": "Rate" })).await;
+    let padding = |mebibytes: usize| "x".repeat(mebibytes << 20);
+    let read_body = |mebibytes: usize| json!({ "line_item_id": rate, "cells": [], "padding": padding(mebibytes) });
+    let write_body = |mebibytes: usize| json!({ "edits": [], "padding": padding(mebibytes) });
+
+    // Other routes keep the 2 MiB that requests are limited to.
+    let lists = admin
+        .post(&url(&id, "/lists"), Some(json!({ "name": padding(3) })))
+        .await;
+    assert_problem(&lists, StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large");
+
+    // A read takes 8 MiB.
+    let read = admin
+        .post(&url(&id, "/cells/read"), Some(read_body(3)))
+        .await;
+    assert_eq!(read.status, StatusCode::OK, "{}", read.text);
+    let too_large = admin
+        .post(&url(&id, "/cells/read"), Some(read_body(9)))
+        .await;
+    assert_problem(
+        &too_large,
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "payload_too_large",
+    );
+
+    // A write takes 64 MiB.
+    let write = admin.post(&url(&id, "/cells"), Some(write_body(60))).await;
+    assert_eq!(write.status, StatusCode::OK, "{}", write.text);
+    let too_large = admin.post(&url(&id, "/cells"), Some(write_body(65))).await;
+    assert_problem(
+        &too_large,
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "payload_too_large",
+    );
+}
