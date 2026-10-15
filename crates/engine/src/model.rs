@@ -880,7 +880,7 @@ fn decode(structure: &Structure, ty: &ValueType, cell: Cell) -> Value {
     }
 }
 
-fn blank_value(ty: &ValueType) -> Value {
+pub(crate) fn blank_value(ty: &ValueType) -> Value {
     match ty {
         ValueType::Number => Value::Number(0.0),
         ValueType::Boolean => Value::Boolean(false),

@@ -1,14 +1,15 @@
 //! Performance of the engine against its targets (release build): one edit of a million-cell
-//! model recalculates in under 50 ms, ten million stored cells load in under 5 s, and a
-//! calculated line item of a hundred thousand cells rounds in under 10 ms.
+//! model recalculates in under 50 ms, ten million stored cells load in under 5 s, a
+//! calculated line item of a hundred thousand cells rounds in under 10 ms, and a window of 100
+//! rows by 40 columns of a view of the million-cell model is queried in under 50 ms.
 
 use std::sync::{LazyLock, Mutex};
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use openplan_engine::{
     AxisSpec, Calendar, CellEdit, Command, CoordToken, Format, InputChunk, ItemId, ItemSpec,
-    LineItem, LineItemId, ListId, Model, ModuleId, StructureDoc, SummaryMethod, TimeLevel,
-    TimeScale, Value, VersionsScope,
+    LineItem, LineItemId, ListId, Model, ModuleId, PageSelection, StructureDoc, SummaryMethod,
+    TimeLevel, TimeScale, Value, VersionsScope, ViewDim, ViewQuery, Window, view,
 };
 
 const MONTHS: [&str; 12] = [
@@ -94,6 +95,7 @@ fn list_with_items(model: &mut Model, name: &str, count: usize) -> (ListId, Vec<
 struct Sales {
     model: Model,
     module: ModuleId,
+    list: ListId,
     products: Vec<ItemId>,
     months: Vec<String>,
     versions: Vec<ItemId>,
@@ -126,6 +128,7 @@ fn sales(products: usize, years: u8) -> Sales {
     Sales {
         model,
         module,
+        list,
         products,
         months,
         versions,
@@ -163,15 +166,9 @@ impl Sales {
     }
 }
 
-/// The model of a million cells, and the cell that is edited.
-struct Edit {
-    model: Model,
-    units: LineItemId,
-    at: Vec<CoordToken>,
-    next: f64,
-}
-
-fn edit_fixture() -> Edit {
+/// 10,000 products over 36 months and 3 versions, with two input line items filled and four
+/// calculated ones over them: a million cells each.
+fn million_cells() -> (Sales, LineItemId) {
     let mut sales = sales(10_000, 3);
     let units = create(&mut sales.model, line_item(sales.module, "Units", None));
     let price = create(&mut sales.model, line_item(sales.module, "Price", None));
@@ -190,6 +187,19 @@ fn edit_fixture() -> Edit {
             line_item(sales.module, name, Some(formula)),
         );
     }
+    (sales, units)
+}
+
+/// The model of a million cells, and the cell that is edited.
+struct Edit {
+    model: Model,
+    units: LineItemId,
+    at: Vec<CoordToken>,
+    next: f64,
+}
+
+fn edit_fixture() -> Edit {
+    let (sales, units) = million_cells();
     let at = sales.coords(4_321, 7, 1);
     Edit {
         model: sales.model,
@@ -221,6 +231,46 @@ fn edit_1m_cells(c: &mut Criterion) {
                 })
                 .unwrap()
         })
+    });
+}
+
+/// The million-cell model and a query for a window of its products over the periods of its
+/// time, years and total included, at the current version and the first line item.
+fn query_fixture() -> (Model, ViewQuery) {
+    let (sales, _) = million_cells();
+    let q = ViewQuery {
+        module: sales.module,
+        line_items: None,
+        rows: vec![ViewDim::List { list: sales.list }],
+        columns: vec![ViewDim::Time],
+        pages: [ViewDim::Versions, ViewDim::LineItems]
+            .into_iter()
+            .map(|dim| PageSelection { dim, key: None })
+            .collect(),
+        show_summaries: true,
+        collapsed: Vec::new(),
+        hidden: Vec::new(),
+        filters: Vec::new(),
+        window: Window {
+            row_offset: 5_000,
+            row_limit: 100,
+            col_offset: 0,
+            col_limit: 40,
+        },
+    };
+    let result = view::query(&sales.model, &q).unwrap();
+    assert_eq!(result.total_rows, 10_000);
+    assert_eq!(result.total_columns, 58);
+    assert_eq!(result.rows.len(), 100);
+    assert!(result.cells.iter().all(|row| row.len() == 40));
+    (sales.model, q)
+}
+
+fn query_window(c: &mut Criterion) {
+    let fixture = LazyLock::new(query_fixture);
+    c.bench_function("query_window", |b| {
+        let (model, q) = &*fixture;
+        b.iter(|| view::query(model, q).unwrap())
     });
 }
 
@@ -379,6 +429,6 @@ fn create_400_chained_line_items(c: &mut Criterion) {
 criterion_group! {
     name = benches;
     config = Criterion::default().sample_size(10);
-    targets = edit_1m_cells, load_10m_cells, round_100k_cells, create_400_chained_line_items
+    targets = edit_1m_cells, query_window, load_10m_cells, round_100k_cells, create_400_chained_line_items
 }
 criterion_main!(benches);

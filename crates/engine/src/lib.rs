@@ -10,6 +10,7 @@ mod shape;
 mod structure;
 mod summary;
 mod value;
+pub mod view;
 
 pub use calendar::{Calendar, TimeLevel, TimeRange};
 pub use codec::{InputChunk, ItemDoc, ListDoc, StructureDoc};
@@ -28,3 +29,7 @@ pub use structure::{
 };
 pub use summary::{LevelSpec, aggregate};
 pub use value::{Column, Format, NegativeStyle, NumberUnit, Value, ValueType};
+pub use view::{
+    CellFlag, FilterOp, Header, LineItemInfo, Member, MemberRef, PageMember, PageSelection,
+    RowFilter, ViewDim, ViewQuery, ViewResult, Window,
+};
