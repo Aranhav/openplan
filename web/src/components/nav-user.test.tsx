@@ -73,6 +73,8 @@ describe("the user menu", () => {
 
     expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument()
     expect(router.state.location.pathname).toBe("/login")
+    // Signing out is not an expiry: nothing asks to come back to the page that was left.
+    expect(router.state.location.search).toEqual({})
   })
 
   it("stays disabled while signing out", async () => {

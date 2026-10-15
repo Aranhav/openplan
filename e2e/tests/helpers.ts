@@ -80,26 +80,95 @@ export async function screenshot(page: Page, name: string, { ready, reopen }: Sc
   }
 }
 
+/** What the API-backed helpers below use: JSON in and out, and the CSRF header on writes. */
+interface ApiClient {
+  get<T>(path: string): Promise<T>
+  post<T>(path: string, data: unknown): Promise<T>
+  delete(path: string): Promise<void>
+}
+
+/** Runs `run` with an API client signed in as `user`, so a spec can arrange data without the UI. */
+async function withApi<T>(
+  baseURL: string,
+  user: Pick<User, "email" | "password">,
+  run: (api: ApiClient) => Promise<T>,
+): Promise<T> {
+  const context = await request.newContext({ baseURL })
+  try {
+    const login = await context.post("/api/v1/auth/login", { data: user })
+    expect(login.ok()).toBe(true)
+    const csrf = (await context.storageState()).cookies.find(
+      ({ name }) => name === "op_csrf",
+    )?.value
+    expect(csrf).toBeTruthy()
+    const headers = { "x-openplan-csrf": csrf as string }
+    return await run({
+      async get<R>(path: string) {
+        const response = await context.get(path)
+        expect(response.ok()).toBe(true)
+        return (await response.json()) as R
+      },
+      async post<R>(path: string, data: unknown) {
+        const response = await context.post(path, { data, headers })
+        expect(response.ok()).toBe(true)
+        return (await response.json()) as R
+      },
+      async delete(path: string) {
+        const response = await context.delete(path, { headers })
+        expect(response.ok()).toBe(true)
+      },
+    })
+  } finally {
+    await context.dispose()
+  }
+}
+
+interface Me {
+  workspaces: { id: string }[]
+}
+
 /** Deletes every model in the user's workspaces through the API, so a spec can start from none. */
 export async function deleteAllModels(baseURL: string, user: Pick<User, "email" | "password">) {
-  const api = await request.newContext({ baseURL })
-  try {
-    const login = await api.post("/api/v1/auth/login", { data: user })
-    expect(login.ok()).toBe(true)
-    const csrf = (await api.storageState()).cookies.find(({ name }) => name === "op_csrf")?.value
-    expect(csrf).toBeTruthy()
-
-    const me = await (await api.get("/api/v1/auth/me")).json()
-    for (const workspace of me.workspaces as { id: string }[]) {
-      const models = await (await api.get(`/api/v1/workspaces/${workspace.id}/models`)).json()
-      for (const model of models as { id: string }[]) {
-        const deleted = await api.delete(`/api/v1/models/${model.id}`, {
-          headers: { "x-openplan-csrf": csrf as string },
-        })
-        expect(deleted.ok()).toBe(true)
+  await withApi(baseURL, user, async (api) => {
+    const me = await api.get<Me>("/api/v1/auth/me")
+    for (const workspace of me.workspaces) {
+      const models = await api.get<{ id: string }[]>(`/api/v1/workspaces/${workspace.id}/models`)
+      for (const model of models) {
+        await api.delete(`/api/v1/models/${model.id}`)
       }
     }
-  } finally {
-    await api.dispose()
-  }
+  })
+}
+
+/** Creates a model in the user's first workspace through the API and returns its id. */
+export async function createModelViaApi(
+  baseURL: string,
+  user: Pick<User, "email" | "password">,
+  name: string,
+) {
+  return withApi(baseURL, user, async (api) => {
+    const me = await api.get<Me>("/api/v1/auth/me")
+    const model = await api.post<{ id: string }>(
+      `/api/v1/workspaces/${me.workspaces[0].id}/models`,
+      { name },
+    )
+    return model.id
+  })
+}
+
+/** Creates an account through the API (as `admin`) and adds it to the admin's first workspace. */
+export async function createMemberViaApi(
+  baseURL: string,
+  admin: Pick<User, "email" | "password">,
+  user: User,
+  role: "admin" | "builder" | "planner" | "viewer",
+) {
+  await withApi(baseURL, admin, async (api) => {
+    await api.post("/api/v1/users", { ...user, is_instance_admin: false })
+    const me = await api.get<Me>("/api/v1/auth/me")
+    await api.post(`/api/v1/workspaces/${me.workspaces[0].id}/members`, {
+      email: user.email,
+      role,
+    })
+  })
 }
