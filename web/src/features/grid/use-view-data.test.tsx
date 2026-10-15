@@ -12,6 +12,8 @@ import {
   MODEL_ID,
   answer,
   failViewQuery,
+  header,
+  member,
   numberCell,
   salesQuery,
   salesView,
@@ -229,6 +231,26 @@ describe("useViewData", () => {
     expect(result.current.lineItems).toHaveLength(25)
     await waitFor(() => expect(result.current.isPlaceholder).toBe(false))
     expect(result.current.cell(0, 0)).toBeDefined()
+  })
+
+  it("gives the greatest depth of the rows that have loaded, for each row dimension", async () => {
+    serveViewQuery(
+      salesView({
+        rowDims: [{ kind: "list", list: "a" }, { kind: "time" }],
+        rowHeader: (row) =>
+          header(
+            member(`a${row}`, "A", { depth: row % 2 }),
+            member(`t${row}`, "T", { depth: row % 4 }),
+          ),
+      }),
+    )
+    const { Wrapper } = wrapper()
+
+    const { result } = renderHook(() => useViewData(MODEL_ID, salesQuery, topLeft), {
+      wrapper: Wrapper,
+    })
+
+    await waitFor(() => expect(result.current.rowMaxDepth).toEqual([1, 3]))
   })
 
   it("keys each block under the model's query key", async () => {

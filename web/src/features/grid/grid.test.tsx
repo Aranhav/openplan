@@ -370,6 +370,49 @@ describe("hierarchy", () => {
     expect(indent("United Kingdom") - indent("EMEA")).toBe(16)
   })
 
+  it("indents time rows by their distance from the top, since time counts its height above the periods", async () => {
+    const quarter = member("Q1 FY26", "Q1 FY26", {
+      depth: 1,
+      is_summary: true,
+      has_children: true,
+    })
+    const total = member("Total", "Total", { depth: 2, is_summary: true, has_children: true })
+    // Time lists each summary after its periods.
+    const rows = [jan, feb, quarter, total]
+    serveViewQuery(
+      salesView({
+        rowDims: [timeDim],
+        columnDims: [lineItemsDim],
+        totalRows: rows.length,
+        totalColumns: 1,
+        lineItems: [lineItem("li-0", "Revenue")],
+        rowHeader: (row) => header(rows[row]),
+        columnHeader: () => header(member("li-0", "Revenue")),
+        cell: (row) => numberCell(row),
+      }),
+    )
+    renderGrid({ query: { module: MODULE_ID, rows: [timeDim], columns: [lineItemsDim] } })
+    const grid = await loadedGrid()
+
+    const indent = (name: string) =>
+      parseInt(within(grid).getByRole("rowheader", { name }).style.paddingLeft, 10)
+    expect(indent("Total")).toBe(8)
+    expect(indent("Q1 FY26")).toBe(8 + 16)
+    expect(indent("Jan 26")).toBe(8 + 32)
+    expect(indent("Feb 26")).toBe(indent("Jan 26"))
+  })
+
+  it("still indents a list by its depth below the top", async () => {
+    serveViewQuery(hierarchyFor(query))
+    renderGrid({ query })
+    const grid = await loadedGrid()
+
+    const indent = (name: string) =>
+      parseInt(within(grid).getByRole("rowheader", { name }).style.paddingLeft, 10)
+    expect(indent("All Regions")).toBe(8)
+    expect(indent("United Kingdom")).toBe(8 + 32)
+  })
+
   it("draws headers on the page background, summaries on the muted one", async () => {
     serveViewQuery(hierarchyFor(query))
     renderGrid({ query })

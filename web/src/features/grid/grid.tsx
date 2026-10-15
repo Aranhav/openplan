@@ -56,6 +56,7 @@ import type {
 
 const NO_RULES: readonly ConditionalFormat[] = []
 const NO_WIDTHS: Readonly<Record<string, number>> = {}
+const NO_DEPTHS: readonly number[] = []
 const INITIAL_VISIBLE: CellRange = { rowStart: 0, rowEnd: 0, colStart: 0, colEnd: 0 }
 const ROW_OVERSCAN = 6
 const COLUMN_OVERSCAN = 3
@@ -210,6 +211,13 @@ export function Grid({
   const lineItems = useMemo(
     () => new Map<string, LineItemInfo>(data.lineItems.map((lineItem) => [lineItem.id, lineItem])),
     [data.lineItems],
+  )
+  // The depth that time rows hang from. The array is the same until a depth changes, so that the
+  // row headers are not drawn again for every block that arrives.
+  const maxDepthKey = data.rowMaxDepth.join(",")
+  const rowMaxDepth = useMemo(
+    () => (maxDepthKey === "" ? NO_DEPTHS : maxDepthKey.split(",").map(Number)),
+    [maxDepthKey],
   )
   const lineItemSourceOfCells = useMemo(
     () => lineItemSource(rowDims, columnDims, data.pages),
@@ -558,6 +566,7 @@ export function Grid({
                               previous={rowHeaders(row - 1)}
                               rowDims={rowDims}
                               widths={rowHeaderWidths}
+                              maxDepths={rowMaxDepth}
                               lineItems={lineItems}
                               onToggleCollapse={toggleMember}
                             />

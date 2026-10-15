@@ -20,9 +20,11 @@ function quoteCell(cell: string): string {
 /**
  * Tab-separated text as rows of cells, the way Excel and Sheets write it. A quoted cell may
  * hold tabs, line breaks and doubled quotes. One trailing line break ends the last row
- * instead of starting another. Empty text has no rows.
+ * instead of starting another. Empty text has no rows. With a `limit`, only the first `rows`
+ * rows and the first `cols` cells of each are kept, and the text after them is not read, for a
+ * paste that cannot use more than the grid has room for.
  */
-export function parseTsv(text: string): string[][] {
+export function parseTsv(text: string, limit?: { rows: number; cols: number }): string[][] {
   const rows: string[][] = []
   let row: string[] = []
   let field = ""
@@ -30,7 +32,9 @@ export function parseTsv(text: string): string[][] {
   let rowOpen = false
 
   const endField = () => {
-    row.push(field)
+    if (!limit || row.length < limit.cols) {
+      row.push(field)
+    }
     field = ""
     fieldStart = true
   }
@@ -42,7 +46,7 @@ export function parseTsv(text: string): string[][] {
   }
 
   let i = 0
-  while (i < text.length) {
+  while (i < text.length && !(limit && rows.length >= limit.rows)) {
     const char = text[i]
     if (char === "\n" || char === "\r") {
       endRow()
@@ -75,7 +79,7 @@ export function parseTsv(text: string): string[][] {
       i++
     }
   }
-  if (rowOpen) {
+  if (rowOpen && !(limit && rows.length >= limit.rows)) {
     endRow()
   }
   return rows

@@ -35,6 +35,15 @@ function repeatedColor(member: Member, repeated: boolean): string {
 // loaded, has no menu of ours, and its right click is left to the browser.
 const stopMenu = (event: MouseEvent) => event.stopPropagation()
 
+/**
+ * How far a member is indented: a list by its depth, how far below the top it is. Time counts
+ * its depth as the height above the periods, and lists its summaries after their periods, so a
+ * time row is indented by how far it is below the top, which is the greatest depth.
+ */
+function indentOf(dim: ViewDim, member: Member, maxDepth: number | undefined): number {
+  return dim.kind === "time" ? Math.max((maxDepth ?? member.depth) - member.depth, 0) : member.depth
+}
+
 export type HeaderCallbacks = {
   /** Absent when the grid cannot collapse members; then no chevron is drawn. */
   onToggleCollapse?: (dim: ViewDim, member: Member) => void
@@ -210,6 +219,8 @@ type RowHeadersProps = {
   rowDims: readonly ViewDim[]
   /** The width of each row dimension's column. */
   widths: readonly number[]
+  /** The greatest depth of the loaded members of each row dimension, which time rows hang from. */
+  maxDepths: readonly number[]
   lineItems: ReadonlyMap<string, LineItemInfo>
   onToggleCollapse?: (dim: ViewDim, member: Member) => void
 }
@@ -221,6 +232,7 @@ export const RowHeaders = memo(function RowHeaders({
   previous,
   rowDims,
   widths,
+  maxDepths,
   lineItems,
   onToggleCollapse,
 }: RowHeadersProps) {
@@ -258,7 +270,7 @@ export const RowHeaders = memo(function RowHeaders({
             aria-expanded={member.has_children ? !member.collapsed : undefined}
             aria-describedby={error ? errorNoteId(gridId, member.key) : undefined}
             className={`${CELL} gap-0.5 pr-2 ${headerSurface(member)} ${repeatedColor(member, repeated)}`}
-            style={{ width, paddingLeft: 8 + member.depth * INDENT }}
+            style={{ width, paddingLeft: 8 + indentOf(dim, member, maxDepths[level]) * INDENT }}
           >
             <MemberLabel
               member={member}

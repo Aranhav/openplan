@@ -100,6 +100,12 @@ export type ViewData = ViewShape & {
   rowHeaders(row: number): Header | undefined
   colHeaders(col: number): Header | undefined
   cell(row: number, col: number): Cell | undefined
+  /**
+   * The greatest depth of the members that have loaded, for each row dimension. Time counts its
+   * depth as the height above the periods, so the grid indents its rows by their distance from
+   * this.
+   */
+  rowMaxDepth: readonly number[]
   isFetching: boolean
   /** Loads every block on show again, which is what a retry after an error needs. */
   refetch(): Promise<void>
@@ -124,7 +130,10 @@ type Loaded = {
   updatedAt: number
 }
 
-export type Lookup = Pick<ViewData, "lineItems" | "rowHeaders" | "colHeaders" | "cell">
+export type Lookup = Pick<
+  ViewData,
+  "lineItems" | "rowHeaders" | "colHeaders" | "cell" | "rowMaxDepth"
+>
 
 // Large enough that no two blocks of a view share a key.
 const KEY_STRIDE = 1_000_000
@@ -163,6 +172,7 @@ function assemble(loaded: readonly Loaded[]): { lookup: Lookup; stale: Loaded[] 
   const rowBlocks = new Map<number, QueryResult>()
   const colBlocks = new Map<number, QueryResult>()
   const lineItems = new Map<string, LineItemInfo>()
+  const rowMaxDepth: number[] = []
   const stale: Loaded[] = []
   for (const entry of loaded) {
     const { block, result } = entry
@@ -173,6 +183,11 @@ function assemble(loaded: readonly Loaded[]): { lookup: Lookup; stale: Loaded[] 
     cellBlocks.set(blockKey(block.rowBlock, block.colBlock), result)
     rowBlocks.set(block.rowBlock, result)
     colBlocks.set(block.colBlock, result)
+    for (const { members } of result.rows) {
+      members.forEach((member, level) => {
+        rowMaxDepth[level] = Math.max(rowMaxDepth[level] ?? 0, member.depth)
+      })
+    }
     for (const lineItem of result.line_items) {
       // The first block to list a line item gives its object, so it does not change as others load.
       if (!lineItems.has(lineItem.id)) {
@@ -184,6 +199,7 @@ function assemble(loaded: readonly Loaded[]): { lookup: Lookup; stale: Loaded[] 
     stale,
     lookup: {
       lineItems: [...lineItems.values()],
+      rowMaxDepth,
       rowHeaders: (row) => rowBlocks.get(Math.floor(row / ROW_BLOCK))?.rows[row % ROW_BLOCK],
       colHeaders: (col) => colBlocks.get(Math.floor(col / COL_BLOCK))?.columns[col % COL_BLOCK],
       cell: (row, col) =>
@@ -266,6 +282,7 @@ function combineBlocks(results: UseQueryResult<QueryResult, Error>[]): BlockResu
 
 const EMPTY_LOOKUP: Lookup = {
   lineItems: [],
+  rowMaxDepth: [],
   rowHeaders: () => undefined,
   colHeaders: () => undefined,
   cell: () => undefined,

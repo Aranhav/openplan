@@ -156,6 +156,35 @@ describe("parseTsv", () => {
   })
 })
 
+describe("parseTsv with a limit", () => {
+  const text = "a\tb\tc\nd\te\tf\ng\th\ti\n"
+
+  it("reads only the rows and columns that can land", () => {
+    expect(parseTsv(text, { rows: 2, cols: 2 })).toEqual([
+      ["a", "b"],
+      ["d", "e"],
+    ])
+  })
+
+  it("reads everything when the limit is larger", () => {
+    expect(parseTsv(text, { rows: 10, cols: 10 })).toEqual(parseTsv(text))
+  })
+
+  it("stops after the last row, however long the text goes on", () => {
+    const long = "x\n".repeat(100_000)
+
+    expect(parseTsv(long, { rows: 3, cols: 1 })).toEqual([["x"], ["x"], ["x"]])
+  })
+
+  it("keeps a quoted cell that holds line breaks whole", () => {
+    expect(parseTsv('"a\nb"\tc\nd\te\n', { rows: 2, cols: 1 })).toEqual([["a\nb"], ["d"]])
+  })
+
+  it("does not limit when there is no limit", () => {
+    expect(parseTsv("a\tb\n")).toEqual([["a", "b"]])
+  })
+})
+
 describe("planPaste", () => {
   it("anchors a block at the top left of the selection", () => {
     const plan = planPaste(

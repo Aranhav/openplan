@@ -338,11 +338,19 @@ export function useGridEditing({
   }
 
   async function pasteText(text: string) {
-    const block = parseTsv(text)
-    if (readOnly || block.length === 0) {
+    if (readOnly) {
       return
     }
-    if (Math.max(pasteArea(block, selection, bounds), block.length) > MAX_CELLS) {
+    // Only what can land is read: the rest of a long clipboard is not needed to refuse it.
+    const start = rangeOf(selection)
+    const block = parseTsv(text, {
+      rows: Math.min(bounds.rows - start.rowStart, MAX_CELLS + 1),
+      cols: Math.min(bounds.cols - start.colStart, MAX_CELLS + 1),
+    })
+    if (block.length === 0) {
+      return
+    }
+    if (pasteArea(block, selection, bounds) > MAX_CELLS) {
       toast.error("Select or paste at most 10,000 cells at a time.")
       return
     }
@@ -355,7 +363,6 @@ export function useGridEditing({
     if (!loaded) {
       return
     }
-    const start = rangeOf(selection)
     const width = block.reduce((widest, row) => Math.max(widest, row.length), 0)
     const candidates: Candidate[] = []
     let skipped = 0

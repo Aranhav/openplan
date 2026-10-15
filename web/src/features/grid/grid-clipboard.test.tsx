@@ -440,6 +440,29 @@ describe("paste", () => {
     expect(bodies).toEqual([])
   })
 
+  it("pastes what lands in the grid from a clipboard that is longer than the grid", async () => {
+    const { grid, bodies } = await setup()
+    await select(grid, 1, BUDGET)
+
+    paste(grid, "7\n".repeat(50_000))
+
+    await waitFor(() => expect(bodies).toHaveLength(1))
+    expect(bodies[0].edits).toHaveLength(5)
+    await waitFor(() => expect(toast.success).toHaveBeenCalledExactlyOnceWith("Pasted 5 cells"))
+  })
+
+  it("refuses a clipboard with more than 10,000 cells that would land", async () => {
+    const { grid, bodies } = await setup({}, salesView({ totalRows: 20_000 }))
+    await select(grid, 0, 0)
+
+    paste(grid, "7\t7\n".repeat(50_000))
+
+    expect(toast.error).toHaveBeenCalledExactlyOnceWith(
+      "Select or paste at most 10,000 cells at a time.",
+    )
+    expect(bodies).toEqual([])
+  })
+
   it("loads the cells of a selection that is not on screen before it changes them", async () => {
     const { grid, bodies } = await setup({}, salesView())
     await select(grid, 0, 0)
