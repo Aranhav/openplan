@@ -9,7 +9,7 @@ test("a fresh instance sends visitors to setup, and setup creates the first admi
   await page.goto("/")
   await expect(page).toHaveURL(/\/setup$/)
   await expect(page.getByRole("heading", { name: "Set up OpenPlan", level: 1 })).toBeVisible()
-  await screenshot(page, "setup")
+  await screenshot(page, "setup", { ready: page.getByLabel("Workspace name") })
 
   await page.getByLabel("Your name").fill(ADMIN.name)
   await page.getByLabel("Work email").fill(ADMIN.email)
@@ -28,7 +28,9 @@ test("a fresh instance sends visitors to setup, and setup creates the first admi
   await expect(page.getByRole("heading", { name: "Models", level: 1 })).toBeVisible()
   await expect(page.getByRole("heading", { name: "No models yet" })).toBeVisible()
   await expect(page.getByRole("button", { name: new RegExp(WORKSPACE_NAME) })).toBeVisible()
-  await screenshot(page, "models-empty")
+  await screenshot(page, "models-empty", {
+    ready: page.getByRole("heading", { name: "No models yet" }),
+  })
 })
 
 test("a user can sign out and back in, and a wrong password is refused", async ({ page }) => {

@@ -12,8 +12,14 @@ psql "$admin_url" -v ON_ERROR_STOP=1 --quiet \
   -c "DROP DATABASE IF EXISTS $database WITH (FORCE)" \
   -c "CREATE DATABASE $database"
 
-# Swap the database name in the admin URL, keeping any query string.
-export DATABASE_URL="$(printf '%s' "$admin_url" | sed -E "s#/[^/?]*(\?|$)#/$database\1#")"
+# The same server and credentials as the admin URL, with the database swapped for ours. The URL is
+# taken apart as scheme://authority[/database][?query] by parameter expansion, because the admin
+# URL may have no database part at all (postgres://user:pass@host:5432) or carry a query string.
+base="${admin_url%%\?*}"
+query="${admin_url#"$base"}"
+authority="${base#*://}"
+authority="${authority%%/*}"
+export DATABASE_URL="${base%%://*}://$authority/$database$query"
 export OPENPLAN_BIND="127.0.0.1:8090"
 export OPENPLAN_PUBLIC_URL="http://localhost:8090"
 

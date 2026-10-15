@@ -1,7 +1,12 @@
 import { expect, test } from "@playwright/test"
-import { ADMIN, createModel, login, screenshot, toastWith } from "./helpers"
+import { ADMIN, createModel, deleteAllModels, login, screenshot, toastWith } from "./helpers"
 
 test.describe.configure({ mode: "serial" })
+
+// Another spec may have left models behind; this one starts from an empty workspace.
+test.beforeAll(async ({}, testInfo) => {
+  await deleteAllModels(testInfo.project.use.baseURL as string, ADMIN)
+})
 
 test("a model is created, renamed and switched to production mode", async ({ page }) => {
   await login(page, ADMIN)
@@ -22,7 +27,9 @@ test("a model is created, renamed and switched to production mode", async ({ pag
   await save.click()
   await expect(page.getByText("Mode: Production")).toBeVisible()
   await expect(save).toBeDisabled()
-  await screenshot(page, "model-settings")
+  await screenshot(page, "model-settings", {
+    ready: page.getByRole("heading", { name: "FY27 Operating Budget", level: 1 }),
+  })
 })
 
 test("the models page lists the model, refuses a duplicate name and deletes", async ({ page }) => {
@@ -30,7 +37,7 @@ test("the models page lists the model, refuses a duplicate name and deletes", as
 
   const card = page.getByRole("link", { name: /FY27 Operating Budget/ })
   await expect(card).toContainText("Production")
-  await screenshot(page, "models-grid")
+  await screenshot(page, "models-grid", { ready: card })
 
   await page.getByRole("button", { name: "New model" }).click()
   const create = page.getByRole("dialog", { name: "Create model" })

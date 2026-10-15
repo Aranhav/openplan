@@ -18,7 +18,9 @@ test("an admin creates a user and adds them to the workspace as a planner", asyn
   await create.getByRole("button", { name: "Create user" }).click()
   await expect(toastWith(page, `${PAT.name} created`)).toBeVisible()
   await expect(page.getByRole("row", { name: new RegExp(PAT.email) })).toBeVisible()
-  await screenshot(page, "users")
+  await screenshot(page, "users", {
+    ready: page.getByRole("row", { name: new RegExp(PAT.email) }),
+  })
 
   await page.getByRole("link", { name: "Members" }).click()
   await expect(page.getByRole("heading", { name: "Members", level: 1 })).toBeVisible()
@@ -32,7 +34,7 @@ test("an admin creates a user and adds them to the workspace as a planner", asyn
 
   const row = page.getByRole("row", { name: new RegExp(PAT.email) })
   await expect(row.getByRole("combobox", { name: `Role for ${PAT.name}` })).toHaveText("Planner")
-  await screenshot(page, "members")
+  await screenshot(page, "members", { ready: row })
 })
 
 test("the last admin of a workspace cannot demote themselves", async ({ page }) => {

@@ -20,7 +20,10 @@ test("Control+K opens the command palette, and choosing a model opens it", async
 
   await openPalette(page)
   await expect(palette(page).getByRole("option", { name: "Quarterly Forecast" })).toBeVisible()
-  await screenshot(page, "command-palette", () => openPalette(page))
+  await screenshot(page, "command-palette", {
+    ready: palette(page).getByRole("option", { name: "Headcount Plan" }),
+    reopen: () => openPalette(page),
+  })
 
   await palette(page).getByPlaceholder(/Search pages/).fill("Headcount")
   await expect(palette(page).getByRole("option")).toHaveCount(1)

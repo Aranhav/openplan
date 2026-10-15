@@ -2,13 +2,16 @@
 # Build context is the repository root: docker build -f docker/Dockerfile .
 
 FROM node:22-bookworm-slim AS web
-RUN corepack enable && corepack prepare pnpm@10.28.0 --activate
 WORKDIR /app
 # The lockfile covers every workspace package, so each one's manifest has to be present.
 COPY pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY web/package.json web/
 COPY e2e/package.json e2e/
-RUN pnpm install --frozen-lockfile --filter "web..."
+# The pnpm version is the `packageManager` field of web/package.json. Corepack reads it from the
+# directory it runs in, so prepare it there; --activate makes it the version used everywhere.
+RUN corepack enable && cd web && corepack prepare --activate
+# A path filter: the package's name is `openplan-web`, so `--filter web...` would match nothing.
+RUN pnpm install --frozen-lockfile --filter "./web..."
 COPY web web
 RUN pnpm --dir web build
 
