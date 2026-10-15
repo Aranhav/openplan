@@ -215,6 +215,16 @@ fn assert_close(found: &[f64], expected: &[f64]) {
     }
 }
 
+/// The `field` of each entry of the `errors` of a problem.
+fn error_fields(response: &TestResponse) -> Vec<String> {
+    response.json["errors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|error| error["field"].as_str().unwrap().to_string())
+        .collect()
+}
+
 /// Every change-log row of a model, whatever its kind.
 async fn change_rows(pool: &PgPool, model: &str) -> i64 {
     sqlx::query_scalar("SELECT count(*) FROM change_log WHERE model_id = $1")
@@ -674,7 +684,8 @@ async fn batch_with_invalid_cell_rejected_atomically(pool: PgPool) {
         .iter()
         .map(|error| error["field"].as_str().unwrap())
         .collect();
-    assert_eq!(fields, ["cells[1]", "cells[3]"]);
+    assert_eq!(fields, ["edits[1]", "edits[3]"]);
+    assert_eq!(response.json["detail"], "2 edits have invalid values.");
     assert_eq!(response.json["errors"][0]["message"], "Expected a number.");
     assert_eq!(change_rows(&pool, &id).await, rows);
     assert_close(
@@ -716,6 +727,8 @@ async fn a_bad_line_item_group_leaves_the_other_groups_unwritten(pool: PgPool) {
         StatusCode::UNPROCESSABLE_ENTITY,
         "cells.invalid_value",
     );
+    assert_eq!(error_fields(&response), ["edits[1]"]);
+    assert_eq!(response.json["detail"], "1 edit has an invalid value.");
     assert_eq!(change_rows(&pool, &id).await, rows);
     assert_close(
         &read_numbers(
@@ -727,6 +740,150 @@ async fn a_bad_line_item_group_leaves_the_other_groups_unwritten(pool: PgPool) {
         .await,
         &[0.0],
     );
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn errors_name_the_edits_of_the_request_whichever_line_item_they_belong_to(pool: PgPool) {
+    let (mut admin, _, id) = plan(&pool).await;
+    let model = budget_model(&mut admin, &id).await;
+    let g = &model.geography;
+    let budget = model.budget.as_str();
+    let rows = change_rows(&pool, &id).await;
+    let text = json!({ "t": "text", "v": "many" });
+
+    // The third edit of the request is the second one for units.
+    let value = write(
+        &mut admin,
+        &id,
+        vec![
+            edit(&model.price, at([&g.us, "Jan 26", budget]), number(10.0)),
+            edit(&model.units, at([&g.us, "Jan 26", budget]), number(1.0)),
+            edit(&model.units, at([&g.us, "Feb 26", budget]), text.clone()),
+            edit(&model.units, at([&g.us, "Mar 26", budget]), text),
+        ],
+    )
+    .await;
+    assert_problem(
+        &value,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "cells.invalid_value",
+    );
+    assert_eq!(error_fields(&value), ["edits[2]", "edits[3]"]);
+
+    // Only the first line item that has a bad edit is reported: units, though price has one too.
+    let first_group = write(
+        &mut admin,
+        &id,
+        vec![
+            edit(&model.units, at([&g.us, "Jan 26", budget]), number(1.0)),
+            edit(
+                &model.price,
+                at([&g.us, "Jan 26", budget]),
+                json!({ "t": "boolean", "v": true }),
+            ),
+            edit(
+                &model.units,
+                at([&g.us, "Feb 26", budget]),
+                json!({ "t": "boolean", "v": true }),
+            ),
+        ],
+    )
+    .await;
+    assert_eq!(error_fields(&first_group), ["edits[2]"]);
+
+    let coordinate = write(
+        &mut admin,
+        &id,
+        vec![
+            edit(&model.units, at([&g.us, "Jan 26", budget]), number(1.0)),
+            edit(&model.price, at([&g.us, "Jan 26", budget]), number(1.0)),
+            edit(&model.units, at([&g.us, "Jan 40", budget]), number(1.0)),
+        ],
+    )
+    .await;
+    assert_problem(
+        &coordinate,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "cells.invalid_coordinate",
+    );
+    assert!(
+        coordinate.json["detail"]
+            .as_str()
+            .unwrap()
+            .starts_with("Edit 2: "),
+        "{}",
+        coordinate.text
+    );
+
+    let not_input = write(
+        &mut admin,
+        &id,
+        vec![
+            edit(&model.units, at([&g.us, "Jan 26", budget]), number(1.0)),
+            edit(&model.revenue, at([&g.us, "Jan 26", budget]), number(1.0)),
+        ],
+    )
+    .await;
+    assert_problem(
+        &not_input,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "cells.not_input",
+    );
+    assert_eq!(change_rows(&pool, &id).await, rows);
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn an_error_lists_100_problems_and_counts_the_rest(pool: PgPool) {
+    let (mut admin, _, id) = plan(&pool).await;
+    let model = budget_model(&mut admin, &id).await;
+    let g = &model.geography;
+    let bad = |count: usize| -> Vec<Value> {
+        (0..count)
+            .map(|_| {
+                edit(
+                    &model.units,
+                    at([&g.us, "Jan 26", &model.budget]),
+                    json!({ "t": "text", "v": "many" }),
+                )
+            })
+            .collect()
+    };
+    let stranger = Uuid::now_v7().to_string();
+
+    let exactly = write(&mut admin, &id, bad(100)).await;
+    assert_eq!(error_fields(&exactly).len(), 100);
+
+    let values = write(&mut admin, &id, bad(150)).await;
+    assert_problem(
+        &values,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "cells.invalid_value",
+    );
+    let fields = error_fields(&values);
+    assert_eq!(fields.len(), 101);
+    assert_eq!(fields[99], "edits[99]");
+    assert_eq!(fields[100], "edits");
+    assert_eq!(values.json["errors"][100]["message"], "…and 50 more.");
+    assert_eq!(values.json["detail"], "150 edits have invalid values.");
+
+    let missing = write(
+        &mut admin,
+        &id,
+        (0..130)
+            .map(|_| edit(&stranger, at([]), number(1.0)))
+            .collect(),
+    )
+    .await;
+    assert_problem(
+        &missing,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "structure.invalid",
+    );
+    let fields = error_fields(&missing);
+    assert_eq!(fields.len(), 101);
+    assert_eq!(fields[0], "edits[0].line_item_id");
+    assert_eq!(fields[100], "edits");
+    assert_eq!(missing.json["errors"][100]["message"], "…and 30 more.");
 }
 
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
@@ -1496,3 +1653,4 @@ async fn the_cells_routes_are_in_the_openapi_document(pool: PgPool) {
         assert!(schemas.contains_key(name), "{name}");
     }
 }
+

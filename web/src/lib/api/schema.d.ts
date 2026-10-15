@@ -2048,7 +2048,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description More than 100,000 edits (validation), a line item that does not exist (structure.invalid), a coordinate that fits no cell (cells.invalid_coordinate), a calculated line item (cells.not_input), or a value that does not fit its cell (cells.invalid_value; `errors` names each cell as `cells[i]`, i being its position among the edits for its line item). Nothing is written. */
+            /** @description More than 100,000 edits (validation), a line item that does not exist (structure.invalid), a coordinate that fits no cell (cells.invalid_coordinate), a calculated line item (cells.not_input), or a value that does not fit its cell (cells.invalid_value; `errors` lists up to 100 edits as `edits[i]`, i being the position in the request). Only the first line item with invalid edits is reported. Nothing is written. */
             422: {
                 headers: {
                     [name: string]: unknown;

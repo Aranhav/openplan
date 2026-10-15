@@ -15,7 +15,10 @@ use axum::{
     routing::{get, post},
 };
 use chrono::{DateTime, NaiveDate, Utc};
-use openplan_engine::{CellEdit, Command, CoordToken, ItemId, LineItemId, Model, TimeLevel, Value};
+use openplan_engine::{
+    CellEdit, CellIssue, Command, CoordToken, EngineError, ItemId, LineItemId, Model, TimeLevel,
+    Value,
+};
 use serde::{Deserialize, Serialize};
 use sqlx::types::Json as JsonColumn;
 use utoipa::{IntoParams, ToSchema};
@@ -39,6 +42,8 @@ const MAX_EDITS: usize = 100_000;
 const MAX_CELLS: usize = 10_000;
 /// The most changes the history of a cell lists.
 const HISTORY_LIMIT: i64 = 100;
+/// The most problems of a request that an error lists.
+const MAX_PROBLEMS: usize = 100;
 /// How large the body of a write may be. The 2 MiB that other requests are limited to would stop
 /// a write well short of its 100,000 edits.
 const WRITE_BODY_LIMIT: usize = 64 << 20;
@@ -234,12 +239,31 @@ fn missing_line_item(field: &str) -> FieldError {
     }
 }
 
-/// The coordinates and the value of each edit of one line item.
-type Edits = Vec<(Vec<CoordToken>, ValueDto)>;
+/// `problems`, or the first 100 of them and one more, for `field`, that counts the rest.
+fn capped(mut problems: Vec<FieldError>, field: &str) -> Vec<FieldError> {
+    if problems.len() > MAX_PROBLEMS {
+        let more = problems.len() - MAX_PROBLEMS;
+        problems.truncate(MAX_PROBLEMS);
+        problems.push(FieldError {
+            field: field.to_string(),
+            message: format!("…and {more} more."),
+        });
+    }
+    problems
+}
+
+/// The edits of one line item, with the position of each in the request.
+struct Group {
+    line_item: LineItemId,
+    requests: Vec<usize>,
+    coords: Vec<Vec<CoordToken>>,
+    values: Vec<ValueDto>,
+}
 
 /// The commands that write `edits` into `model`: one `SetCells` for each line item, in the order
 /// the line items first appear, with the edits of each in the order they were sent and the
-/// period labels written the way the calendar writes them.
+/// period labels written the way the calendar writes them. Each is checked, and the first that
+/// is not valid fails the request with its edits named by their position in the request.
 fn write_commands(model: &Model, edits: Vec<CellEditDto>) -> AppResult<Vec<Command>> {
     let structure = model.structure();
     let missing: Vec<FieldError> = edits
@@ -249,37 +273,91 @@ fn write_commands(model: &Model, edits: Vec<CellEditDto>) -> AppResult<Vec<Comma
         .map(|(index, _)| missing_line_item(&format!("edits[{index}].line_item_id")))
         .collect();
     if !missing.is_empty() {
-        return Err(AppError::MissingReferences(missing));
+        return Err(AppError::MissingReferences(capped(missing, "edits")));
     }
 
     let mut position: HashMap<LineItemId, usize> = HashMap::new();
-    let mut groups: Vec<(LineItemId, Edits)> = Vec::new();
-    for edit in edits {
+    let mut groups: Vec<Group> = Vec::new();
+    for (request, edit) in edits.into_iter().enumerate() {
         let line_item = LineItemId(edit.line_item_id);
         let group = *position.entry(line_item).or_insert_with(|| {
-            groups.push((line_item, Vec::new()));
+            groups.push(Group {
+                line_item,
+                requests: Vec::new(),
+                coords: Vec::new(),
+                values: Vec::new(),
+            });
             groups.len() - 1
         });
-        groups[group].1.push((edit.coords, edit.value));
+        let group = &mut groups[group];
+        group.requests.push(request);
+        group.coords.push(edit.coords);
+        group.values.push(edit.value);
     }
     groups
         .into_iter()
-        .map(|(line_item, cells)| {
-            let (coords, values): (Vec<_>, Vec<_>) = cells.into_iter().unzip();
-            let coords = model.canonical_coords(line_item, &coords)?;
+        .map(|group| {
+            let coords = model.canonical_coords(group.line_item, &group.coords)?;
+            let edits: Vec<CellEdit> = coords
+                .into_iter()
+                .zip(group.values)
+                .map(|(coords, value)| CellEdit {
+                    coords,
+                    value: value.into(),
+                })
+                .collect();
+            model
+                .check_cells(group.line_item, &edits)
+                .map_err(|error| located(error, &group.requests))?;
             Ok(Command::SetCells {
-                line_item,
-                edits: coords
-                    .into_iter()
-                    .zip(values)
-                    .map(|(coords, value)| CellEdit {
-                        coords,
-                        value: value.into(),
-                    })
-                    .collect(),
+                line_item: group.line_item,
+                edits,
             })
         })
         .collect()
+}
+
+/// An engine error about the edits of one line item, as an error about the request: the engine
+/// numbers the edits of a line item from 0, and `requests[i]` is the position in the request of
+/// the `i`th.
+fn located(error: EngineError, requests: &[usize]) -> AppError {
+    let request = |edit: usize| requests.get(edit).copied().unwrap_or(edit);
+    match error {
+        EngineError::InvalidValue { cells } => {
+            let detail = match cells.len() {
+                1 => "1 edit has an invalid value.".to_string(),
+                count => format!("{count} edits have invalid values."),
+            };
+            let problems = cells
+                .into_iter()
+                .map(|CellIssue { index, message }| FieldError {
+                    field: format!("edits[{}]", request(index)),
+                    message,
+                })
+                .collect();
+            AppError::Unprocessable {
+                code: "cells.invalid_value",
+                detail,
+                errors: capped(problems, "edits"),
+            }
+        }
+        EngineError::InvalidCoordinate { message } => {
+            AppError::Engine(EngineError::InvalidCoordinate {
+                message: renumbered(&message, request),
+            })
+        }
+        other => other.into(),
+    }
+}
+
+/// The message of an `InvalidCoordinate` error, which starts with the position of the edit
+/// (`Edit 3: `), with the position that `request` gives it.
+fn renumbered(message: &str, request: impl Fn(usize) -> usize) -> String {
+    message
+        .strip_prefix("Edit ")
+        .and_then(|rest| rest.split_once(": "))
+        .and_then(|(edit, text)| Some(format!("Edit {}: {text}", request(edit.parse().ok()?))))
+        .unwrap_or_else(|| message.to_string())
 }
 
 #[utoipa::path(
@@ -293,7 +371,7 @@ fn write_commands(model: &Model, edits: Vec<CellEditDto>) -> AppResult<Vec<Comma
         (status = 401, description = "Not signed in (auth.unauthenticated)"),
         (status = 403, description = "Not a workspace planner (auth.forbidden)"),
         (status = 404, description = "No such model, or the caller is not a member of its workspace (not_found)"),
-        (status = 422, description = "More than 100,000 edits (validation), a line item that does not exist (structure.invalid), a coordinate that fits no cell (cells.invalid_coordinate), a calculated line item (cells.not_input), or a value that does not fit its cell (cells.invalid_value; `errors` names each cell as `cells[i]`, i being its position among the edits for its line item). Nothing is written."),
+        (status = 422, description = "More than 100,000 edits (validation), a line item that does not exist (structure.invalid), a coordinate that fits no cell (cells.invalid_coordinate), a calculated line item (cells.not_input), or a value that does not fit its cell (cells.invalid_value; `errors` lists up to 100 edits as `edits[i]`, i being the position in the request). Only the first line item with invalid edits is reported. Nothing is written."),
     )
 )]
 pub(crate) async fn write_cells(
@@ -306,8 +384,11 @@ pub(crate) async fn write_cells(
     if body.edits.len() > MAX_EDITS {
         return Err(too_many("edits", "Send at most 100,000 edits at a time."));
     }
-    let commands = write_commands(&handle.snapshot(), body.edits)?;
-    let outcome = handle.apply(user.id, commands).await?;
+    let edits = body.edits;
+    // The commands are made in the actor, from the model they are applied to.
+    let outcome = handle
+        .apply_with(user.id, move |model| write_commands(model, edits))
+        .await?;
     Ok(Json(WriteCellsResponse {
         seq: outcome.seq,
         changed_line_item_ids: outcome

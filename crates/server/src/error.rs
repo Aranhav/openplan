@@ -45,6 +45,14 @@ pub enum AppError {
     /// nothing is a 404; this one is `structure.invalid` and names the fields.
     #[error("the request refers to something that does not exist")]
     MissingReferences(Vec<FieldError>),
+    /// A request the server understood and refuses: `code` tells why, and `errors` which parts of
+    /// the request are wrong.
+    #[error("unprocessable ({code}): {detail}")]
+    Unprocessable {
+        code: &'static str,
+        detail: String,
+        errors: Vec<FieldError>,
+    },
     #[error("engine rejected the change: {0}")]
     Engine(#[from] EngineError),
     #[error(transparent)]
@@ -231,6 +239,14 @@ impl IntoResponse for AppError {
                     detail,
                 )
             }
+            AppError::Unprocessable {
+                code,
+                detail,
+                errors: field_errors,
+            } => {
+                errors = Some(field_errors);
+                (StatusCode::UNPROCESSABLE_ENTITY, code, detail)
+            }
             AppError::Engine(error) => {
                 match &error {
                     EngineError::Formula(problems) => {
@@ -329,6 +345,26 @@ mod tests {
         assert_eq!(json["code"], "validation");
         assert_eq!(json["errors"][0]["field"], "name");
         assert_eq!(json["errors"][0]["message"], "Name is required");
+    }
+
+    #[tokio::test]
+    async fn unprocessable_requests_have_their_own_code_detail_and_fields() {
+        let response = AppError::Unprocessable {
+            code: "cells.invalid_value",
+            detail: "1 edit has an invalid value.".into(),
+            errors: vec![FieldError {
+                field: "edits[4]".into(),
+                message: "Expected a number.".into(),
+            }],
+        }
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let json = body_json(response).await;
+        assert_eq!(json["code"], "cells.invalid_value");
+        assert_eq!(json["detail"], "1 edit has an invalid value.");
+        assert_eq!(json["errors"][0]["field"], "edits[4]");
+        assert_eq!(json["errors"][0]["message"], "Expected a number.");
     }
 
     #[tokio::test]
