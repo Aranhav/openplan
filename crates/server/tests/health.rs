@@ -1,13 +1,16 @@
+mod common;
+
 use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode, header},
 };
+use common::TestApp;
 use openplan_server::{
     app::{AppState, build_router},
     config::Config,
 };
 use serde_json::Value;
-use sqlx::postgres::PgPoolOptions;
+use sqlx::{PgPool, postgres::PgPoolOptions};
 use tower::ServiceExt;
 
 fn router() -> axum::Router {
@@ -78,4 +81,28 @@ async fn docs_page_served() {
     assert_eq!(response.status(), StatusCode::OK);
     let content_type = response.headers()[header::CONTENT_TYPE].to_str().unwrap();
     assert!(content_type.starts_with("text/html"));
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn migrations_create_tables(pool: PgPool) {
+    let count = sqlx::query_scalar::<_, i64>(
+        "SELECT count(*) FROM information_schema.tables WHERE table_name IN ('users','sessions','workspaces','workspace_members','models')",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    assert_eq!(count, 5);
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn wrong_method_on_api_route_is_problem_json(pool: PgPool) {
+    let mut app = TestApp::new(pool);
+
+    let response = app.post("/api/health", None).await;
+
+    assert_eq!(response.status, StatusCode::METHOD_NOT_ALLOWED);
+    let content_type = response.headers[header::CONTENT_TYPE].to_str().unwrap();
+    assert!(content_type.starts_with("application/problem+json"));
+    assert_eq!(response.json["code"], "method_not_allowed");
 }

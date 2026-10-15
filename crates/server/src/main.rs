@@ -5,9 +5,9 @@ use clap::{Parser, Subcommand};
 use openplan_server::{
     app::{AppState, build_router},
     config::Config,
+    db,
     openapi::openapi_json,
 };
-use sqlx::postgres::PgPoolOptions;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -42,10 +42,11 @@ async fn serve() -> anyhow::Result<()> {
         .with_context(|| format!("OPENPLAN_LOG is not a valid filter: {}", config.log))?;
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
-    let db = PgPoolOptions::new()
-        .connect(&config.database_url)
+    let db = db::connect(&config.database_url).await?;
+    db::MIGRATOR
+        .run(&db)
         .await
-        .context("failed to connect to the database")?;
+        .context("failed to run database migrations")?;
 
     let bind = config.bind;
     let app = build_router(AppState::new(db, config));

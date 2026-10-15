@@ -16,7 +16,7 @@ use utoipa::{OpenApi, ToSchema};
 use utoipa_scalar::{Scalar, Servable};
 use uuid::Uuid;
 
-use crate::{config::Config, openapi::ApiDoc, static_files};
+use crate::{config::Config, error::AppError, openapi::ApiDoc, static_files};
 
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
 
@@ -76,6 +76,7 @@ pub fn build_router(state: AppState) -> Router {
         .merge(Scalar::with_url("/api/docs", ApiDoc::openapi()))
         .nest("/api/v1", api_v1)
         .fallback(static_files::serve)
+        .method_not_allowed_fallback(|| async { AppError::MethodNotAllowed })
         .layer(
             ServiceBuilder::new()
                 .layer(SetRequestIdLayer::new(REQUEST_ID_HEADER, MakeRequestUuidV7))

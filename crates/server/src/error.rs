@@ -26,6 +26,8 @@ pub enum AppError {
     RateLimited { retry_after_secs: u64 },
     #[error("not found")]
     NotFound,
+    #[error("method not allowed")]
+    MethodNotAllowed,
     #[error("conflict ({code}): {detail}")]
     Conflict { code: &'static str, detail: String },
     #[error("not found ({code}): {detail}")]
@@ -96,6 +98,11 @@ impl IntoResponse for AppError {
                 StatusCode::NOT_FOUND,
                 "not_found",
                 "The requested resource was not found.".to_string(),
+            ),
+            AppError::MethodNotAllowed => (
+                StatusCode::METHOD_NOT_ALLOWED,
+                "method_not_allowed",
+                "The HTTP method is not allowed for this resource.".to_string(),
             ),
             AppError::Conflict { code, detail } => (StatusCode::CONFLICT, code, detail),
             AppError::CodedNotFound { code, detail } => (StatusCode::NOT_FOUND, code, detail),

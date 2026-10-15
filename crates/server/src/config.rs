@@ -1,16 +1,27 @@
-use std::net::SocketAddr;
+use std::{fmt, net::SocketAddr};
 
 use anyhow::Context;
 
 const DEFAULT_BIND: &str = "0.0.0.0:8080";
 const DEFAULT_LOG: &str = "info";
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Config {
     pub database_url: String,
     pub public_url: String,
     pub bind: SocketAddr,
     pub log: String,
+}
+
+impl fmt::Debug for Config {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Config")
+            .field("database_url", &"<redacted>")
+            .field("public_url", &self.public_url)
+            .field("bind", &self.bind)
+            .field("log", &self.log)
+            .finish()
+    }
 }
 
 impl Config {
@@ -109,5 +120,21 @@ mod tests {
         };
         assert!(config("https://plan.acme.com").secure_cookies());
         assert!(!config("http://localhost:8080").secure_cookies());
+    }
+
+    #[test]
+    fn debug_output_redacts_database_password() {
+        let config = config_from(&[
+            (
+                "DATABASE_URL",
+                "postgres://openplan:hunter2@localhost/openplan",
+            ),
+            ("OPENPLAN_PUBLIC_URL", "http://localhost:8080"),
+        ])
+        .unwrap();
+
+        let debug = format!("{config:?}");
+        assert!(!debug.contains("hunter2"));
+        assert!(debug.contains("\"<redacted>\""));
     }
 }

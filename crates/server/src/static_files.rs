@@ -34,6 +34,9 @@ fn respond<A: RustEmbed>(request_path: &str) -> Response {
         };
         return asset(path, file.data, cache);
     }
+    if path.starts_with("assets/") {
+        return (StatusCode::NOT_FOUND, "Not found").into_response();
+    }
     match A::get("index.html") {
         Some(index) => asset("index.html", index.data, NO_CACHE),
         None => (StatusCode::NOT_FOUND, NOT_BUILT).into_response(),
@@ -132,6 +135,15 @@ mod tests {
                 "{path}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn missing_assets_are_plain_not_found() {
+        let response = respond::<Built>("/assets/missing.js");
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert!(header_value(&response, header::CONTENT_TYPE).starts_with("text/plain"));
+        assert_eq!(text(response).await, "Not found");
     }
 
     #[tokio::test]
