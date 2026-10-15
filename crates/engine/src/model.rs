@@ -394,7 +394,7 @@ impl Model {
         let writes = commands
             .iter()
             .filter_map(cell_edits)
-            .map(|(line_item, edits)| self.check_cells(line_item, edits))
+            .map(|(line_item, edits)| self.plan_cells(line_item, edits))
             .collect::<Result<Vec<_>, _>>()?;
         let before = Arc::clone(&self.structure);
         let graph_before = Arc::clone(&self.graph);
@@ -424,7 +424,7 @@ impl Model {
     fn stage(&mut self, command: Command, session: &mut Session) -> Result<(), EngineError> {
         match &command {
             Command::SetCells { line_item, edits } => {
-                let write = self.check_cells(*line_item, edits)?;
+                let write = self.plan_cells(*line_item, edits)?;
                 self.write_cells(write, session);
                 return Ok(());
             }
@@ -576,8 +576,15 @@ impl Model {
         }
     }
 
+    /// Checks the edits of a `SetCells` command for a line item without applying them: the
+    /// error is the one applying them would give, and the cells of an invalid edit are numbered
+    /// by its position in `edits`.
+    pub fn check_cells(&self, li: LineItemId, edits: &[CellEdit]) -> Result<(), EngineError> {
+        self.plan_cells(li, edits).map(drop)
+    }
+
     /// Validates every edit of a `SetCells` command and works out the cells to write.
-    fn check_cells(&self, id: LineItemId, edits: &[CellEdit]) -> Result<CellWrite, EngineError> {
+    fn plan_cells(&self, id: LineItemId, edits: &[CellEdit]) -> Result<CellWrite, EngineError> {
         let structure = Arc::clone(&self.structure);
         let line_item = structure
             .line_item(id)

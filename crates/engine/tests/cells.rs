@@ -1050,3 +1050,104 @@ fn names_cannot_contain_nul() {
         },
     );
 }
+
+#[test]
+fn check_cells_accepts_what_apply_accepts_and_changes_nothing() {
+    let (mut world, units) = units_by_country();
+    let before = world.model.generation();
+    let edits = vec![
+        CellEdit {
+            coords: vec![item(world.us)],
+            value: num(5.0),
+        },
+        CellEdit {
+            coords: vec![item(world.fr)],
+            value: num(9.0),
+        },
+    ];
+
+    world.model.check_cells(units, &edits).unwrap();
+
+    assert_eq!(world.model.generation(), before);
+    assert_eq!(
+        read_one(&world.model, units, vec![item(world.us)]),
+        num(1.0)
+    );
+    world
+        .model
+        .apply(Command::SetCells {
+            line_item: units,
+            edits,
+        })
+        .unwrap();
+    assert_eq!(
+        read_one(&world.model, units, vec![item(world.us)]),
+        num(5.0)
+    );
+}
+
+#[test]
+fn check_cells_numbers_the_edits_the_way_apply_does() {
+    let (world, units) = units_by_country();
+    let edit = |country: ItemId, value: Value| CellEdit {
+        coords: vec![item(country)],
+        value,
+    };
+    let edits = vec![
+        edit(world.us, num(1.0)),
+        edit(world.ca, text("many")),
+        edit(world.de, num(3.0)),
+        edit(world.fr, Value::Boolean(true)),
+    ];
+
+    let checked = world.model.check_cells(units, &edits).unwrap_err();
+    let applied = world
+        .model
+        .clone()
+        .apply(Command::SetCells {
+            line_item: units,
+            edits,
+        })
+        .unwrap_err();
+
+    assert_eq!(checked.code(), "cells.invalid_value");
+    assert_eq!(
+        issues(checked),
+        vec![
+            (1, "Expected a number.".to_string()),
+            (3, "Expected a number.".to_string()),
+        ]
+    );
+    assert_eq!(applied.code(), "cells.invalid_value");
+}
+
+#[test]
+fn check_cells_reports_bad_coordinates_calculated_and_missing_line_items() {
+    let (mut world, units) = units_by_country();
+    let sales = world.model.structure().line_item(units).unwrap().module;
+    let double = calculated(&mut world.model, sales, "Double", "Units * 2");
+    let edit = |coords: Vec<CoordToken>| CellEdit {
+        coords,
+        value: num(1.0),
+    };
+
+    let coordinates = world
+        .model
+        .check_cells(
+            units,
+            &[edit(vec![item(world.us)]), edit(vec![period("top")])],
+        )
+        .unwrap_err();
+    assert_eq!(coordinates.code(), "cells.invalid_coordinate");
+    assert!(
+        coordinates.to_string().starts_with("Edit 1: "),
+        "{coordinates}"
+    );
+    let not_input = world
+        .model
+        .check_cells(double, &[edit(vec![item(world.us)])])
+        .unwrap_err();
+    assert_eq!(not_input.code(), "cells.not_input");
+    let missing = world.model.check_cells(LineItemId::new(), &[]).unwrap_err();
+    assert_eq!(missing.code(), "structure.not_found");
+}
