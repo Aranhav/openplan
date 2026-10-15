@@ -365,6 +365,11 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /**
+         * Adds a line item to a module. The id of a list can stand in for the module's: the line item
+         *     is then a property of the list, and lives in the system module of the list's properties, which
+         *     exists from its first property on.
+         */
         post: operations["create_line_item"];
         delete?: never;
         options?: never;
@@ -743,15 +748,8 @@ export interface components {
              */
             line_item_id: string;
         };
-        /** @description What checking a formula found. */
-        CheckFormulaResponse: {
-            /** @description Everything wrong with the formula; only when it is not accepted. */
-            errors?: components["schemas"]["FormulaProblem"][];
-            /** @description Whether the formula would be accepted. */
-            ok: boolean;
-            /** @description The type of the formula; only when it is accepted. */
-            type?: components["schemas"]["ValueTypeDto"];
-        };
+        /** @description What checking a formula found: it is accepted with its type, or rejected with every problem. */
+        CheckFormulaResponse: components["schemas"]["FormulaAccepted"] | components["schemas"]["FormulaRejected"];
         /** @description Something the formula editor offers at the cursor. */
         CompletionDto: {
             /** @description A line of help: the type of a line item, the documentation of a function. */
@@ -888,6 +886,13 @@ export interface components {
             /** @enum {string} */
             type: "time_period";
         };
+        /** @description A formula that would be accepted. */
+        FormulaAccepted: {
+            /** @enum {boolean} */
+            ok: true;
+            /** @description The type of the formula, which is the type of the line item. */
+            type: components["schemas"]["ValueTypeDto"];
+        };
         /** @description A problem found in a formula, located by the byte positions of the part it concerns. */
         FormulaProblem: {
             /** @description A stable code such as `formula.unknown_name`. */
@@ -899,6 +904,13 @@ export interface components {
             start: number;
             /** @description What to write instead, such as the name that was probably meant. */
             suggestion?: string | null;
+        };
+        /** @description A formula that would be rejected. */
+        FormulaRejected: {
+            /** @description Everything wrong with the formula. */
+            errors: components["schemas"]["FormulaProblem"][];
+            /** @enum {boolean} */
+            ok: false;
         };
         /** @description A built-in function of the formula language. */
         FunctionDto: {
@@ -2213,7 +2225,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description The line item does not exist (structure.invalid) */
+            /** @description The line item does not exist (structure.invalid), or the request is invalid, such as a formula over 10,000 characters (validation) */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -3206,7 +3218,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description No such model or module, or the caller is not a member of the workspace (not_found) */
+            /** @description No such model, module or list, or the caller is not a member of the workspace (not_found) */
             404: {
                 headers: {
                     [name: string]: unknown;

@@ -26,8 +26,8 @@ use crate::{
     models::{Calendar, CreateModelRequest, ModelDto, ModelMode, UpdateModelRequest},
     modules_api::{
         CheckFormulaRequest, CheckFormulaResponse, CompletionDto, CompletionKindDto,
-        CreateLineItemRequest, CreateModuleRequest, FunctionDto, ReorderLineItemsRequest,
-        UpdateLineItemRequest, UpdateModuleRequest,
+        CreateLineItemRequest, CreateModuleRequest, FormulaAccepted, FormulaRejected, FunctionDto,
+        ReorderLineItemsRequest, UpdateLineItemRequest, UpdateModuleRequest,
     },
     structure_api::{
         CalendarDto, CreateItemsRequest, CreateListRequest, CreateSubsetRequest,
@@ -193,6 +193,8 @@ const CSRF_EXEMPT_PATHS: [&str; 3] = ["/api/v1/setup", "/api/v1/auth/login", "/a
         ReorderLineItemsRequest,
         CheckFormulaRequest,
         CheckFormulaResponse,
+        FormulaAccepted,
+        FormulaRejected,
         CompletionDto,
         CompletionKindDto,
         FunctionDto,
@@ -491,6 +493,31 @@ mod tests {
                 .unwrap()
                 .contains("auth.rate_limited")
         );
+    }
+
+    #[test]
+    fn a_formula_check_is_told_apart_by_its_ok_field() {
+        let schemas = &document()["components"]["schemas"];
+
+        assert_eq!(
+            schemas["CheckFormulaResponse"]["oneOf"],
+            serde_json::json!([
+                { "$ref": "#/components/schemas/FormulaAccepted" },
+                { "$ref": "#/components/schemas/FormulaRejected" },
+            ])
+        );
+        assert_eq!(
+            schemas["FormulaAccepted"]["properties"]["ok"]["enum"],
+            serde_json::json!([true])
+        );
+        assert_eq!(
+            schemas["FormulaRejected"]["properties"]["ok"]["enum"],
+            serde_json::json!([false])
+        );
+        for schema in ["FormulaAccepted", "FormulaRejected"] {
+            let required = schemas[schema]["required"].as_array().unwrap();
+            assert!(required.contains(&Value::from("ok")), "{schema}");
+        }
     }
 
     fn resolve<'a>(document: &'a Value, response: &'a Value) -> &'a Value {

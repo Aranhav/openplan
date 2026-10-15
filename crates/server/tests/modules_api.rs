@@ -782,6 +782,174 @@ async fn completions_after_a_dot_offer_the_members(pool: PgPool) {
     assert_eq!(nothing.json, json!([]));
 }
 
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn concurrent_creates_in_one_module_get_distinct_ordinals(pool: PgPool) {
+    let (mut admin, _, model) = plan(&pool).await;
+    let module = create_module(&mut admin, &model, "Plan", vec![month()]).await;
+
+    let mut creates = tokio::task::JoinSet::new();
+    for number in 0..8 {
+        let mut client = admin.fork();
+        let path = url(&model, &format!("/modules/{module}/line-items"));
+        creates.spawn(async move {
+            client
+                .post(&path, Some(json!({ "name": format!("Item {number}") })))
+                .await
+        });
+    }
+    let mut ordinals = Vec::new();
+    while let Some(response) = creates.join_next().await {
+        let response = response.unwrap();
+        assert_eq!(response.status, StatusCode::CREATED, "{}", response.text);
+        ordinals.push(response.json["ordinal"].as_i64().unwrap());
+    }
+
+    ordinals.sort_unstable();
+    assert_eq!(ordinals, (0..8).collect::<Vec<i64>>());
+    let doc = structure(&mut admin, &model).await;
+    assert_eq!(line_item_names(&doc, &module).len(), 8);
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn text_fields_have_length_limits(pool: PgPool) {
+    let (mut admin, _, model) = plan(&pool).await;
+    let module = create_module(&mut admin, &model, "Plan", vec![month()]).await;
+    let line_item =
+        id_of(&create_line_item(&mut admin, &model, &module, json!({ "name": "Units" })).await);
+    let create = url(&model, &format!("/modules/{module}/line-items"));
+    let at_limit_formula = format!("1{}", " ".repeat(9_999));
+
+    let accepted = admin
+        .post(
+            &create,
+            Some(json!({
+                "name": "Edge",
+                "notes": "n".repeat(2_000),
+                "code": "c".repeat(80),
+                "formula": at_limit_formula,
+            })),
+        )
+        .await;
+    assert_eq!(accepted.status, StatusCode::CREATED, "{}", accepted.text);
+    let modules = admin
+        .post(
+            &url(&model, "/modules"),
+            Some(json!({ "name": "Wide", "axes": [], "functional_area": "a".repeat(80) })),
+        )
+        .await;
+    assert_eq!(modules.status, StatusCode::CREATED, "{}", modules.text);
+
+    let too_long = |field: &str, text: String| {
+        let mut body = json!({ "name": "Over" });
+        body[field] = json!(text);
+        body
+    };
+    for (field, text, message) in [
+        (
+            "notes",
+            "n".repeat(2_001),
+            "Notes must be at most 2000 characters.",
+        ),
+        (
+            "code",
+            "c".repeat(81),
+            "Code must be at most 80 characters.",
+        ),
+        (
+            "formula",
+            format!("1{}", " ".repeat(10_000)),
+            "Formula must be at most 10000 characters.",
+        ),
+    ] {
+        let created = admin
+            .post(&create, Some(too_long(field, text.clone())))
+            .await;
+        assert_problem(&created, StatusCode::UNPROCESSABLE_ENTITY, "validation");
+        assert_eq!(created.json["errors"][0]["field"], field);
+        assert_eq!(created.json["errors"][0]["message"], message);
+        let patched = patch_line_item(&mut admin, &model, &line_item, json!({ field: text })).await;
+        assert_problem(&patched, StatusCode::UNPROCESSABLE_ENTITY, "validation");
+        assert_eq!(patched.json["errors"][0]["field"], field);
+    }
+    let checked = check(
+        &mut admin,
+        &model,
+        &line_item,
+        &format!("1{}", " ".repeat(10_000)),
+    )
+    .await;
+    assert_problem(&checked, StatusCode::UNPROCESSABLE_ENTITY, "validation");
+    assert_eq!(checked.json["errors"][0]["field"], "formula");
+    let incomplete = admin
+        .post(
+            &url(&model, "/formula/check"),
+            Some(json!({ "line_item_id": line_item })),
+        )
+        .await;
+    assert_problem(&incomplete, StatusCode::UNPROCESSABLE_ENTITY, "validation");
+    assert_eq!(incomplete.json["errors"][0]["field"], "formula");
+    let area = "a".repeat(81);
+    let created = admin
+        .post(
+            &url(&model, "/modules"),
+            Some(json!({ "name": "Over", "axes": [], "functional_area": area })),
+        )
+        .await;
+    assert_problem(&created, StatusCode::UNPROCESSABLE_ENTITY, "validation");
+    assert_eq!(created.json["errors"][0]["field"], "functional_area");
+    let patched = admin
+        .patch(
+            &url(&model, &format!("/modules/{module}")),
+            Some(json!({ "functional_area": area })),
+        )
+        .await;
+    assert_problem(&patched, StatusCode::UNPROCESSABLE_ENTITY, "validation");
+    assert_eq!(
+        patched.json["errors"][0]["message"],
+        "Functional area must be at most 80 characters."
+    );
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn a_list_id_stands_in_for_a_module_id_to_create_list_properties(pool: PgPool) {
+    let (mut admin, _, model) = plan(&pool).await;
+    let regions = create_list(&mut admin, &model, "Regions").await;
+
+    let created = create_line_item(
+        &mut admin,
+        &model,
+        &regions,
+        json!({ "name": "Population" }),
+    )
+    .await;
+
+    assert_eq!(created["module"], regions);
+    assert_eq!(created["name"], "Population");
+    let doc = structure(&mut admin, &model).await;
+    let properties = doc["modules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|module| module["id"] == regions.as_str())
+        .unwrap();
+    assert_eq!(
+        *properties,
+        json!({
+            "id": regions,
+            "name": "Regions Properties",
+            "axes": [list_axis(&regions)],
+            "functional_area": "System",
+        })
+    );
+    let nowhere = admin
+        .post(
+            &url(&model, &format!("/modules/{}/line-items", Uuid::now_v7())),
+            Some(json!({ "name": "Nope" })),
+        )
+        .await;
+    assert_problem(&nowhere, StatusCode::NOT_FOUND, "not_found");
+}
+
 /// The function names of the table in §4.5 of the design spec: every uppercase word outside the
 /// brackets and parentheses of a row.
 fn spec_function_names() -> Vec<String> {
