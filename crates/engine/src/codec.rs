@@ -58,9 +58,15 @@ const CHUNK_CELLS: usize = 1_000_000;
 const CHUNK_BYTES: usize = 64 << 20;
 
 /// Most bytes a chunk may take once decompressed, whatever it says about itself, so that a
-/// damaged or crafted chunk cannot make a load use memory without bound. It leaves room for
-/// text, the only value of any length.
-const MAX_DECODED_BYTES: usize = 256 << 20;
+/// damaged or crafted chunk cannot make a load use memory without bound. A chunk this build
+/// writes takes at most [`CHUNK_BYTES`] unless it is a single cell, and the rest is room for
+/// the chunks of other builds and for text, the only value of any length.
+const MAX_DECODED_BYTES: usize = 80 << 20;
+
+const _: () = assert!(
+    CHUNK_BYTES < MAX_DECODED_BYTES,
+    "a chunk that is written must fit in what is read"
+);
 
 /// Bytes of a chunk that come before everything that depends on its size: the format, the kind
 /// of value, the level of period values, the first month of the fiscal year, the number of axes
@@ -1037,6 +1043,17 @@ mod tests {
     use crate::ids::ModuleId;
     use crate::structure::{AxisSpec, TimeScale, VersionsScope};
     use crate::value::Format;
+
+    #[test]
+    fn a_chunk_decodes_to_at_most_80_mib() {
+        const MIB: usize = 1 << 20;
+        assert_eq!(MAX_DECODED_BYTES, 80 * MIB);
+        for kind in Kind::ALL {
+            let limit = decoded_limit(kind, usize::from(u8::MAX), CHUNK_CELLS);
+            assert_eq!(limit, MAX_DECODED_BYTES, "{kind:?}");
+        }
+        assert!(decoded_limit(Kind::Number, 1, 1_000) < MIB);
+    }
 
     #[test]
     fn cells_under_deleted_items_make_no_chunk() {

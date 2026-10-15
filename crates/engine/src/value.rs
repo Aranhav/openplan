@@ -183,7 +183,10 @@ impl Column {
         }
     }
 
-    #[allow(clippy::len_without_is_empty)]
+    #[allow(
+        clippy::len_without_is_empty,
+        reason = "callers ask whether a cell is blank (`is_blank_at`), never whether a column has no cells"
+    )]
     pub fn len(&self) -> usize {
         match self {
             Column::Number(cells) => cells.len(),

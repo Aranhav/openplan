@@ -10,7 +10,10 @@ macro_rules! define_ids {
 
         impl $name {
             /// Generates a fresh time-ordered (UUID v7) identifier.
-            #[allow(clippy::new_without_default)]
+            #[allow(
+                clippy::new_without_default,
+                reason = "an id is made fresh each time, so there is no default one"
+            )]
             pub fn new() -> Self {
                 Self(Uuid::now_v7())
             }
