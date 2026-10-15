@@ -18,7 +18,8 @@ use crate::{
 
 /// A JSON request body whose rejections are `application/problem+json`
 /// instead of axum's plain-text defaults. A text in it with the NUL character, which the
-/// database cannot store, is a 422 that names the field.
+/// database cannot store, is a 422 that names the field; for a body of more than 2 MiB, which is
+/// scanned and not parsed to find it, the field is `body`.
 pub struct ApiJson<T>(pub T);
 
 impl<S, T> FromRequest<S> for ApiJson<T>
