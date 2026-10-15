@@ -27,6 +27,8 @@ use uuid::Uuid;
 const MAX_ROW_LIMIT: usize = 1000;
 /// The most columns a window holds.
 const MAX_COL_LIMIT: usize = 200;
+/// The most rows a view with filters may have before they are applied.
+const MAX_FILTERED_ROWS: usize = 2_000_000;
 
 /// A dimension of a module's grid: one of its axes, or its line items.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -115,6 +117,8 @@ pub struct ViewQuery {
     /// Members left out.
     #[serde(default)]
     pub hidden: Vec<MemberRef>,
+    /// Conditions every row must meet. A view of more than 2,000,000 rows, before the filters
+    /// are applied, is refused.
     #[serde(default)]
     pub filters: Vec<RowFilter>,
     pub window: Window,

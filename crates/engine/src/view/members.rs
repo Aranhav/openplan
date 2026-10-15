@@ -144,9 +144,11 @@ impl Side<'_> {
         self.dims.iter().map(|dim| dim.shown.len()).collect()
     }
 
-    /// How many rows or columns the dimensions make before filters.
+    /// How many rows or columns the dimensions make before filters, at most `usize::MAX`.
     pub(super) fn total(&self) -> usize {
-        self.dims.iter().map(|dim| dim.shown.len()).product()
+        self.dims
+            .iter()
+            .fold(1, |total, dim| total.saturating_mul(dim.shown.len()))
     }
 
     pub(super) fn count(&self) -> usize {

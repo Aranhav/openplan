@@ -1,7 +1,7 @@
 use crate::common::*;
 use openplan_engine::{
-    AxisSpec, Command, CoordToken, FilterOp, Format, LineItem, ListId, RowFilter, SummaryMethod,
-    TimeScale, Value, VersionsScope, ViewDim,
+    AxisSpec, CellEdit, Command, CoordToken, FilterOp, Format, ItemId, LineItem, ListId, Model,
+    RowFilter, SummaryMethod, TimeScale, Value, VersionsScope, ViewDim,
 };
 
 #[test]
@@ -186,4 +186,177 @@ fn filter_line_item_with_foreign_dim_rejected() {
         message,
         "Filter line item 'Stock level' has a dimension this view doesn't have."
     );
+}
+
+#[test]
+fn a_filter_value_must_fit_the_line_item() {
+    let mut w = world();
+    let own = |name: &str, format: Format, ordinal: i32| LineItem {
+        time_scale: TimeScale::None,
+        versions: VersionsScope::None,
+        summary: SummaryMethod::None,
+        ..line_item(w.sales, name, ordinal, format, None)
+    };
+    let note = add(&mut w.model, own("Note", Format::Text, 2));
+    let active = add(&mut w.model, own("Active", Format::Boolean, 3));
+    let due = add(&mut w.model, own("Due", Format::Date, 4));
+    let mut q = w.grid(vec![w.countries()], vec![ViewDim::LineItems]);
+
+    let cases = [
+        (
+            w.units,
+            FilterOp::Gt,
+            Value::Text("many".into()),
+            "Filter on 'Units' needs a number.",
+        ),
+        (note, FilterOp::Eq, num(1.0), "Filter on 'Note' needs text."),
+        (
+            note,
+            FilterOp::Contains,
+            num(1.0),
+            "Filter on 'Note' needs text.",
+        ),
+        (
+            active,
+            FilterOp::Eq,
+            num(1.0),
+            "Filter on 'Active' needs a boolean.",
+        ),
+        (due, FilterOp::Lt, num(1.0), "Filter on 'Due' needs a date."),
+    ];
+    for (line_item, op, value, message) in cases {
+        q.filters = vec![RowFilter {
+            line_item,
+            op,
+            value: Some(value),
+        }];
+        assert_eq!(invalid(&w.model, &q), message);
+    }
+
+    // Operations that take no value ignore one.
+    q.filters = vec![RowFilter {
+        line_item: w.units,
+        op: FilterOp::IsBlank,
+        value: Some(Value::Text("ignored".into())),
+    }];
+    run(&w.model, &q);
+}
+
+/// A model with a flat list of `count` items named `{name} {n}`.
+fn model_with_list(model: &mut Model, name: &str, count: usize) -> (ListId, Vec<ItemId>) {
+    let list = ListId::new();
+    let items: Vec<_> = (0..count)
+        .map(|at| spec(ItemId::new(), &format!("{name} {at}"), None))
+        .collect();
+    let ids = items.iter().map(|item| item.id).collect();
+    model
+        .apply_batch(vec![
+            Command::CreateList {
+                id: list,
+                name: name.to_string(),
+                parent: None,
+                top_level_name: None,
+                numbered: false,
+                production_data: false,
+            },
+            Command::UpsertListItems { list, items },
+        ])
+        .unwrap();
+    (list, ids)
+}
+
+#[test]
+fn filters_read_the_rows_in_chunks() {
+    // More rows than the 16,384 a filter reads at a time, so that rows on both sides of a
+    // chunk boundary have to be told apart.
+    const ITEMS: usize = 20_000;
+    let mut model = Model::new(calendar());
+    let (list, items) = model_with_list(&mut model, "Item", ITEMS);
+    let module = new_module(&mut model, "Counts", vec![AxisSpec::List { list }]);
+    let count = number_item(&mut model, module, "Count", 1);
+    let edits = items
+        .iter()
+        .step_by(3)
+        .map(|item| CellEdit {
+            coords: vec![CoordToken::Item(*item)],
+            value: num(1.0),
+        })
+        .collect();
+    model
+        .apply(Command::SetCells {
+            line_item: count,
+            edits,
+        })
+        .unwrap();
+    let mut q = query_of(
+        module,
+        vec![ViewDim::List { list }],
+        vec![ViewDim::LineItems],
+        Vec::new(),
+    );
+    let filter = |op, value| RowFilter {
+        line_item: count,
+        op,
+        value: Some(num(value)),
+    };
+    q.filters = vec![filter(FilterOp::Gt, 0.0), filter(FilterOp::Lt, 2.0)];
+    q.window.row_offset = 5_460;
+    q.window.row_limit = 4;
+
+    let result = run(&model, &q);
+
+    // Every third item is set; the 5,461st of them is item 16,383, the last of the first chunk.
+    assert_eq!(result.total_rows, ITEMS.div_ceil(3));
+    assert_eq!(
+        labels(&result.rows, 0),
+        vec!["Item 16380", "Item 16383", "Item 16386", "Item 16389"]
+    );
+    assert!(result.cells.iter().all(|row| number(&row[0]) == 1.0));
+}
+
+#[test]
+fn a_filtered_view_of_too_many_rows_is_refused() {
+    let mut model = Model::new(calendar());
+    let (a, _) = model_with_list(&mut model, "A", 1_500);
+    let (b, _) = model_with_list(&mut model, "B", 1_500);
+    let module = new_module(
+        &mut model,
+        "Pairs",
+        vec![AxisSpec::List { list: a }, AxisSpec::List { list: b }],
+    );
+    let count = number_item(&mut model, module, "Count", 1);
+    let dim_a = ViewDim::List { list: a };
+    let dim_b = ViewDim::List { list: b };
+    let filter = RowFilter {
+        line_item: count,
+        op: FilterOp::Gt,
+        value: Some(num(0.0)),
+    };
+
+    // Without a filter no row is looked at but those of the window.
+    let mut q = query_of(
+        module,
+        vec![dim_a.clone(), dim_b.clone()],
+        vec![ViewDim::LineItems],
+        Vec::new(),
+    );
+    assert_eq!(run(&model, &q).total_rows, 2_250_000);
+
+    q.filters = vec![filter.clone()];
+    assert_eq!(
+        invalid(&model, &q),
+        "This view has 2,250,000 rows to filter; the limit is 2,000,000. \
+         Narrow it with page selections."
+    );
+
+    // Narrowed by a page, the view can be filtered.
+    let mut q = query_of(
+        module,
+        vec![dim_b],
+        vec![ViewDim::LineItems],
+        vec![page(dim_a)],
+    );
+    q.filters = vec![filter];
+    let result = run(&model, &q);
+    assert_eq!(result.total_rows, 0);
 }
