@@ -1408,8 +1408,8 @@ const TARGET: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// How long the median edit may take. It is looser than `TARGET` because the box the tests run
 /// on shares its cores: on a 4-core box that was building other things the median of 15 edits
-/// came out between 25 and 57 ms, over `TARGET` in the model with a switchover in four runs of
-/// four, while the best stayed under 40 ms.
+/// came out between 25 and 61 ms, over `TARGET` in the model with a switchover in every run,
+/// while the best stayed under 40 ms.
 const TYPICAL: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// Held by a timing test while it runs, so that the two do not slow each other down.
