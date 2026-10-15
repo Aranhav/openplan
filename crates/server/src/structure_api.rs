@@ -515,16 +515,10 @@ pub(crate) async fn update_calendar(
     handle
         .apply(user.id, vec![Command::SetCalendar { calendar }])
         .await?;
-    let stored = Calendar::from(calendar);
-    sqlx::query("UPDATE models SET calendar = $2 WHERE id = $1")
-        .bind(model_id)
-        .bind(sqlx::types::Json(&stored))
-        .execute(&state.db)
-        .await?;
     Ok(Json(CalendarDto {
-        fiscal_year_start_month: stored.fiscal_year_start_month,
-        first_year: stored.first_year,
-        years: stored.years,
+        fiscal_year_start_month: calendar.fiscal_year_start_month,
+        first_year: calendar.first_year,
+        years: calendar.years,
         current_period: calendar
             .current_month
             .map(|month| calendar.label(TimeLevel::Month, month)),

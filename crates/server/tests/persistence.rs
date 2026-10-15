@@ -362,6 +362,66 @@ async fn model_without_state_gets_the_default_state_on_first_load(pool: PgPool) 
     );
 }
 
+/// The calendar a model stores in its row, as the database holds it.
+async fn stored_calendar(pool: &PgPool, model_id: Uuid) -> serde_json::Value {
+    sqlx::query_scalar("SELECT calendar FROM models WHERE id = $1")
+        .bind(model_id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn a_calendar_change_updates_the_calendar_of_the_model_in_its_transaction(pool: PgPool) {
+    let (stored, mut model) = stored_model(&pool).await;
+    let original = json!({ "fiscal_year_start_month": 1, "first_year": 2026, "years": 1 });
+    let moved = |first_year| Calendar {
+        fiscal_year_start_month: 4,
+        first_year,
+        years: 2,
+        current_month: Some(3),
+    };
+    assert_eq!(stored_calendar(&pool, stored.id).await, original);
+
+    // A batch that is not committed leaves the calendar as it was.
+    let mut tx = pool.begin().await.unwrap();
+    let set = Command::SetCalendar {
+        calendar: moved(2027),
+    };
+    engine_store::append(&mut tx, stored.id, Some(stored.user), &[set], &[])
+        .await
+        .unwrap();
+    tx.rollback().await.unwrap();
+    assert_eq!(stored_calendar(&pool, stored.id).await, original);
+
+    // One that is committed sets it to the last calendar the batch sets.
+    let batch = vec![
+        Command::SetCalendar {
+            calendar: moved(2027),
+        },
+        Command::SetCalendar {
+            calendar: moved(2028),
+        },
+    ];
+    commit(&pool, &stored, &mut model, batch).await;
+    assert_eq!(
+        stored_calendar(&pool, stored.id).await,
+        json!({ "fiscal_year_start_month": 4, "first_year": 2028, "years": 2 })
+    );
+
+    // A batch without a calendar leaves it be.
+    let list = Command::CreateList {
+        id: ListId::new(),
+        name: "Regions".to_string(),
+        parent: None,
+        top_level_name: None,
+        numbered: false,
+        production_data: false,
+    };
+    commit(&pool, &stored, &mut model, vec![list]).await;
+    assert_eq!(stored_calendar(&pool, stored.id).await["first_year"], 2028);
+}
+
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn append_then_load_replays(pool: PgPool) {
     let (stored, mut model) = stored_model(&pool).await;

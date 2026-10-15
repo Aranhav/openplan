@@ -279,9 +279,11 @@ pub async fn cell_history(
 }
 
 /// Records a batch of commands that was applied to the model, in the caller's transaction, and
-/// returns its sequence number and how many rows it added. The batch is one row of kind `cells` when it only sets cells
-/// and of kind `structure` otherwise, and each cell it sets also gets a row of kind `cell`
-/// with the old and the new value, for the history of the cell.
+/// returns its sequence number and how many rows it added. The batch is one row of kind `cells`
+/// when it only sets cells and of kind `structure` otherwise, and each cell it sets also gets a
+/// row of kind `cell` with the old and the new value, for the history of the cell. A batch that
+/// sets the calendar also sets `models.calendar` to the last one it sets, which is the calendar
+/// the model is created with and the one the models API shows.
 ///
 /// `previous` holds the value each edited cell had before the batch, one for every `CellEdit`
 /// of the `SetCells` commands, in the order they appear. The old value of a cell that the batch
@@ -329,6 +331,16 @@ pub async fn append(
     .bind(Json(cmds))
     .fetch_one(&mut **tx)
     .await?;
+    if let Some(calendar) = cmds.iter().rev().find_map(|cmd| match cmd {
+        Command::SetCalendar { calendar } => Some(*calendar),
+        _ => None,
+    }) {
+        sqlx::query("UPDATE models SET calendar = $2 WHERE id = $1")
+            .bind(model_id)
+            .bind(Json(ApiCalendar::from(calendar)))
+            .execute(&mut **tx)
+            .await?;
+    }
 
     let mut line_items = Vec::new();
     let mut keys = Vec::new();
