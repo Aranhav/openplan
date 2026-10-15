@@ -90,3 +90,14 @@ pub async fn delete_all_for_user(db: &PgPool, user_id: Uuid) -> AppResult<()> {
         .await?;
     Ok(())
 }
+
+/// Deletes every session of `user_id` except the one whose raw token is
+/// `keep_raw_token`.
+pub async fn delete_others(db: &PgPool, user_id: Uuid, keep_raw_token: &str) -> AppResult<()> {
+    sqlx::query("DELETE FROM sessions WHERE user_id = $1 AND id_hash <> $2")
+        .bind(user_id)
+        .bind(hash_token(keep_raw_token))
+        .execute(db)
+        .await?;
+    Ok(())
+}

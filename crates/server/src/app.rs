@@ -22,7 +22,7 @@ use crate::{
     config::Config,
     error::AppError,
     openapi::ApiDoc,
-    static_files,
+    static_files, users,
 };
 
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
@@ -77,6 +77,7 @@ pub(crate) async fn health() -> Json<HealthResponse> {
 
 pub fn build_router(state: AppState) -> Router {
     let api_v1: Router<AppState> = auth::routes::router()
+        .merge(users::router())
         .layer(middleware::from_fn(csrf::require_csrf))
         .layer(middleware::from_fn(renewal::reissue_cookies));
 

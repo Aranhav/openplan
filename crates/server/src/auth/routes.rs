@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use crate::{
     app::AppState,
-    error::{AppError, AppResult},
+    error::{AppError, AppResult, FieldError},
     extract::ApiJson,
     validate,
 };
@@ -32,7 +32,8 @@ pub fn router() -> Router<AppState> {
         .route("/setup", post(setup))
         .route("/auth/login", post(login))
         .route("/auth/logout", post(logout))
-        .route("/auth/me", get(me))
+        .route("/auth/me", get(me).patch(update_me))
+        .route("/auth/me/password", post(change_password))
         .layer(middleware::map_response(no_store))
 }
 
@@ -90,6 +91,17 @@ pub struct WorkspaceMembership {
 pub struct MeResponse {
     user: CurrentUser,
     workspaces: Vec<WorkspaceMembership>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct UpdateProfileRequest {
+    name: String,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct ChangePasswordRequest {
+    current_password: String,
+    new_password: String,
 }
 
 #[derive(FromRow)]
@@ -322,4 +334,79 @@ pub(crate) async fn me(
         .await?
     };
     Ok(Json(MeResponse { user, workspaces }))
+}
+
+#[utoipa::path(
+    patch,
+    path = "/api/v1/auth/me",
+    tag = "auth",
+    request_body = UpdateProfileRequest,
+    responses(
+        (status = 200, description = "The signed-in user with the new name", body = CurrentUser),
+        (status = 401, description = "Not signed in (auth.unauthenticated)"),
+        (status = 422, description = "The name is invalid (validation)"),
+    )
+)]
+pub(crate) async fn update_me(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    ApiJson(body): ApiJson<UpdateProfileRequest>,
+) -> AppResult<Json<CurrentUser>> {
+    let name = validate::person_name(&body.name)?;
+    let updated = sqlx::query_as::<_, CurrentUser>(
+        "UPDATE users SET name = $2, updated_at = now() WHERE id = $1
+         RETURNING id, email, name, is_instance_admin",
+    )
+    .bind(user.id)
+    .bind(name)
+    .fetch_one(&state.db)
+    .await?;
+    Ok(Json(updated))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/me/password",
+    tag = "auth",
+    request_body = ChangePasswordRequest,
+    responses(
+        (status = 204, description = "The password was changed and the other sessions are signed out"),
+        (status = 401, description = "Not signed in (auth.unauthenticated)"),
+        (status = 422, description = "The current password is wrong or the new one is invalid (validation)"),
+    )
+)]
+pub(crate) async fn change_password(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    jar: CookieJar,
+    ApiJson(body): ApiJson<ChangePasswordRequest>,
+) -> AppResult<StatusCode> {
+    let token = jar
+        .get(SESSION_COOKIE)
+        .ok_or(AppError::Unauthenticated)?
+        .value();
+    validate::password(&body.new_password).map_err(|err| FieldError {
+        field: "new_password".into(),
+        ..err
+    })?;
+    let stored_hash: Option<String> =
+        sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1")
+            .bind(user.id)
+            .fetch_one(&state.db)
+            .await?;
+    if !password::verify_password_async(body.current_password, stored_hash).await {
+        return Err(FieldError {
+            field: "current_password".into(),
+            message: "Current password is incorrect.".into(),
+        }
+        .into());
+    }
+    let password_hash = password::hash_password_async(body.new_password).await?;
+    sqlx::query("UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1")
+        .bind(user.id)
+        .bind(password_hash)
+        .execute(&state.db)
+        .await?;
+    session::delete_others(&state.db, user.id, token).await?;
+    Ok(StatusCode::NO_CONTENT)
 }

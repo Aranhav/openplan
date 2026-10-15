@@ -6,4 +6,5 @@ pub mod error;
 pub mod extract;
 pub mod openapi;
 pub mod static_files;
+pub mod users;
 pub mod validate;

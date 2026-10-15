@@ -5,10 +5,12 @@ use crate::{
     auth::{
         CurrentUser,
         routes::{
-            LoginRequest, LoginResponse, MeResponse, SetupRequest, SetupResponse, SetupStatus,
-            WorkspaceMembership, WorkspaceSummary,
+            ChangePasswordRequest, LoginRequest, LoginResponse, MeResponse, SetupRequest,
+            SetupResponse, SetupStatus, UpdateProfileRequest, WorkspaceMembership,
+            WorkspaceSummary,
         },
     },
+    users::{CreateUserRequest, UpdateUserRequest, UserDto},
 };
 
 #[derive(OpenApi)]
@@ -21,6 +23,11 @@ use crate::{
         crate::auth::routes::login,
         crate::auth::routes::logout,
         crate::auth::routes::me,
+        crate::auth::routes::update_me,
+        crate::auth::routes::change_password,
+        crate::users::list_users,
+        crate::users::create_user,
+        crate::users::update_user,
     ),
     components(schemas(
         HealthResponse,
@@ -33,6 +40,11 @@ use crate::{
         LoginResponse,
         WorkspaceMembership,
         MeResponse,
+        UpdateProfileRequest,
+        ChangePasswordRequest,
+        UserDto,
+        CreateUserRequest,
+        UpdateUserRequest,
     ))
 )]
 pub struct ApiDoc;
