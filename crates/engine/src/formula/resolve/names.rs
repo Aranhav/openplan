@@ -125,10 +125,7 @@ impl<'a> Names<'a> {
         if let Some(line_item) = structure.line_item_by_name(Some(self.module), &name.text) {
             return Ok(Referent::LineItem(line_item));
         }
-        let mut matches: Vec<&LineItem> = structure
-            .line_items()
-            .filter(|line_item| same_name(&line_item.name, name.text.trim()))
-            .collect();
+        let mut matches: Vec<&LineItem> = structure.line_items_named(&name.text).collect();
         match matches.len() {
             0 => {}
             1 => return Ok(Referent::LineItem(matches[0])),
@@ -203,11 +200,7 @@ impl<'a> Names<'a> {
         let structure = self.structure;
         let own = structure.line_item_by_name(Some(self.module), &line_item.name);
         let reached = own.is_some_and(|found| found.id == line_item.id)
-            || structure
-                .line_items()
-                .filter(|other| same_name(&other.name, &line_item.name))
-                .count()
-                == 1;
+            || structure.line_items_named(&line_item.name).count() == 1;
         if reached {
             Form::of_name(&line_item.name)
         } else {

@@ -2694,3 +2694,115 @@ fn blank_item_codes_become_none() {
         })
         .unwrap();
 }
+
+#[test]
+fn names_are_found_ignoring_case_and_follow_every_change() {
+    let mut model = model();
+    let countries = new_list(&mut model, "Countries");
+    let sales = new_module(&mut model, "Sales", vec![list_axis(countries)]);
+    let costs = new_module(&mut model, "Costs", vec![list_axis(countries)]);
+    let units = new_number(&mut model, sales, "Units");
+    let cost_units = new_number(&mut model, costs, "units");
+
+    let structure = model.structure();
+    assert_eq!(structure.list_by_name(" COUNTRIES ").unwrap().id, countries);
+    assert_eq!(structure.module_by_name("sales").unwrap().id, sales);
+    assert_eq!(
+        structure
+            .line_item_by_name(Some(sales), "UNITS")
+            .unwrap()
+            .id,
+        units
+    );
+    assert_eq!(
+        structure
+            .line_item_by_name(Some(costs), " Units")
+            .unwrap()
+            .id,
+        cost_units
+    );
+    assert_eq!(
+        structure.line_item_by_name(None, "units").unwrap().id,
+        units.min(cost_units),
+        "a search of every module finds the first line item in id order"
+    );
+    assert!(structure.line_item_by_name(Some(sales), "Cost").is_none());
+
+    let same_name = model.apply(Command::UpdateLineItem {
+        id: units,
+        patch: LineItemPatch {
+            name: Some("UNITS".to_string()),
+            ..LineItemPatch::default()
+        },
+    });
+    assert!(
+        same_name.is_ok(),
+        "a line item can change the case of its name"
+    );
+    let rejected = model.apply(Command::CreateLineItem(line_item(
+        sales,
+        "UNITS",
+        Format::number(),
+    )));
+    assert!(matches!(rejected, Err(EngineError::NameTaken { .. })));
+    assert_eq!(
+        model
+            .structure()
+            .line_item_by_name(Some(sales), "units")
+            .unwrap()
+            .id,
+        units
+    );
+
+    model
+        .apply(Command::UpdateLineItem {
+            id: units,
+            patch: LineItemPatch {
+                name: Some("Volume".to_string()),
+                ..LineItemPatch::default()
+            },
+        })
+        .unwrap();
+    model
+        .apply(Command::UpdateModule {
+            id: sales,
+            name: Some("Revenue".to_string()),
+            axes: None,
+            functional_area: None,
+        })
+        .unwrap();
+    model
+        .apply(Command::UpdateList {
+            id: countries,
+            name: Some("Markets".to_string()),
+            top_level_name: None,
+            production_data: None,
+            selective_access: None,
+        })
+        .unwrap();
+    let structure = model.structure();
+    assert!(structure.line_item_by_name(Some(sales), "Units").is_none());
+    assert_eq!(
+        structure
+            .line_item_by_name(Some(sales), "volume")
+            .unwrap()
+            .id,
+        units
+    );
+    assert_eq!(
+        structure.line_item_by_name(None, "units").unwrap().id,
+        cost_units
+    );
+    assert!(structure.module_by_name("Sales").is_none());
+    assert_eq!(structure.module_by_name("REVENUE").unwrap().id, sales);
+    assert!(structure.list_by_name("Countries").is_none());
+    assert_eq!(structure.list_by_name("markets").unwrap().id, countries);
+
+    model
+        .apply(Command::DeleteLineItem { id: cost_units })
+        .unwrap();
+    model.apply(Command::DeleteModule { id: costs }).unwrap();
+    let structure = model.structure();
+    assert!(structure.line_item_by_name(None, "units").is_none());
+    assert!(structure.module_by_name("Costs").is_none());
+}

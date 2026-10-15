@@ -1,4 +1,5 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -51,6 +52,44 @@ pub struct Structure {
     time_ranges: BTreeMap<TimeRangeId, TimeRange>,
     modules: BTreeMap<ModuleId, Module>,
     line_items: BTreeMap<LineItemId, LineItem>,
+    /// Lists, modules and line items by name, built when a name is first looked up and
+    /// dropped by every command that is applied.
+    names: OnceLock<NameIndex>,
+}
+
+/// The ids of lists, modules and line items by name, ignoring case: the key is the name in
+/// lower case. Line items of one name are in id order, which is the order a search of all of
+/// them finds them in.
+#[derive(Clone, Debug)]
+struct NameIndex {
+    lists: HashMap<String, ListId>,
+    modules: HashMap<String, ModuleId>,
+    line_items: HashMap<String, Vec<LineItemId>>,
+}
+
+impl NameIndex {
+    fn of(structure: &Structure) -> NameIndex {
+        let mut lists = HashMap::new();
+        for list in structure.lists.values() {
+            lists.entry(fold(&list.name)).or_insert(list.id);
+        }
+        let mut modules = HashMap::new();
+        for module in structure.modules.values() {
+            modules.entry(fold(&module.name)).or_insert(module.id);
+        }
+        let mut line_items: HashMap<String, Vec<LineItemId>> = HashMap::new();
+        for line_item in structure.line_items.values() {
+            line_items
+                .entry(fold(&line_item.name))
+                .or_default()
+                .push(line_item.id);
+        }
+        NameIndex {
+            lists,
+            modules,
+            line_items,
+        }
+    }
 }
 
 impl Structure {
@@ -75,7 +114,12 @@ impl Structure {
             time_ranges: BTreeMap::new(),
             modules: BTreeMap::new(),
             line_items: BTreeMap::new(),
+            names: OnceLock::new(),
         }
+    }
+
+    fn names(&self) -> &NameIndex {
+        self.names.get_or_init(|| NameIndex::of(self))
     }
 
     pub fn lists(&self) -> impl Iterator<Item = &List> {
@@ -88,9 +132,8 @@ impl Structure {
 
     /// The list with this name, ignoring case and surrounding spaces.
     pub fn list_by_name(&self, name: &str) -> Option<&List> {
-        self.lists
-            .values()
-            .find(|list| same_name(&list.name, name.trim()))
+        let id = self.names().lists.get(&fold(name.trim()))?;
+        self.lists.get(id)
     }
 
     pub fn subsets(&self) -> impl Iterator<Item = &Subset> {
@@ -132,9 +175,8 @@ impl Structure {
     }
 
     pub fn module_by_name(&self, name: &str) -> Option<&Module> {
-        self.modules
-            .values()
-            .find(|module| same_name(&module.name, name.trim()))
+        let id = self.names().modules.get(&fold(name.trim()))?;
+        self.modules.get(id)
     }
 
     pub fn line_items(&self) -> impl Iterator<Item = &LineItem> {
@@ -148,9 +190,19 @@ impl Structure {
     /// The line item with this name, ignoring case and surrounding spaces. With `None` every
     /// module is searched and the first match in id order wins.
     pub fn line_item_by_name(&self, module: Option<ModuleId>, name: &str) -> Option<&LineItem> {
-        self.line_items.values().find(|li| {
-            module.is_none_or(|module| li.module == module) && same_name(&li.name, name.trim())
-        })
+        self.line_items_named(name)
+            .find(|li| module.is_none_or(|module| li.module == module))
+    }
+
+    /// The line items of every module with this name, ignoring case and surrounding spaces,
+    /// in id order.
+    pub(crate) fn line_items_named(&self, name: &str) -> impl Iterator<Item = &LineItem> {
+        self.names()
+            .line_items
+            .get(&fold(name.trim()))
+            .into_iter()
+            .flatten()
+            .filter_map(|id| self.line_items.get(id))
     }
 
     pub fn line_items_in(&self, module: ModuleId) -> impl Iterator<Item = &LineItem> {
@@ -163,6 +215,12 @@ impl Structure {
     ///
     /// Rejected commands leave the structure unchanged.
     pub(crate) fn apply(&mut self, command: Command) -> Result<(), EngineError> {
+        let applied = self.apply_command(command);
+        self.names.take();
+        applied
+    }
+
+    fn apply_command(&mut self, command: Command) -> Result<(), EngineError> {
         match command {
             Command::SetCalendar { calendar } => self.set_calendar(calendar),
             Command::CreateList {
