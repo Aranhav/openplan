@@ -6,7 +6,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query"
-import { useMemo } from "react"
+import { useEffect, useEffectEvent, useMemo } from "react"
 import { queryKeys } from "@/lib/api/keys"
 import { type Block, COL_BLOCK, ROW_BLOCK, blocksFor, windowOf } from "./core/blocks"
 import type { CellRange } from "./core/selection"
@@ -106,7 +106,7 @@ export type ViewData = ViewShape & {
   refetch(): Promise<void>
 }
 
-type Loaded = { block: Block; result: QueryResult; fetching: boolean }
+type Loaded = { block: Block; result: QueryResult; fetching: boolean; updatedAt: number }
 
 type Lookup = Pick<ViewData, "lineItems" | "rowHeaders" | "colHeaders" | "cell">
 
@@ -117,18 +117,41 @@ function blockKey(rowBlock: number, colBlock: number): number {
   return rowBlock * KEY_STRIDE + colBlock
 }
 
+function sameDims(a: readonly ViewDim[], b: readonly ViewDim[]): boolean {
+  return a.length === b.length && a.every((dim, i) => JSON.stringify(dim) === JSON.stringify(b[i]))
+}
+
+/** Blocks of one view that have the same size and dimensions line up, whenever they were read. */
+function sameShape(a: QueryResult, b: QueryResult): boolean {
+  return (
+    a.total_rows === b.total_rows &&
+    a.total_columns === b.total_columns &&
+    sameDims(a.row_dims, b.row_dims) &&
+    sameDims(a.column_dims, b.column_dims)
+  )
+}
+
 /**
  * Merges loaded blocks into lookups by the position of a row, column or cell in the whole view.
- * A block read at another revision of the model than the first block would not line up with it,
- * so it is left out, unless it is being loaded again, when what it holds is the best there is.
+ * The newest response says what shape the view has. A block of another shape would not line up
+ * with it (rows were added, a dimension moved), so it is left out and handed back as stale, to
+ * be loaded again. Blocks of the same shape merge whatever revision they were read at: a change
+ * to some cells leaves the others as they were.
  */
-function assemble(loaded: readonly Loaded[], seq: number | undefined): Lookup {
+function assemble(loaded: readonly Loaded[]): { lookup: Lookup; stale: Loaded[] } {
+  const newest = loaded.reduce<Loaded | undefined>(
+    (best, candidate) => (!best || candidate.updatedAt > best.updatedAt ? candidate : best),
+    undefined,
+  )
   const cellBlocks = new Map<number, QueryResult>()
   const rowBlocks = new Map<number, QueryResult>()
   const colBlocks = new Map<number, QueryResult>()
   const lineItems = new Map<string, LineItemInfo>()
-  for (const { block, result, fetching } of loaded) {
-    if (seq !== undefined && result.seq !== seq && !fetching) {
+  const stale: Loaded[] = []
+  for (const entry of loaded) {
+    const { block, result } = entry
+    if (newest && !sameShape(result, newest.result)) {
+      stale.push(entry)
       continue
     }
     cellBlocks.set(blockKey(block.rowBlock, block.colBlock), result)
@@ -142,13 +165,16 @@ function assemble(loaded: readonly Loaded[], seq: number | undefined): Lookup {
     }
   }
   return {
-    lineItems: [...lineItems.values()],
-    rowHeaders: (row) => rowBlocks.get(Math.floor(row / ROW_BLOCK))?.rows[row % ROW_BLOCK],
-    colHeaders: (col) => colBlocks.get(Math.floor(col / COL_BLOCK))?.columns[col % COL_BLOCK],
-    cell: (row, col) =>
-      cellBlocks.get(blockKey(Math.floor(row / ROW_BLOCK), Math.floor(col / COL_BLOCK)))?.cells[
-        row % ROW_BLOCK
-      ]?.[col % COL_BLOCK],
+    stale,
+    lookup: {
+      lineItems: [...lineItems.values()],
+      rowHeaders: (row) => rowBlocks.get(Math.floor(row / ROW_BLOCK))?.rows[row % ROW_BLOCK],
+      colHeaders: (col) => colBlocks.get(Math.floor(col / COL_BLOCK))?.columns[col % COL_BLOCK],
+      cell: (row, col) =>
+        cellBlocks.get(blockKey(Math.floor(row / ROW_BLOCK), Math.floor(col / COL_BLOCK)))?.cells[
+          row % ROW_BLOCK
+        ]?.[col % COL_BLOCK],
+    },
   }
 }
 
@@ -189,16 +215,20 @@ class BlockResults {
   readonly data: readonly (QueryResult | undefined)[]
   /** Whether each block is being loaded (again) right now. */
   readonly fetching: readonly boolean[]
+  /** When each block's answer arrived. */
+  readonly updatedAt: readonly number[]
   readonly isFetching: boolean
   readonly error: Error | null
 
   constructor(
     data: readonly (QueryResult | undefined)[],
     fetching: readonly boolean[],
+    updatedAt: readonly number[],
     error: Error | null,
   ) {
     this.data = data
     this.fetching = fetching
+    this.updatedAt = updatedAt
     this.isFetching = fetching.some(Boolean)
     this.error = error
   }
@@ -208,6 +238,7 @@ function combineBlocks(results: UseQueryResult<QueryResult, Error>[]): BlockResu
   return new BlockResults(
     results.map((result) => result.data),
     results.map((result) => result.isFetching),
+    results.map((result) => result.dataUpdatedAt),
     results.find((result) => result.error)?.error ?? null,
   )
 }
@@ -247,18 +278,53 @@ export function useViewData(modelId: string, query: GridQuery, visible: CellRang
   })
 
   const originResult = origin.isPlaceholderData ? undefined : origin.data
-  const lookup = useMemo(() => {
+  const originUpdatedAt = origin.dataUpdatedAt
+  const originFetching = origin.isFetching
+  const merged = useMemo(() => {
     const loaded: Loaded[] = originResult
-      ? [{ block: ORIGIN, result: originResult, fetching: false }]
+      ? [
+          {
+            block: ORIGIN,
+            result: originResult,
+            fetching: originFetching,
+            updatedAt: originUpdatedAt,
+          },
+        ]
       : []
     wanted.forEach(({ block }, index) => {
       const result = others.data[index]
       if (result) {
-        loaded.push({ block, result, fetching: others.fetching[index] })
+        loaded.push({
+          block,
+          result,
+          fetching: others.fetching[index],
+          updatedAt: others.updatedAt[index],
+        })
       }
     })
-    return assemble(loaded, originResult?.seq)
-  }, [originResult, wanted, others.data, others.fetching])
+    return assemble(loaded)
+  }, [originResult, originUpdatedAt, originFetching, wanted, others])
+  const { lookup } = merged
+
+  // Blocks that no longer describe the view are loaded again, unless they already are.
+  const reloadKeys = merged.stale
+    .filter((entry) => !entry.fetching)
+    .map(({ block }) => `${block.rowBlock}:${block.colBlock}`)
+    .join(",")
+  const reload = useEffectEvent((keys: string) => {
+    for (const key of keys.split(",")) {
+      const [rowBlock, colBlock] = key.split(":").map(Number)
+      void queryClient.refetchQueries(
+        { queryKey: queryKeys.query(modelId, query, { rowBlock, colBlock }), exact: true },
+        { cancelRefetch: false },
+      )
+    }
+  })
+  useEffect(() => {
+    if (reloadKeys !== "") {
+      reload(reloadKeys)
+    }
+  }, [reloadKeys])
 
   return {
     ...shape,
