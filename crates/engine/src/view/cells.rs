@@ -230,10 +230,13 @@ impl<'a> Cx<'a> {
         })
     }
 
-    /// The label of a period as the module's calendar writes it.
+    /// The label of a period as the module's calendar writes it, from the labels made when the
+    /// view began.
     fn period_label(&self, level: TimeLevel, period: u32) -> String {
-        self.time
-            .map(|time| time.calendar.label(level, period))
+        self.period_labels
+            .get(level as usize)
+            .and_then(|labels| labels.get(period as usize))
+            .cloned()
             .unwrap_or_default()
     }
 

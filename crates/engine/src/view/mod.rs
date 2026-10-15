@@ -343,6 +343,9 @@ struct Cx<'a> {
     /// The members of the line items dimension.
     line_items: Vec<LineItemId>,
     time: Option<TimeAxis>,
+    /// The label of every period of the module's calendar, by level (indexed as the `TimeLevel`
+    /// enum is declared, finest first) and period; empty without a time dimension.
+    period_labels: Vec<Vec<String>>,
 }
 
 impl<'a> Cx<'a> {
@@ -392,12 +395,28 @@ impl<'a> Cx<'a> {
                 all.iter().map(|line_item| line_item.id).collect()
             }
         };
+        let period_labels = time.map_or_else(Vec::new, |time| {
+            [
+                TimeLevel::Month,
+                TimeLevel::Quarter,
+                TimeLevel::HalfYear,
+                TimeLevel::Year,
+                TimeLevel::All,
+            ]
+            .map(|level| {
+                (0..time.calendar.periods(level))
+                    .map(|period| time.calendar.label(level, period))
+                    .collect()
+            })
+            .into()
+        });
         Ok(Cx {
             model,
             structure,
             dims,
             line_items,
             time,
+            period_labels,
         })
     }
 
