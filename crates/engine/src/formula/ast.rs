@@ -119,37 +119,32 @@ pub enum Expr {
     },
 }
 
+/// A `match` on an expression that binds the span of whichever variant it is to `$span`.
+macro_rules! match_span {
+    ($expr:expr, $span:ident => $result:expr) => {
+        match $expr {
+            Expr::Number(_, $span)
+            | Expr::Text(_, $span)
+            | Expr::Bool(_, $span)
+            | Expr::Blank($span)
+            | Expr::Ref { span: $span, .. }
+            | Expr::Unary { span: $span, .. }
+            | Expr::Binary { span: $span, .. }
+            | Expr::If { span: $span, .. }
+            | Expr::Call { span: $span, .. }
+            | Expr::Modified { span: $span, .. } => $result,
+        }
+    };
+}
+
 impl Expr {
     /// The source text this expression covers, including any parentheses around it.
     pub fn span(&self) -> Span {
-        match self {
-            Expr::Number(_, span)
-            | Expr::Text(_, span)
-            | Expr::Bool(_, span)
-            | Expr::Blank(span)
-            | Expr::Ref { span, .. }
-            | Expr::Unary { span, .. }
-            | Expr::Binary { span, .. }
-            | Expr::If { span, .. }
-            | Expr::Call { span, .. }
-            | Expr::Modified { span, .. } => *span,
-        }
+        match_span!(self, span => *span)
     }
 
-    /// The same expression covering `span` instead, for widening it over surrounding parentheses.
-    pub(super) fn with_span(mut self, new: Span) -> Expr {
-        match &mut self {
-            Expr::Number(_, span)
-            | Expr::Text(_, span)
-            | Expr::Bool(_, span)
-            | Expr::Blank(span)
-            | Expr::Ref { span, .. }
-            | Expr::Unary { span, .. }
-            | Expr::Binary { span, .. }
-            | Expr::If { span, .. }
-            | Expr::Call { span, .. }
-            | Expr::Modified { span, .. } => *span = new,
-        }
-        self
+    /// Makes this expression cover `span` instead, for widening it over surrounding parentheses.
+    pub(super) fn set_span(&mut self, new: Span) {
+        match_span!(self, span => *span = new);
     }
 }

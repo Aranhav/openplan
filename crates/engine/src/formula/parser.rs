@@ -1,5 +1,5 @@
-//! Recursive-descent parser for the grammar in spec §4.2, climbing precedence levels for the
-//! binary operators.
+//! Recursive-descent parser for the grammar in spec §4.2. The binary operators are parsed with a
+//! stack of pending operators, so only nesting recurses.
 
 use super::ast::{BinOp, Expr, Modifier, ModifierKind, Name, Span, UnOp};
 use super::lexer::{Keyword, Token, TokenKind, tokenize};
@@ -12,13 +12,14 @@ use crate::error::FormulaError;
 const MAX_NESTING: usize = 64;
 const MAX_HEIGHT: usize = 256;
 
-/// How tightly each level of binary operator binds, loosest first.
+/// How tightly each level of operator binds, loosest first.
 const OR: u8 = 1;
 const AND: u8 = 2;
-const COMPARE: u8 = 3;
-const CONCAT: u8 = 4;
-const ADD: u8 = 5;
-const MUL: u8 = 6;
+const NOT: u8 = 3;
+const COMPARE: u8 = 4;
+const CONCAT: u8 = 5;
+const ADD: u8 = 6;
+const MUL: u8 = 7;
 
 const TOO_COMPLEX: &str = "This formula is too complex: split it across line items.";
 const MODIFIER_EXPECTED: &str = "Expected a modifier such as SUM, LOOKUP or SELECT.";
@@ -48,16 +49,45 @@ pub fn parse(src: &str) -> Result<Expr, Vec<FormulaError>> {
         pos: 0,
         nesting: 0,
     };
-    parser.parse_formula().map_err(|error| vec![error])
+    parser.parse_formula().map_err(|error| vec![*error])
 }
 
-/// A parsed expression with the height of its tree.
+/// A parsed expression with the height of its tree. The expression is boxed so that this stays
+/// small, as it is passed around by every level of a nested expression, and so that it moves into
+/// its parent without being boxed again.
 struct Parsed {
-    expr: Expr,
+    expr: Box<Expr>,
     depth: usize,
 }
 
-type Node = Result<Parsed, FormulaError>;
+impl Parsed {
+    fn leaf(expr: Expr) -> Parsed {
+        Parsed {
+            expr: Box::new(expr),
+            depth: 1,
+        }
+    }
+}
+
+/// A problem found while parsing. Boxed, like the expressions, to keep results small.
+type Failure = Box<FormulaError>;
+
+type Node = Result<Parsed, Failure>;
+
+/// An operator whose right operand is still to be parsed.
+enum Pending {
+    Not(Span),
+    Binary { lhs: Parsed, op: BinOp, level: u8 },
+}
+
+impl Pending {
+    fn level(&self) -> u8 {
+        match self {
+            Pending::Not(_) => NOT,
+            Pending::Binary { level, .. } => *level,
+        }
+    }
+}
 
 struct Parser<'a> {
     src: &'a str,
@@ -67,23 +97,27 @@ struct Parser<'a> {
 }
 
 impl Parser<'_> {
-    fn parse_formula(mut self) -> Result<Expr, FormulaError> {
+    fn parse_formula(mut self) -> Result<Expr, Failure> {
         let formula = self.parse_expr()?;
         if let Some(token) = self.peek() {
             return Err(self.unexpected_leftover(&token.kind));
         }
-        Ok(formula.expr)
+        Ok(*formula.expr)
     }
 
     // expr := if_expr | or_expr
     fn parse_expr(&mut self) -> Node {
-        self.nested(|parser| {
-            if parser.at_keyword(Keyword::If) {
-                parser.parse_if()
-            } else {
-                parser.parse_binary(OR)
-            }
-        })
+        self.nesting += 1;
+        if self.nesting > MAX_NESTING {
+            return Err(self.error_here(TOO_COMPLEX));
+        }
+        let parsed = if self.at_keyword(Keyword::If) {
+            self.parse_if()
+        } else {
+            self.parse_binary()
+        };
+        self.nesting -= 1;
+        parsed
     }
 
     // if_expr := IF expr THEN expr ELSE expr
@@ -107,15 +141,15 @@ impl Parser<'_> {
         let span = start.through(els.expr.span());
         let depth = cond.depth.max(then.depth).max(els.depth) + 1;
         let expr = Expr::If {
-            cond: Box::new(cond.expr),
-            then: Box::new(then.expr),
-            els: Box::new(els.expr),
+            cond: cond.expr,
+            then: then.expr,
+            els: els.expr,
             span,
         };
         self.node(expr, depth)
     }
 
-    // The remaining levels of expr, loosest first, are parsed by precedence climbing:
+    // The remaining levels of expr, loosest first:
     //   or_expr  := and_expr (OR and_expr)*
     //   and_expr := not_expr (AND not_expr)*
     //   not_expr := NOT not_expr | cmp_expr
@@ -123,52 +157,79 @@ impl Parser<'_> {
     //   concat   := add (& add)*
     //   add      := mul (( + | - ) mul)*
     //   mul      := unary (( * | / ) unary)*
-    // Only operators binding at least as tightly as `min` are taken.
-    fn parse_binary(&mut self, min: u8) -> Node {
-        let mut lhs = if min <= COMPARE
-            && let Some(not) = self.eat(&TokenKind::Keyword(Keyword::Not))
-        {
-            let operand = self.nested(|parser| parser.parse_binary(COMPARE))?;
-            let span = not.through(operand.expr.span());
-            let expr = Expr::Unary {
-                op: UnOp::Not,
-                expr: Box::new(operand.expr),
-                span,
+    // They are parsed with a stack of operators waiting for their right operand instead of one
+    // recursive call per level, which keeps the stack use of a nested expression small.
+    fn parse_binary(&mut self) -> Node {
+        let mut pending: Vec<Pending> = Vec::new();
+        loop {
+            // NOT can only stand where an operand of OR, AND or another NOT goes.
+            while pending.last().is_none_or(|top| top.level() <= NOT)
+                && let Some(not) = self.eat(&TokenKind::Keyword(Keyword::Not))
+            {
+                if pending.len() >= MAX_HEIGHT {
+                    return Err(Box::new(syntax_error(not, TOO_COMPLEX)));
+                }
+                pending.push(Pending::Not(not));
+            }
+            let mut operand = self.parse_unary()?;
+            let next = self.peek_kind().and_then(binary_operator);
+            let next_level = next.map_or(0, |(_, level)| level);
+            while let Some(top) = pending.pop_if(|top| top.level() >= next_level) {
+                if top.level() == COMPARE && next_level == COMPARE {
+                    return Err(self.error_here(
+                        "Comparisons cannot be chained: combine them with AND or OR.",
+                    ));
+                }
+                operand = self.apply(top, operand)?;
+            }
+            let Some((op, level)) = next else {
+                return Ok(operand);
             };
-            self.node(expr, operand.depth + 1)?
-        } else {
-            self.parse_unary()?
-        };
-        while let Some((op, level)) = self.peek_kind().and_then(binary_operator) {
-            if level < min {
-                break;
-            }
             self.pos += 1;
-            let rhs = self.parse_binary(level + 1)?;
-            lhs = self.binary(op, lhs, rhs)?;
-            let chained = self.peek_kind().and_then(binary_operator);
-            if level == COMPARE && chained.is_some_and(|(_, next)| next == COMPARE) {
-                return Err(
-                    self.error_here("Comparisons cannot be chained: combine them with AND or OR.")
-                );
-            }
+            pending.push(Pending::Binary {
+                lhs: operand,
+                op,
+                level,
+            });
         }
-        Ok(lhs)
+    }
+
+    /// Gives the operator `pending` its right operand.
+    fn apply(&self, pending: Pending, operand: Parsed) -> Node {
+        match pending {
+            Pending::Not(not) => {
+                let span = not.through(operand.expr.span());
+                let expr = Expr::Unary {
+                    op: UnOp::Not,
+                    expr: operand.expr,
+                    span,
+                };
+                self.node(expr, operand.depth + 1)
+            }
+            Pending::Binary { lhs, op, .. } => self.binary(op, lhs, operand),
+        }
     }
 
     // unary := - unary | postfix
     fn parse_unary(&mut self) -> Node {
-        let Some(minus) = self.eat(&TokenKind::Minus) else {
-            return self.parse_postfix();
-        };
-        let operand = self.nested(Self::parse_unary)?;
-        let span = minus.through(operand.expr.span());
-        let expr = Expr::Unary {
-            op: UnOp::Neg,
-            expr: Box::new(operand.expr),
-            span,
-        };
-        self.node(expr, operand.depth + 1)
+        let mut minuses = Vec::new();
+        while let Some(minus) = self.eat(&TokenKind::Minus) {
+            if minuses.len() >= MAX_HEIGHT {
+                return Err(Box::new(syntax_error(minus, TOO_COMPLEX)));
+            }
+            minuses.push(minus);
+        }
+        let mut operand = self.parse_postfix()?;
+        while let Some(minus) = minuses.pop() {
+            let span = minus.through(operand.expr.span());
+            let expr = Expr::Unary {
+                op: UnOp::Neg,
+                expr: operand.expr,
+                span,
+            };
+            operand = self.node(expr, operand.depth + 1)?;
+        }
+        Ok(operand)
     }
 
     // postfix := primary ( '[' modifier (',' modifier)* ']' )*
@@ -190,7 +251,7 @@ impl Parser<'_> {
                 self.expect_closer(&TokenKind::RBracket, open, "Expected ']' to close '['.")?;
             let span = base.expr.span().through(close);
             let expr = Expr::Modified {
-                expr: Box::new(base.expr),
+                expr: base.expr,
                 modifiers,
                 span,
             };
@@ -200,7 +261,7 @@ impl Parser<'_> {
     }
 
     // modifier := (SUM | LOOKUP | ...) ':' expr
-    fn parse_modifier(&mut self) -> Result<(Modifier, usize), FormulaError> {
+    fn parse_modifier(&mut self) -> Result<(Modifier, usize), Failure> {
         let anchor = self.pos - 1;
         let found = match self.peek_kind() {
             Some(TokenKind::Name {
@@ -222,7 +283,7 @@ impl Parser<'_> {
         let span = start.through(arg.expr.span());
         let modifier = Modifier {
             kind,
-            arg: arg.expr,
+            arg: *arg.expr,
             span,
         };
         Ok((modifier, arg.depth))
@@ -248,10 +309,7 @@ impl Parser<'_> {
             _ => return Err(self.expected_expression()),
         };
         self.pos += 1;
-        Ok(Parsed {
-            expr: literal,
-            depth: 1,
-        })
+        Ok(Parsed::leaf(literal))
     }
 
     // call := NAME '(' (expr (',' expr)*)? ')'    reference := name ('.' name)?
@@ -273,10 +331,7 @@ impl Parser<'_> {
                 ));
             }
         }
-        Ok(Parsed {
-            expr: Expr::Ref { parts, span },
-            depth: 1,
-        })
+        Ok(Parsed::leaf(Expr::Ref { parts, span }))
     }
 
     fn parse_call(&mut self, name: Name) -> Node {
@@ -288,7 +343,7 @@ impl Parser<'_> {
             loop {
                 let arg = self.parse_expr()?;
                 deepest = deepest.max(arg.depth);
-                args.push(arg.expr);
+                args.push(*arg.expr);
                 if self.eat(&TokenKind::Comma).is_none() {
                     break;
                 }
@@ -303,12 +358,10 @@ impl Parser<'_> {
         let open = self.pos;
         let open_span = self.span_at(open);
         self.pos += 1;
-        let inner = self.parse_expr()?;
+        let mut inner = self.parse_expr()?;
         let close = self.expect_closer(&TokenKind::RParen, open, "Expected ')' to close '('.")?;
-        Ok(Parsed {
-            expr: inner.expr.with_span(open_span.through(close)),
-            depth: inner.depth,
-        })
+        inner.expr.set_span(open_span.through(close));
+        Ok(inner)
     }
 
     fn binary(&self, op: BinOp, lhs: Parsed, rhs: Parsed) -> Node {
@@ -316,8 +369,8 @@ impl Parser<'_> {
         let depth = lhs.depth.max(rhs.depth) + 1;
         let expr = Expr::Binary {
             op,
-            lhs: Box::new(lhs.expr),
-            rhs: Box::new(rhs.expr),
+            lhs: lhs.expr,
+            rhs: rhs.expr,
             span,
         };
         self.node(expr, depth)
@@ -325,20 +378,12 @@ impl Parser<'_> {
 
     fn node(&self, expr: Expr, depth: usize) -> Node {
         if depth > MAX_HEIGHT {
-            return Err(syntax_error(expr.span(), TOO_COMPLEX));
+            return Err(Box::new(syntax_error(expr.span(), TOO_COMPLEX)));
         }
-        Ok(Parsed { expr, depth })
-    }
-
-    /// Runs `parse`, one nesting level deeper than the caller.
-    fn nested(&mut self, parse: fn(&mut Self) -> Node) -> Node {
-        self.nesting += 1;
-        if self.nesting > MAX_NESTING {
-            return Err(self.error_here(TOO_COMPLEX));
-        }
-        let parsed = parse(self);
-        self.nesting -= 1;
-        parsed
+        Ok(Parsed {
+            expr: Box::new(expr),
+            depth,
+        })
     }
 
     fn peek(&self) -> Option<&Token> {
@@ -381,7 +426,7 @@ impl Parser<'_> {
         keyword: Keyword,
         anchor: usize,
         message: &str,
-    ) -> Result<(), FormulaError> {
+    ) -> Result<(), Failure> {
         match self.eat(&TokenKind::Keyword(keyword)) {
             Some(_) => Ok(()),
             None => Err(self.fail(anchor, message)),
@@ -394,7 +439,7 @@ impl Parser<'_> {
         closer: &TokenKind,
         open: usize,
         message: &str,
-    ) -> Result<Span, FormulaError> {
+    ) -> Result<Span, Failure> {
         self.eat(closer).ok_or_else(|| self.fail(open, message))
     }
 
@@ -411,25 +456,25 @@ impl Parser<'_> {
     /// An error at the next token. At the end of the formula it is at the token `anchor`
     /// instead: the one still waiting for what is missing. Where the parser stopped in or after
     /// a keyword followed by plain words, such as `IF Flag`, it suggests quoting them as a name.
-    fn fail(&self, anchor: usize, message: impl Into<String>) -> FormulaError {
+    fn fail(&self, anchor: usize, message: impl Into<String>) -> Failure {
         let message = message.into();
         if let Some((span, name)) = self.keyword_led_name() {
-            return quote_error(span, &message, &name);
+            return Box::new(quote_error(span, &message, &name));
         }
         let at = if self.pos < self.tokens.len() {
             self.pos
         } else {
             anchor
         };
-        syntax_error(self.span_at(at), message)
+        Box::new(syntax_error(self.span_at(at), message))
     }
 
     /// An error at the next token, without a suggestion.
-    fn error_here(&self, message: impl Into<String>) -> FormulaError {
-        syntax_error(self.span_at(self.pos), message)
+    fn error_here(&self, message: impl Into<String>) -> Failure {
+        Box::new(syntax_error(self.span_at(self.pos), message))
     }
 
-    fn expected_expression(&self) -> FormulaError {
+    fn expected_expression(&self) -> Failure {
         if let Some(TokenKind::Keyword(keyword @ (Keyword::If | Keyword::Not))) = self.peek_kind() {
             let message = format!("Put {} in parentheses to use it here.", keyword.text());
             return self.error_here(message);
@@ -448,7 +493,7 @@ impl Parser<'_> {
         self.fail(previous.unwrap_or(0), message)
     }
 
-    fn unexpected_leftover(&self, kind: &TokenKind) -> FormulaError {
+    fn unexpected_leftover(&self, kind: &TokenKind) -> Failure {
         let message = match kind {
             TokenKind::RParen => "Unexpected ')': there is no matching '('.".to_string(),
             TokenKind::RBracket => "Unexpected ']': there is no matching '['.".to_string(),

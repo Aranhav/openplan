@@ -10,6 +10,7 @@ publish.workspace = true
 chrono.workspace = true
 serde = { workspace = true, features = ["rc"] }
 thiserror.workspace = true
+unicode-properties.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]

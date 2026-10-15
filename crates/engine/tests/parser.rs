@@ -418,6 +418,20 @@ fn comments_ignored() {
 }
 
 #[test]
+fn a_comment_between_words_still_joins_them_into_one_name() {
+    assert_eq!(tree("Gross // the comment\n Margin"), "{Gross Margin}");
+    assert_eq!(
+        tree("Gross // the comment\n Margin + 1"),
+        "(+ {Gross Margin} 1)"
+    );
+    let src = "Gross // c\nMargin";
+    assert_eq!(
+        name_parts(src),
+        vec![("Gross Margin".to_string(), false, span(0, src.len()))]
+    );
+}
+
+#[test]
 fn percent_in_name() {
     assert_eq!(tree("Margin % * 2"), "(* {Margin %} 2)");
     assert_eq!(tree("Margin %"), "{Margin %}");
@@ -430,6 +444,26 @@ fn percent_in_name() {
 fn non_ascii_names() {
     assert_eq!(tree("Umsätze + Überschuss"), "(+ {Umsätze} {Überschuss})");
     assert_eq!(tree("収益 / コスト"), "(/ {収益} {コスト})");
+}
+
+#[test]
+fn combining_marks_belong_to_words() {
+    // "Umsätze" with the ä written as "a" plus U+0308, as macOS file names and some editors do.
+    let decomposed = "Umsa\u{308}tze";
+    assert_eq!(
+        name_parts(decomposed),
+        vec![(decomposed.to_string(), false, span(0, 9))]
+    );
+    assert_eq!(
+        tree("Umsa\u{308}tze + 1"),
+        "(+ {Umsa\u{308}tze} 1)".to_string()
+    );
+    assert_eq!(
+        tree("Gross Mar\u{301}gin / Revenue"),
+        "(/ {Gross Mar\u{301}gin} {Revenue})"
+    );
+    assert_eq!(tree("\u{e9}\u{301}x"), "{\u{e9}\u{301}x}");
+    assert_eq!(tree("नमस्ते + 1"), "(+ {नमस्ते} 1)");
 }
 
 #[test]
@@ -879,8 +913,29 @@ fn lexical_errors() {
     assert_eq!((e.start, e.end), (0, 4));
 
     let e = error("1 +\u{0}");
-    assert_eq!(e.message, "Unexpected character '\\0'.");
+    assert_eq!(e.message, "Unexpected character U+0000.");
     assert_eq!((e.start, e.end), (3, 4));
+}
+
+#[test]
+fn unexpected_characters_are_shown_when_printable_and_by_code_point_otherwise() {
+    for (src, shown) in [
+        ("1 + €", "'€'"),
+        ("1 + ^", "'^'"),
+        ("1 + \u{0}", "U+0000"),
+        ("1 + \u{7f}", "U+007F"),
+        ("1 + \u{200b}", "U+200B"),
+        ("1 + \u{feff}", "U+FEFF"),
+        ("1 + \u{e000}", "U+E000"),
+    ] {
+        let e = error(src);
+        assert_eq!(
+            e.message,
+            format!("Unexpected character {shown}."),
+            "{src:?}"
+        );
+        assert_eq!((e.start, e.end), (4, 4 + src[4..].len()), "{src:?}");
+    }
 }
 
 #[test]
@@ -916,35 +971,98 @@ fn all_errors_use_the_syntax_code_and_end_with_a_period() {
     }
 }
 
+const TOO_COMPLEX: &str = "This formula is too complex: split it across line items.";
+
+/// Parses on a 1 MB stack, a quarter of what a test thread has by default. A parser that recurses
+/// too deeply overflows it and aborts the whole test binary, which no assertion can catch.
+fn parse_on_small_stack(src: &str) -> Result<Expr, Vec<FormulaError>> {
+    let src = src.to_string();
+    std::thread::Builder::new()
+        .stack_size(1 << 20)
+        .spawn(move || parse(&src))
+        .expect("the thread should start")
+        .join()
+        .expect("the parser should not panic")
+}
+
+fn error_on_small_stack(src: &str) -> FormulaError {
+    let mut errors = parse_on_small_stack(src).expect_err("the formula should not parse");
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    errors.remove(0)
+}
+
+/// `depth` levels of nesting, each opened by `opener` after an operator of every precedence tier,
+/// the most stack the parser can use per level.
+fn tiered_nesting(opener: &str, depth: usize) -> String {
+    let level = format!("a OR a AND a = a & a + a * {opener}");
+    format!("{}1{}", level.repeat(depth), ")".repeat(depth))
+}
+
+/// `depth` levels of nesting made of `prefix` and `suffix`, with `core` in the middle.
+fn nesting(prefix: &str, core: &str, suffix: &str, depth: usize) -> String {
+    format!("{}{core}{}", prefix.repeat(depth), suffix.repeat(depth))
+}
+
 #[test]
 fn deep_nesting_is_an_error_not_a_stack_overflow() {
-    let too_complex = "This formula is too complex: split it across line items.";
-
-    let parens = format!("{}1{}", "(".repeat(100_000), ")".repeat(100_000));
-    assert_eq!(error(&parens).message, too_complex);
-    assert_eq!(error(&"-".repeat(100_000)).message, too_complex);
-    assert_eq!(
-        error(&format!("{}a", "NOT ".repeat(100_000))).message,
-        too_complex
-    );
-    assert_eq!(
-        error(&format!("{}2", "IF a THEN 1 ELSE ".repeat(100_000))).message,
-        too_complex
-    );
-    assert_eq!(
-        error(&format!("{}b", "a[SUM: ".repeat(100_000))).message,
-        too_complex
-    );
-    assert_eq!(
-        error(&format!("{}1{}", "f(".repeat(100_000), ")".repeat(100_000))).message,
-        too_complex
-    );
+    for (prefix, core, suffix) in [
+        ("(", "1", ")"),
+        ("f(", "1", ")"),
+        ("a[SUM: ", "b", ""),
+        ("IF a THEN 1 ELSE ", "2", ""),
+        ("IF ", "a", " THEN 1 ELSE 2"),
+        ("NOT ", "a", ""),
+        ("-", "1", ""),
+    ] {
+        let src = nesting(prefix, core, suffix, 100_000);
+        assert_eq!(error_on_small_stack(&src).message, TOO_COMPLEX, "{prefix}");
+    }
+    for opener in ["(", "f(", "a[SUM: "] {
+        let src = tiered_nesting(opener, 100_000);
+        assert_eq!(error_on_small_stack(&src).message, TOO_COMPLEX, "{opener}");
+    }
 
     let long_chain = vec!["1"; 100_000].join(" + ");
-    assert_eq!(error(&long_chain).message, too_complex);
+    assert_eq!(error_on_small_stack(&long_chain).message, TOO_COMPLEX);
 
     let long_product = vec!["a"; 100_000].join(" * ");
-    assert_eq!(error(&long_product).message, too_complex);
+    assert_eq!(error_on_small_stack(&long_product).message, TOO_COMPLEX);
+}
+
+#[test]
+fn the_most_stack_hungry_shapes_fit_a_small_debug_stack_up_to_the_limit() {
+    // The formula itself is the first level of nesting and every group, call, modifier or ELSE
+    // branch is one more, so the limit of 64 levels is reached with 63 of them.
+    for (prefix, core, suffix) in [
+        ("a * (", "1", ")"),
+        ("a * f(", "1", ")"),
+        ("a * a[SUM: ", "b", "]"),
+        ("IF a THEN 1 ELSE ", "2", ""),
+        ("IF ", "a", " THEN 1 ELSE 2"),
+    ] {
+        let at_the_limit = nesting(prefix, core, suffix, 63);
+        assert!(parse_on_small_stack(&at_the_limit).is_ok(), "{prefix}");
+
+        let past_the_limit = nesting(prefix, core, suffix, 64);
+        let message = error_on_small_stack(&past_the_limit).message;
+        assert_eq!(message, TOO_COMPLEX, "{prefix}");
+    }
+}
+
+#[test]
+fn nesting_through_every_precedence_tier_is_safe_on_a_small_debug_stack() {
+    // Each level is also seven nodes tall, so these formulas are rejected for their height
+    // before the nesting limit; what matters is that parsing them neither aborts nor panics.
+    for opener in ["(", "f("] {
+        for depth in [32, 62, 63, 64, 65, 200] {
+            let src = tiered_nesting(opener, depth);
+            if let Err(errors) = parse_on_small_stack(&src) {
+                assert_eq!(errors[0].message, TOO_COMPLEX, "{opener} {depth}");
+            }
+        }
+        let past_the_limit = tiered_nesting(opener, 64);
+        assert_eq!(error_on_small_stack(&past_the_limit).message, TOO_COMPLEX);
+    }
 }
 
 #[test]
@@ -961,13 +1079,91 @@ fn realistic_depth_still_parses() {
 
 #[test]
 fn nesting_and_chain_limits() {
-    let too_complex = "This formula is too complex: split it across line items.";
-
     let parens = format!("{}1{}", "(".repeat(100), ")".repeat(100));
-    assert_eq!(error(&parens).message, too_complex);
+    assert_eq!(error(&parens).message, TOO_COMPLEX);
 
     let sum = vec!["x"; 300].join(" + ");
-    assert_eq!(error(&sum).message, too_complex);
+    assert_eq!(error(&sum).message, TOO_COMPLEX);
+}
+
+/// Checks that every child span lies inside its parent's and that siblings keep source order.
+fn assert_nested(expr: &Expr) {
+    let parent = expr.span();
+    assert!(parent.start < parent.end, "empty span {parent:?}");
+    let mut cursor = parent.start;
+    let mut child = |span: Span| {
+        assert!(
+            span.start < span.end,
+            "empty child span {span:?} in {parent:?}"
+        );
+        assert!(
+            cursor <= span.start && span.end <= parent.end,
+            "child {span:?} is outside {parent:?} or overlaps the sibling ending at {cursor}"
+        );
+        cursor = span.end;
+    };
+    match expr {
+        Expr::Number(..) | Expr::Text(..) | Expr::Bool(..) | Expr::Blank(..) => {}
+        Expr::Ref { parts, .. } => parts.iter().for_each(|part| child(part.span)),
+        Expr::Unary { expr, .. } => {
+            child(expr.span());
+            assert_nested(expr);
+        }
+        Expr::Binary { lhs, rhs, .. } => {
+            for operand in [lhs, rhs] {
+                child(operand.span());
+                assert_nested(operand);
+            }
+        }
+        Expr::If {
+            cond, then, els, ..
+        } => {
+            for branch in [cond, then, els] {
+                child(branch.span());
+                assert_nested(branch);
+            }
+        }
+        Expr::Call { name, args, .. } => {
+            child(name.span);
+            for arg in args {
+                child(arg.span());
+                assert_nested(arg);
+            }
+        }
+        Expr::Modified {
+            expr, modifiers, ..
+        } => {
+            child(expr.span());
+            assert_nested(expr);
+            for modifier in modifiers {
+                child(modifier.span);
+                let arg = modifier.arg.span();
+                assert!(
+                    modifier.span.start < arg.start && arg.end <= modifier.span.end,
+                    "argument {arg:?} is outside its modifier {:?}",
+                    modifier.span
+                );
+                assert_nested(&modifier.arg);
+            }
+        }
+    }
+}
+
+#[test]
+fn spans_nest_in_parents_and_siblings_are_ordered() {
+    for src in [
+        "1 + 2 * 3 = 7",
+        "(a + b) * -c",
+        "((a))",
+        "  NOT a OR b  ",
+        "\"t\" & Gross Margin & 'P&L'.'Net Income'",
+        "ROUND(x, 2, UP) + MAX(a, MIN(b, c))",
+        "IF a > 1 AND NOT b THEN f(x, Time.'Jan 26') ELSE -y",
+        "x[SUM: m, SELECT: Versions.Actual][LOOKUP: IF a THEN n ELSE (o)]",
+        "START()",
+    ] {
+        assert_nested(&parsed(src));
+    }
 }
 
 fn check_invariants(src: &str) {
@@ -978,6 +1174,7 @@ fn check_invariants(src: &str) {
         Ok(expr) => {
             let s = expr.span();
             assert!(in_bounds(s.start, s.end), "{src:?}: {s:?}");
+            assert_nested(&expr);
         }
         Err(errors) => {
             assert!(!errors.is_empty(), "{src:?}");
@@ -1033,6 +1230,8 @@ fn formula_like() -> impl Strategy<Value = String> {
         "Revenue",
         "Gross Margin",
         "Umsätze",
+        "Umsa\u{308}tze",
+        "\u{200b}",
         "日本",
         "$",
         "^",

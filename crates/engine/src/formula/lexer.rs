@@ -1,6 +1,8 @@
 //! Splits formula source into tokens (spec §4.1). Whitespace and `//` comments produce no
 //! tokens; consecutive words are joined into one name here, so the parser sees whole names.
 
+use unicode_properties::{GeneralCategoryGroup, UnicodeGeneralCategory};
+
 use super::ast::Span;
 use super::{quote_error, syntax_error};
 use crate::error::FormulaError;
@@ -283,8 +285,24 @@ fn numeric_words_to_numbers(tokens: &mut [Token]) -> Result<(), FormulaError> {
     Ok(())
 }
 
+/// Letters, digits and `_ % # ?`, plus the combining marks that follow letters in text where an
+/// accent is a separate character, such as "a" and U+0308 for "ä".
 fn is_word_char(c: char) -> bool {
-    c.is_alphanumeric() || matches!(c, '_' | '%' | '#' | '?')
+    c.is_alphanumeric() || matches!(c, '_' | '%' | '#' | '?') || is_combining_mark(c)
+}
+
+fn is_combining_mark(c: char) -> bool {
+    !c.is_ascii() && c.general_category_group() == GeneralCategoryGroup::Mark
+}
+
+/// A character as it reads in an error message: itself in quotes, or its code point when it is
+/// a control, format or other character that would be invisible or garble the message.
+fn describe_char(c: char) -> String {
+    if c.general_category_group() == GeneralCategoryGroup::Other {
+        format!("U+{:04X}", u32::from(c))
+    } else {
+        format!("'{c}'")
+    }
 }
 
 fn parse_number(text: &str, span: Span) -> Result<f64, FormulaError> {
@@ -321,7 +339,7 @@ fn number_prefix_len(s: &str) -> usize {
 }
 
 fn unexpected_character(src: &str, at: usize, c: char) -> FormulaError {
-    let message = format!("Unexpected character {c:?}.");
+    let message = format!("Unexpected character {}.", describe_char(c));
     match bare_name_around(src, at) {
         Some((span, name)) => quote_error(span, &message, &name),
         None => {
