@@ -124,8 +124,8 @@ impl Model {
     /// Applies one command and calculates what it changes. A rejected command leaves the model
     /// unchanged.
     ///
-    /// A command that would give a line item more than [`crate::MAX_LINE_ITEM_CELLS`] cells is rejected
-    /// with `structure.invalid`, before any cell is allocated.
+    /// A command that would give a line item more than [`crate::MAX_LINE_ITEM_CELLS`] cells is
+    /// rejected with `structure.invalid`, before any cell is allocated.
     ///
     /// A command that sets a formula is rejected, with the problems found, if the formula does
     /// not compile or makes a circular reference that is not allowed. A command that breaks a
