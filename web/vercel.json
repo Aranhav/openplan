@@ -6,7 +6,7 @@
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "https://openplan-api.onrender.com/api/:path*"
+      "destination": "https://openplan-api-qmsm.onrender.com/api/:path*"
     },
     {
       "source": "/((?!api/).*)",
