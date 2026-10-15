@@ -1,4 +1,4 @@
-use super::{Cx, Header, Member, MemberRef, PageMember, PageSelection, Place, ViewDim, invalid};
+use super::{Cx, Header, Member, MemberRef, PageMember, PageSelection, Place, ViewDim};
 use crate::calendar::{Calendar, TimeLevel};
 use crate::error::EngineError;
 use crate::ids::{ItemId, LineItemId, ListId, VersionId};
@@ -327,7 +327,7 @@ impl<'a> Cx<'a> {
                 .map(Id::Version),
         };
         found.ok_or_else(|| {
-            invalid(format!(
+            EngineError::invalid(format!(
                 "'{key}' is not a member of '{}'.",
                 self.dim_name(dim)
             ))

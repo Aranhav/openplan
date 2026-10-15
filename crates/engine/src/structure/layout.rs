@@ -1,6 +1,6 @@
 use crate::calendar::TimeLevel;
 use crate::command::CoordToken;
-use crate::error::EngineError;
+use crate::error::{EngineError, grouped};
 use crate::ids::{LineItemId, TimeRangeId, VersionId};
 use crate::shape::{Axis, Shape};
 
@@ -289,17 +289,4 @@ fn describe(axis: &Axis) -> &'static str {
         Axis::Time { .. } => "a period label",
         Axis::Versions => "a version id",
     }
-}
-
-/// A count with a comma between groups of three digits, `67,108,864`.
-fn grouped(count: u128) -> String {
-    let digits = count.to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (position, digit) in digits.chars().enumerate() {
-        if position > 0 && (digits.len() - position).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(digit);
-    }
-    out
 }

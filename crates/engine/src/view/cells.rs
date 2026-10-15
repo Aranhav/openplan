@@ -1,5 +1,5 @@
 use super::members::{Frame, Id, Node};
-use super::{Cell, CellFlag, Cx, LineItemInfo, ViewDim, not_found};
+use super::{Cell, CellFlag, Cx, LineItemInfo, ViewDim};
 use crate::calendar::TimeLevel;
 use crate::command::CoordToken;
 use crate::error::{EngineError, FormulaError};
@@ -150,7 +150,7 @@ impl<'a> Cx<'a> {
                 let line_item = self
                     .structure
                     .line_item(*id)
-                    .ok_or_else(|| not_found("line item", id.0))?;
+                    .ok_or_else(|| EngineError::not_found("line item", id.0))?;
                 let layout = self.structure.layout(line_item)?;
                 Ok(LineItemInfo {
                     id: *id,
@@ -183,7 +183,7 @@ impl<'a> Cx<'a> {
         let structure = self.structure;
         let line_item = structure
             .line_item(id)
-            .ok_or_else(|| not_found("line item", id.0))?;
+            .ok_or_else(|| EngineError::not_found("line item", id.0))?;
         let layout = structure.layout(line_item)?;
         let mut axes = Vec::with_capacity(layout.axes.len());
         let mut in_view = true;

@@ -21,7 +21,6 @@ use members::{Frame, Node};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::ops::Range;
-use uuid::Uuid;
 
 /// The most rows a window holds.
 const MAX_ROW_LIMIT: usize = 1000;
@@ -297,12 +296,12 @@ pub fn members(
 
 fn check_window(window: &Window) -> Result<(), EngineError> {
     if window.row_limit > MAX_ROW_LIMIT {
-        return Err(invalid(format!(
+        return Err(EngineError::invalid(format!(
             "row_limit can't be more than {MAX_ROW_LIMIT}."
         )));
     }
     if window.col_limit > MAX_COL_LIMIT {
-        return Err(invalid(format!(
+        return Err(EngineError::invalid(format!(
             "col_limit can't be more than {MAX_COL_LIMIT}."
         )));
     }
@@ -312,19 +311,6 @@ fn check_window(window: &Window) -> Result<(), EngineError> {
 /// The positions of a window among `count` rows or columns.
 fn window_range(offset: usize, limit: usize, count: usize) -> Range<usize> {
     offset.min(count)..offset.saturating_add(limit).min(count)
-}
-
-fn invalid(message: impl Into<String>) -> EngineError {
-    EngineError::Invalid {
-        message: message.into(),
-    }
-}
-
-fn not_found(what: &'static str, id: Uuid) -> EngineError {
-    EngineError::NotFound {
-        what,
-        id: id.to_string(),
-    }
 }
 
 /// Where a dimension of the module is in a view.
@@ -366,7 +352,7 @@ impl<'a> Cx<'a> {
         let structure = model.structure();
         let module = structure
             .module(module)
-            .ok_or_else(|| not_found("module", module.0))?;
+            .ok_or_else(|| EngineError::not_found("module", module.0))?;
         let mut dims: Vec<ViewDim> = module
             .axes
             .iter()
@@ -436,7 +422,7 @@ impl<'a> Cx<'a> {
     /// The position of a dimension of the module, or the problem with it.
     fn require_dim(&self, dim: &ViewDim) -> Result<usize, EngineError> {
         self.dim_index(dim).ok_or_else(|| {
-            invalid(format!(
+            EngineError::invalid(format!(
                 "The module doesn't have the dimension '{}'.",
                 self.dim_name(dim)
             ))
@@ -462,13 +448,13 @@ impl<'a> Cx<'a> {
     fn list(&self, id: ListId) -> Result<&'a List, EngineError> {
         self.structure
             .list(id)
-            .ok_or_else(|| not_found("list", id.0))
+            .ok_or_else(|| EngineError::not_found("list", id.0))
     }
 
     fn subset(&self, id: SubsetId) -> Result<&'a Subset, EngineError> {
         self.structure
             .subset(id)
-            .ok_or_else(|| not_found("subset", id.0))
+            .ok_or_else(|| EngineError::not_found("subset", id.0))
     }
 
     /// Where every dimension of the module is, if each is on the rows, columns or pages once.
@@ -494,7 +480,7 @@ impl<'a> Cx<'a> {
         for (dim, place) in placements {
             let at = self.require_dim(dim)?;
             if places[at].replace(place).is_some() {
-                return Err(invalid(format!(
+                return Err(EngineError::invalid(format!(
                     "The dimension '{}' appears more than once in the view.",
                     self.dim_name(dim)
                 )));
@@ -506,7 +492,7 @@ impl<'a> Cx<'a> {
             .zip(&places)
             .find_map(|(dim, place)| place.is_none().then_some(dim))
         {
-            return Err(invalid(format!(
+            return Err(EngineError::invalid(format!(
                 "The view is missing the dimension '{}': put it in the rows, columns or pages.",
                 self.dim_name(missing)
             )));
@@ -527,13 +513,15 @@ fn check_line_items(
             .line_item(*id)
             .is_some_and(|line_item| line_item.module == module.id)
         {
-            return Err(invalid(format!(
+            return Err(EngineError::invalid(format!(
                 "The view lists a line item that isn't in module '{}'.",
                 module.name
             )));
         }
         if !seen.insert(*id) {
-            return Err(invalid("The view lists a line item more than once."));
+            return Err(EngineError::invalid(
+                "The view lists a line item more than once.",
+            ));
         }
     }
     Ok(())

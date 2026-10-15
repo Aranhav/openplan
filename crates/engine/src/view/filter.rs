@@ -1,8 +1,8 @@
 use super::cells::{LiPlan, Projection};
 use super::members::{Frame, Id, Node, split};
-use super::{Cx, FilterOp, MAX_FILTERED_ROWS, Place, RowFilter, ViewDim, invalid};
+use super::{Cx, FilterOp, MAX_FILTERED_ROWS, Place, RowFilter, ViewDim};
 use crate::calendar::TimeLevel;
-use crate::error::EngineError;
+use crate::error::{EngineError, grouped};
 use crate::structure::fold;
 use crate::value::{Value, ValueType};
 use std::cmp::Ordering;
@@ -42,7 +42,7 @@ impl<'a> Cx<'a> {
                 let plan = self.plan(filter.line_item)?;
                 let name = &plan.line_item.name;
                 if !plan.in_view {
-                    return Err(invalid(format!(
+                    return Err(EngineError::invalid(format!(
                         "Filter line item '{name}' has a dimension this view doesn't have."
                     )));
                 }
@@ -58,7 +58,9 @@ impl<'a> Cx<'a> {
                 );
                 if compares {
                     let Some(value) = &filter.value else {
-                        return Err(invalid(format!("The filter on '{name}' needs a value.")));
+                        return Err(EngineError::invalid(format!(
+                            "The filter on '{name}' needs a value."
+                        )));
                     };
                     let ty = plan.line_item.format.value_type();
                     let (fits, wanted) = if filter.op == FilterOp::Contains {
@@ -67,7 +69,9 @@ impl<'a> Cx<'a> {
                         (has_type(value, ty), type_word(ty))
                     };
                     if !fits {
-                        return Err(invalid(format!("Filter on '{name}' needs {wanted}.")));
+                        return Err(EngineError::invalid(format!(
+                            "Filter on '{name}' needs {wanted}."
+                        )));
                     }
                 }
                 let folded = match &filter.value {
@@ -100,10 +104,10 @@ impl<'a> Cx<'a> {
         let rows = frame.rows;
         let total = rows.total();
         if total > MAX_FILTERED_ROWS {
-            return Err(invalid(format!(
+            return Err(EngineError::invalid(format!(
                 "This view has {} rows to filter; the limit is {}. Narrow it with page selections.",
-                thousands(total),
-                thousands(MAX_FILTERED_ROWS)
+                grouped(total as u128),
+                grouped(MAX_FILTERED_ROWS as u128)
             )));
         }
         if total == 0 {
@@ -277,17 +281,4 @@ fn type_word(ty: ValueType) -> &'static str {
         ValueType::Item(_) => "a list item",
         ValueType::Period(_) => "a time period",
     }
-}
-
-/// A count with a comma between groups of three digits.
-fn thousands(count: usize) -> String {
-    let digits = count.to_string();
-    let mut grouped = String::new();
-    for (at, digit) in digits.chars().enumerate() {
-        if at > 0 && (digits.len() - at).is_multiple_of(3) {
-            grouped.push(',');
-        }
-        grouped.push(digit);
-    }
-    grouped
 }
