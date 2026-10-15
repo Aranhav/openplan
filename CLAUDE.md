@@ -37,7 +37,16 @@ pnpm --dir web lint
 pnpm --dir web typecheck
 pnpm --dir web test
 pnpm --dir web gen:api      # regenerate web/src/lib/api/schema.d.ts from the server OpenAPI document
+pnpm --dir web dlx shadcn@latest add <component>   # add a shadcn/ui component (style new-york, base color neutral)
 ```
+
+Web conventions:
+
+- Call the API through `api` and `unwrap` from `web/src/lib/api/client.ts`. `api` is typed from the generated `schema.d.ts` and has `/api/v1` as its base URL, so paths are written without that prefix (`api.GET("/setup/status")`). `unwrap` throws `ApiError` for problem+json responses.
+- Query keys come from `web/src/lib/api/keys.ts`.
+- `web/src/routeTree.gen.ts` (TanStack Router) and `web/src/lib/api/schema.d.ts` are generated and committed. Do not edit them by hand.
+- `web/src/components/ui/` is managed by the shadcn CLI. Do not edit it by hand.
+- Tests are Vitest with jsdom and Testing Library; the setup file is `web/src/test/setup.ts`.
 
 End to end and containers:
 
