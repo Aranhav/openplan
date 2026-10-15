@@ -18,7 +18,8 @@ ALTER TABLE line_item_data ENABLE ROW LEVEL SECURITY;
 -- of kind 'cell' that only records its old and new value. Loading a model replays the batches
 -- after its checkpoint and never reads the cell rows, which are far more numerous, so they are
 -- left out of the replay index; the history of a cell reads only them, newest first, which the
--- last column of its index serves.
+-- last column of its index serves. Both indexes are partial, so the foreign keys have indexes of
+-- their own: without them deleting a model, or a user, reads the whole log.
 CREATE TABLE change_log (
   seq bigserial PRIMARY KEY,
   model_id uuid NOT NULL REFERENCES models(id) ON DELETE CASCADE,
@@ -28,4 +29,6 @@ CREATE TABLE change_log (
 CREATE INDEX change_log_replay_idx ON change_log (model_id, seq) WHERE kind <> 'cell';
 CREATE INDEX change_log_cell_idx ON change_log (model_id, line_item_id, cell_key, seq)
   WHERE kind = 'cell';
+CREATE INDEX change_log_model_idx ON change_log (model_id);
+CREATE INDEX change_log_user_idx ON change_log (user_id);
 ALTER TABLE change_log ENABLE ROW LEVEL SECURITY;

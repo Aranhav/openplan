@@ -507,15 +507,16 @@ mod tests {
             .unwrap()
     }
 
-    /// The plan Postgres makes for `sql` with the sequential scan ruled out, so that it names
-    /// the index that serves the query if there is one.
-    async fn plan_of(pool: &PgPool, sql: &str, model_id: Uuid, bind_seq: bool) -> String {
+    /// The plan Postgres makes for `sql`, which takes `id` and, if `bind_seq`, a sequence number,
+    /// with the sequential scan ruled out, so that it names the index that serves the query if
+    /// there is one.
+    async fn plan_of(pool: &PgPool, sql: &str, id: Uuid, bind_seq: bool) -> String {
         let mut tx = pool.begin().await.unwrap();
         sqlx::query("SET LOCAL enable_seqscan = off")
             .execute(&mut *tx)
             .await
             .unwrap();
-        let query = sqlx::query_scalar::<_, String>(sql).bind(model_id);
+        let query = sqlx::query_scalar::<_, String>(sql).bind(id);
         let plan = if bind_seq { query.bind(0_i64) } else { query };
         plan.fetch_all(&mut *tx).await.unwrap().join("\n")
     }
@@ -529,6 +530,40 @@ mod tests {
         let plan = plan_of(&pool, &format!("EXPLAIN {BATCHES_SQL}"), model_id, true).await;
 
         assert!(plan.contains("change_log_replay_idx"), "{plan}");
+    }
+
+    /// Deleting a model, or the workspace it is in, deletes its change-log rows through the
+    /// foreign key, with the statement below. Without an index on the model it reads the whole
+    /// log, of every model, for each model deleted.
+    #[sqlx::test(migrator = "crate::db::MIGRATOR")]
+    async fn deleting_a_model_finds_its_change_log_rows_through_an_index(pool: PgPool) {
+        let model_id = busy_change_log(&pool).await;
+
+        let plan = plan_of(
+            &pool,
+            "EXPLAIN DELETE FROM ONLY change_log WHERE model_id = $1",
+            model_id,
+            false,
+        )
+        .await;
+
+        assert!(plan.contains("change_log_model_idx"), "{plan}");
+    }
+
+    /// Deleting a user clears them from the change-log rows they made, with the statement below.
+    #[sqlx::test(migrator = "crate::db::MIGRATOR")]
+    async fn deleting_a_user_finds_the_change_log_rows_they_made_through_an_index(pool: PgPool) {
+        busy_change_log(&pool).await;
+
+        let plan = plan_of(
+            &pool,
+            "EXPLAIN UPDATE ONLY change_log SET user_id = NULL WHERE user_id = $1",
+            Uuid::now_v7(),
+            false,
+        )
+        .await;
+
+        assert!(plan.contains("change_log_user_idx"), "{plan}");
     }
 
     /// A model whose change log has 100,000 changes of cells, 2,000 of them of one cell that is
