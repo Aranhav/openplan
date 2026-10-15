@@ -15,7 +15,7 @@ The browser only talks to the Vercel origin. Vercel rewrites `/api/*` to the Ren
 2. Reset the database password and save it somewhere safe.
 3. Copy the **Session pooler** URI. Its port is 5432. The transaction pooler (port 6543) is not supported.
 4. Append `?sslmode=require` to the URI. The server connects with TLS.
-5. Percent-encode the password in the URI. Some characters, such as `#` and `?`, end the password early. The sign-in then fails as a failed database authentication, not as a URL parse error, so check the encoding first. Percent-encode every reserved character (`: / ? # [ ] @ ! $ & ' ( ) * + , ; =`), and `%` and spaces too. For example, `@` becomes `%40`.
+5. Percent-encode the password in the URI. An unencoded `#`, `?` or `/` ends the address early, which shows up as a URL parse error (for example an invalid port) or a connection to the wrong host — not as a rejected password. Percent-encode every reserved character, including `%` itself. Percent-encode every reserved character (`: / ? # [ ] @ ! $ & ' ( ) * + , ; =`), and `%` and spaces too. For example, `@` becomes `%40`.
 
 ### 2. Render (API)
 
@@ -58,18 +58,18 @@ The login rate limit counts attempts per email and client IP. Behind a proxy the
 
 A wrong value lets clients spoof their IP. If the value is higher than the number of proxies, the server trusts an entry the client supplied, and a client can change it to get a fresh login budget on every attempt. If the value is lower, or the server sits behind a proxy and the value is `0`, every client shares the proxy's address, so anyone who makes ten failed sign-ins for an account locks that account out for everyone.
 
-**Check after the first deploy.** From one network, make 10 failed sign-ins to a test account. The 11th should return 429. Then sign in to the same account from a second network, such as a phone on mobile data. It should succeed. If the second network is refused too, the server is keying on a proxy address and the value is wrong. Change `OPENPLAN_TRUSTED_PROXY_HOPS` on Render (try `1` and `3`), repeat the check until it passes, and keep the value that passes. The check shows that separate networks get separate budgets. It does not show that the value resists spoofing.
+**Check after the first deploy.** From one network, make 10 failed sign-ins to a test account. The 11th should return 429. Then sign in to the same account from a second network, such as a phone on mobile data. It should succeed. If the second network is refused too, the server is keying on a proxy address and the value is wrong. Change `OPENPLAN_TRUSTED_PROXY_HOPS` on Render (try `1` and `3`), repeat the check until it passes, and keep the value that passes. The check shows that separate networks get separate budgets. It does not show that the value resists spoofing. If neither value works, stop and inspect the `X-Forwarded-For` header the proxy actually forwards before trying other values.
 
 ### Limitation and per-email ceiling
 
 Render's URL is public, so a caller can reach the API without going through Vercel. Such a caller can send its own `X-Forwarded-For`, and with the hosted demo's setting the server trusts it. That lets a direct caller:
 
 - make each request look like a new client, which gets around the per-IP limit for an email; and
-- put another client's address in `X-Forwarded-For`, which uses up that client's per-IP budget for the given email (10 attempts per 15 minutes) and refuses that client's sign-ins to that account. Other accounts and other addresses are not affected.
+- put another client's address in `X-Forwarded-For`, which uses up that client's per-IP budget for the given email (10 attempts per 15 minutes) and refuses that client's sign-ins to that account. Other addresses keep their own per-address budget, but spoofed attempts still count toward the account's shared 50-attempt ceiling.
 
-To bound guessing, every email also has a ceiling of 50 login attempts per 15 minutes from any address. The ceiling is always on, including self-hosted Docker Compose, whatever `OPENPLAN_TRUSTED_PROXY_HOPS` is set to. It is a sliding window: each allowed attempt counts for 15 minutes, and blocked attempts are not counted. Attempts beyond the ceiling return 429, even with the correct password.
+To bound guessing, every email also has a ceiling of 50 login attempts per 15 minutes from any address. The ceiling is always on, including self-hosted Docker Compose, whatever `OPENPLAN_TRUSTED_PROXY_HOPS` is set to. It is a sliding window: each allowed attempt counts for 15 minutes, and blocked attempts are not counted. Attempts beyond the ceiling return 429, even with the correct password. Both limits live in server memory, so a restart (or a second instance) starts them from zero.
 
-The ceiling has a cost: anyone can lock out a specific account. An attacker who keeps sending at least about 3.3 failed sign-ins a minute (50 per 15 minutes, the rate at which the window frees a slot) keeps the account locked for as long as they continue. A successful sign-in clears the counter, so each success gives an attacker a fresh 50 attempts. The ceiling therefore limits guessing to about 200 attempts per hour per account. It does not cap the total.
+The ceiling has a cost: anyone can lock out a specific account. An attacker who keeps sending at least about 3.3 failed sign-ins a minute (50 per 15 minutes, the rate at which the window frees a slot) keeps the account locked for as long as they continue. A successful sign-in clears the counter, so each success gives an attacker a fresh 50 attempts. The ceiling therefore limits guessing to about 200 guesses per hour per account while nobody signs in successfully — each successful sign-in (including the owner's) resets the count. It does not cap the total.
 
 ## Self-hosting with Docker Compose
 
