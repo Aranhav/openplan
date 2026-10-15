@@ -25,7 +25,7 @@ The browser only talks to the Vercel origin. Vercel rewrites `/api/*` to the Ren
    - `DATABASE_URL`: the URI from step 1.
    - `OPENPLAN_PUBLIC_URL`: a placeholder such as `https://placeholder.example`. It must start with `https://` so cookies are marked `Secure`. The Vercel domain is not known until step 3, so update this variable in step 3.
 3. Check the deploy with `https://openplan-api-qmsm.onrender.com/api/health` (Render adds a suffix when the name is taken; use your service's URL). It returns `{"status":"ok",...}`.
-4. In Supabase, open Advisors → Security Advisor and run it after this first deploy. It should report no `RLS Disabled in Public` errors for `users`, `sessions`, `workspaces`, `workspace_members`, `models` or `_sqlx_migrations`.
+4. In Supabase, open Advisors → Security Advisor and run it after this first deploy. It should report no `RLS Disabled in Public` errors for `users`, `sessions`, `workspaces`, `workspace_members`, `models`, `model_structure`, `line_item_data`, `change_log` or `_sqlx_migrations`.
 
 `render.yaml` also sets `OPENPLAN_LOG=info` and `OPENPLAN_TRUSTED_PROXY_HOPS=2` (see [Trusted proxy hops](#trusted-proxy-hops)).
 
@@ -75,6 +75,10 @@ Render's URL is public, so a caller can reach the API without going through Verc
 To bound guessing, every email also has a ceiling of 50 login attempts per 15 minutes from any address. The ceiling is always on, including self-hosted Docker Compose, whatever `OPENPLAN_TRUSTED_PROXY_HOPS` is set to. It is a sliding window: each allowed attempt counts for 15 minutes, and blocked attempts are not counted. Attempts beyond the ceiling return 429, even with the correct password. Both limits live in server memory, so a restart (or a second instance) starts them from zero.
 
 The ceiling has a cost: anyone can lock out a specific account. An attacker who keeps sending at least about 3.3 failed sign-ins a minute (50 per 15 minutes, the rate at which the window frees a slot) keeps the account locked for as long as they continue. A successful sign-in clears the counter, so each success gives an attacker a fresh 50 attempts. The ceiling therefore limits guessing to about 200 guesses per hour per account while nobody signs in successfully — each successful sign-in (including the owner's) resets the count. It does not cap the total. If an account is locked out and you cannot wait for the window to pass, restart the Render service to clear an in-memory login lock-out.
+
+## Running one process
+
+Run one OpenPlan process against a database. A model is loaded into the memory of the process that first uses it, and that process applies its edits in order (spec §2.3). A second process, such as a second instance or the old and the new instance while a deploy overlaps, loads its own copy of the model and edits it without knowing of the other's edits, so the two copies diverge until a model is unloaded and loaded again. Keep the Render service at one instance (the free plan has one), do not scale `openplan` in Docker Compose, and where a platform starts the new instance before it stops the old one, do not edit models while a deploy is under way.
 
 ## Self-hosting with Docker Compose
 

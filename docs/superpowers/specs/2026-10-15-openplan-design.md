@@ -264,8 +264,7 @@ Migrations live in `crates/server/migrations`. Tables (key columns only):
 | `api_tokens(id, user_id, name, token_hash, last_used_at, expires_at)` | personal access tokens |
 | `workspaces(id, name, created_at)` / `workspace_members(workspace_id, user_id, role)` | tenancy; role ∈ `admin`, `builder`, `planner`, `viewer` |
 | `models(id, workspace_id, name, description, mode, calendar jsonb, checkpoint_seq, created_by, timestamps)` | model header |
-| `model_objects(model_id, id, kind, body jsonb, updated_seq)` | lists, modules, line items, versions, subsets, views, pages, actions, processes, workflows, roles, time ranges |
-| `list_items(model_id, list_id, id, code, name, parent_item_id, ordinal, deleted)` | list members |
+| `model_structure(model_id, doc jsonb, updated_at)` | the model's structure as one document the engine reads and writes (`StructureDoc`): lists with their items, modules, line items, versions, subsets and time ranges, and later views, pages, actions, processes, workflows and roles. Replaced as a whole at each checkpoint; what changed in between is in `change_log` |
 | `line_item_data(model_id, line_item_id, chunk, data bytea)` | checkpointed input cells (binary, zstd) |
 | `change_log(model_id, seq bigserial, user_id, at, kind, payload jsonb, line_item_id null, cell_key null)` | every write; audit, history, undo, replay |
 | `comments(id, model_id, line_item_id, cell_key, thread_id, author_id, body, resolved, created_at)` | cell comments |
@@ -277,7 +276,7 @@ Migrations live in `crates/server/migrations`. Tables (key columns only):
 | `ai_settings(workspace_id, provider, base_url, model, api_key_encrypted, enabled)` | AI config |
 | `import_runs(id, model_id, action_id, user_id, status, report jsonb, created_at)` | import history |
 
-**Load:** read structure + list items → read latest `line_item_data` checkpoint → replay `change_log` rows with `seq > checkpoint_seq` → full recalc.
+**Load:** read `model_structure` → read latest `line_item_data` checkpoint → replay `change_log` rows with `seq > checkpoint_seq` → full recalc.
 **Checkpoint:** every 10,000 change-log rows or on eviction, write all dirty input stores and advance `checkpoint_seq`, in one transaction.
 **Cell key:** canonical string `"<item uuid>|<item uuid>|...|<period index>|<version uuid>"` for comments, history and selective lookups.
 
@@ -418,7 +417,7 @@ Every data view has: loading skeleton (`Skeleton`), empty state (icon, one-sente
 
 ## 11. ALM and model files
 
-- **Revision tag:** snapshot of structure (all `model_objects` + list items of non-`production_data` lists), zstd-compressed JSON.
+- **Revision tag:** snapshot of structure (the `model_structure` document, without the items of `production_data` lists), zstd-compressed JSON.
 - **Diff:** by object id: added / removed / changed (field-level).
 - **Sync:** target must be linked to the source (created via "Copy model" or "Import .openplan" that preserves ids). Applies the structural diff between the target's last synced revision and the chosen revision; data in target is preserved; line items removed lose their data (confirmed in UI).
 - **`.openplan` file:** zip containing `manifest.json` (format version, app version), `structure.json`, `data/*.bin` (input cells, optional), `pages.json`.

@@ -76,6 +76,13 @@ docker compose up --build   # OpenPlan on http://localhost:8080 with Postgres
 - CI (`.github/workflows/ci.yml`): `rust` (fmt, clippy, tests against a Postgres service), `web` (lint, typecheck, test, build, and a `gen:api` check that `schema.d.ts` is up to date, which needs the Rust toolchain), `e2e` (needs both) and `docker` (builds `docker/Dockerfile` without pushing).
 - `docker/Dockerfile` builds the web app, then the server with `web/dist` embedded, then a slim non-root runtime. The pnpm version everywhere (Dockerfile through corepack, CI through `pnpm/action-setup`) is the `packageManager` field of `web/package.json`; the workspace filter there is the path `./web...` because the package is named `openplan-web`. It does not set `OPENPLAN_BIND`, so the server follows `PORT` on Render and defaults to `0.0.0.0:8080` elsewhere; `compose.yml` sets `OPENPLAN_BIND` itself.
 
+## Server conventions
+
+- A handler that works on a model gets the model's actor from `handle_for(state, user, model_id, min_role, ProdLock)` (`structure_api.rs`) before it looks at anything else: it is the one place that checks membership (404), role (403) and, for `ProdLock::Enforce`, the production lock (409), so each handler states the role it needs and whether the lock applies. A route with a large body takes the caller and the actor in an extractor of the request head ahead of `ApiJson` (`Planner` in `cells_api.rs`), so a caller who may not call it is refused before the body is read.
+- A change to a model is a batch of engine commands made inside the model's actor: `handle.apply_with(user.id, |model| ...)` builds the commands from the model the batch is applied to, and `apply_with_answer` also returns what the handler answers with. Never read the model and then apply, since a batch applied in between would be missed.
+- Take bodies, query strings and path parameters through `ApiJson`, `ApiQuery` and `ApiPath` (`extract.rs`), not axum's `Json`, `Query` and `Path`: their rejections are `application/problem+json`, and they refuse the NUL character, which Postgres cannot store.
+- Every migration that creates a table enables row level security on it (`ALTER TABLE ... ENABLE ROW LEVEL SECURITY`), because Supabase exposes the public schema through its Data API; a test in `tests/health.rs` fails for a table without it.
+
 ## Global constraints
 
 - Rust edition 2024, toolchain pinned to 1.97.0 in `rust-toolchain.toml`. `cargo fmt --all` clean and `cargo clippy --all-targets -- -D warnings` clean.
