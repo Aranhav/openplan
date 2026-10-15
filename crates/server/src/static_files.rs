@@ -10,6 +10,7 @@ use crate::error::AppError;
 
 const IMMUTABLE: &str = "public, max-age=31536000, immutable";
 const NO_CACHE: &str = "no-cache";
+const FRAME_ANCESTORS_NONE: &str = "frame-ancestors 'none'";
 const NOT_BUILT: &str = "Web UI not built. Run `pnpm --dir web build`.";
 
 #[derive(RustEmbed)]
@@ -53,6 +54,7 @@ fn asset(name: &str, data: Cow<'static, [u8]>, cache: &'static str) -> Response 
         [
             (header::CONTENT_TYPE, mime.as_ref()),
             (header::CACHE_CONTROL, cache),
+            (header::CONTENT_SECURITY_POLICY, FRAME_ANCESTORS_NONE),
         ],
         body,
     )
@@ -101,6 +103,25 @@ mod tests {
             "image/svg+xml"
         );
         assert_eq!(header_value(&response, header::CACHE_CONTROL), NO_CACHE);
+    }
+
+    #[tokio::test]
+    async fn served_files_cannot_be_framed() {
+        for path in [
+            "/",
+            "/models/123/settings",
+            "/favicon.svg",
+            "/assets/app.abc123.js",
+        ] {
+            let response = respond::<Built>(path);
+
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            assert_eq!(
+                header_value(&response, header::CONTENT_SECURITY_POLICY),
+                "frame-ancestors 'none'",
+                "{path}"
+            );
+        }
     }
 
     #[tokio::test]

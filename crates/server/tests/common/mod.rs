@@ -14,7 +14,7 @@ use openplan_server::{
     config::Config,
 };
 use serde_json::Value;
-use sqlx::PgPool;
+use sqlx::{PgPool, postgres::PgPoolOptions};
 use tower::ServiceExt;
 
 pub struct TestApp {
@@ -41,6 +41,14 @@ pub struct TestResponse {
 }
 
 impl TestApp {
+    /// An app whose database is never reached, for routes that do not use it.
+    pub fn without_database() -> TestApp {
+        let db = PgPoolOptions::new()
+            .connect_lazy("postgres://invalid")
+            .expect("lazy pool does not connect");
+        TestApp::new(db)
+    }
+
     pub fn new(db: PgPool) -> TestApp {
         let config = Config::from_lookup(|name| match name {
             "DATABASE_URL" => Some("postgres://invalid".to_string()),

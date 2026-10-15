@@ -101,6 +101,23 @@ async fn no_store_for_api(request: Request, next: Next) -> Response {
     response
 }
 
+/// Stops browsers from sniffing content types, from sending the full URL as the
+/// referrer to other origins and from showing any response in a frame.
+async fn security_headers(request: Request, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    let headers = response.headers_mut();
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("strict-origin-when-cross-origin"),
+    );
+    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    response
+}
+
 pub fn build_router(state: AppState) -> Router {
     let csrf_protected: Router<AppState> = auth::routes::router()
         .merge(users::router())
@@ -143,7 +160,8 @@ pub fn build_router(state: AppState) -> Router {
                         .on_response(DefaultOnResponse::new().level(Level::INFO)),
                 )
                 .layer(PropagateRequestIdLayer::new(REQUEST_ID_HEADER))
-                .layer(middleware::from_fn(no_store_for_api)),
+                .layer(middleware::from_fn(no_store_for_api))
+                .layer(middleware::from_fn(security_headers)),
         )
         .with_state(state)
 }
