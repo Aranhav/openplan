@@ -14,6 +14,11 @@ type Side = "before" | "after"
 type Handlers = {
   /** A batch was taken up by undo or redo: where it was made. */
   onReplay?: (where: CellRange) => void
+  /**
+   * The server took a batch, or an undo or redo of one, and the views have been read again: how
+   * many cells it was. A refusal is not reported here, it has its toast.
+   */
+  onSaved?: (count: number) => void
 }
 
 type Shown = { value: Value; batch: number }
@@ -123,6 +128,7 @@ export function useCellEdits(modelId: string, moduleId: string, handlers: Handle
         history.push({ edits: [...edits], where })
       })
       await reread()
+      handlers.onSaved?.(edits.length)
       return true
     } catch (error) {
       toast.error(failureMessage(error))
@@ -136,12 +142,14 @@ export function useCellEdits(modelId: string, moduleId: string, handlers: Handle
     const history = stack()
     const side: Side = direction === "undo" ? "before" : "after"
     let batch: number | undefined
+    let count = 0
     try {
       const replayed = await inOrder(async () => {
         const entry = direction === "undo" ? history.undo() : history.redo()
         if (!entry) {
           return false
         }
+        count = entry.edits.length
         if (entry.where) {
           handlers.onReplay?.(entry.where)
         }
@@ -161,6 +169,7 @@ export function useCellEdits(modelId: string, moduleId: string, handlers: Handle
       })
       if (replayed) {
         await reread()
+        handlers.onSaved?.(count)
       }
     } catch (error) {
       toast.error(failureMessage(error))

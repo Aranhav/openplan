@@ -61,11 +61,12 @@ function setup(moduleId = MODULE) {
     <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
   )
   const onReplay = vi.fn()
-  const hook = renderHook(({ module }) => useCellEdits(MODEL_ID, module, { onReplay }), {
+  const onSaved = vi.fn()
+  const hook = renderHook(({ module }) => useCellEdits(MODEL_ID, module, { onReplay, onSaved }), {
     wrapper,
     initialProps: { module: moduleId },
   })
-  return { queryClient, wrapper, onReplay, ...hook }
+  return { queryClient, wrapper, onReplay, onSaved, ...hook }
 }
 
 beforeEach(() => {
@@ -484,5 +485,60 @@ describe("useCellEdits history", () => {
     })
 
     expect(onReplay).not.toHaveBeenCalled()
+  })
+})
+
+describe("useCellEdits saved", () => {
+  it("says how many cells were written when the server took them", async () => {
+    serveCells()
+    const { result, onSaved } = setup()
+
+    await act(async () => {
+      await result.current.commit([edit(5), edit(6, 1, ["p-2", "Jan 26"])])
+    })
+
+    expect(onSaved).toHaveBeenCalledExactlyOnceWith(2)
+  })
+
+  it("says nothing when the server refused them, which has its toast", async () => {
+    server.use(
+      http.post("/api/v1/models/:id/cells", () =>
+        problem(422, "cells.invalid_value", "Some fields are invalid.", {
+          errors: [{ field: "edits[0]", message: "Enter a number" }],
+        }),
+      ),
+    )
+    const { result, onSaved } = setup()
+
+    await act(async () => {
+      await result.current.commit([edit(5)])
+    })
+
+    expect(onSaved).not.toHaveBeenCalled()
+    expect(toast.error).toHaveBeenCalledExactlyOnceWith("Enter a number")
+  })
+
+  it("says it for an undo too", async () => {
+    serveCells()
+    const { result, onSaved } = setup()
+    await act(async () => {
+      await result.current.commit([edit(5)])
+      await result.current.undo()
+    })
+
+    expect(onSaved).toHaveBeenCalledTimes(2)
+    expect(onSaved).toHaveBeenLastCalledWith(1)
+  })
+
+  it("says nothing for an empty batch or an undo with nothing to undo", async () => {
+    serveCells()
+    const { result, onSaved } = setup()
+
+    await act(async () => {
+      await result.current.commit([])
+      await result.current.undo()
+    })
+
+    expect(onSaved).not.toHaveBeenCalled()
   })
 })

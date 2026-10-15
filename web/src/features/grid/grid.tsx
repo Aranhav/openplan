@@ -305,6 +305,7 @@ export function Grid({
     moveSelection: (direction) =>
       run({ type: "move", dir: direction, extend: false, jump: false }, 0),
     selectRange: selectAndReveal,
+    announce,
     gridRef: scrollRef,
     focusGrid,
   })

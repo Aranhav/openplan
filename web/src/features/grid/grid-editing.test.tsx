@@ -901,3 +901,110 @@ describe("after undo, redo and paste", () => {
     expect(cellAt(grid, 1, START)).toHaveAttribute("aria-selected", "false")
   })
 })
+
+describe("cells in error", () => {
+  const errorView = () =>
+    editView({
+      cell: (row, col) =>
+        col === NOTES
+          ? { value: { t: "text", v: "stale" }, flags: ["error", "readonly"] }
+          : editCell(row, col),
+    })
+
+  it("copy as empty, like cells that do not apply", async () => {
+    const { grid } = await setup({}, errorView())
+    await select(grid, 1, ACTIVE)
+    await userEvent.keyboard("{Shift>}{ArrowRight}{/Shift}")
+    const setData = vi.fn()
+
+    fireEvent.copy(grid, { clipboardData: { setData } })
+
+    expect(setData).toHaveBeenCalledExactlyOnceWith("text/plain", "FALSE\t\n")
+  })
+
+  it("fill down as empty", async () => {
+    const view = editView({
+      cell: (row, col) =>
+        col === BUDGET && row === 1
+          ? { value: { t: "number", v: 99 }, flags: ["error", "readonly"] }
+          : editCell(row, col),
+    })
+    const { grid, bodies } = await setup({}, view)
+    await select(grid, 1, BUDGET)
+    await userEvent.keyboard("{Shift>}{ArrowDown}{/Shift}{Control>}d{/Control}")
+
+    await waitFor(() => expect(bodies).toHaveLength(1))
+    expect(bodies[0].edits).toEqual([written("li-budget", 2, number(0))])
+  })
+})
+
+describe("saying what happened", () => {
+  it("marks a cell that is being written as busy, and not once it is written", async () => {
+    const { grid, bodies } = await setup()
+    const release = holdCells(bodies)
+    await select(grid, 1, BUDGET)
+
+    await userEvent.keyboard("42{Enter}")
+
+    expect(cellAt(grid, 1, BUDGET)).toHaveAttribute("aria-busy", "true")
+    expect(cellAt(grid, 0, BUDGET)).not.toHaveAttribute("aria-busy")
+    release()
+    await waitFor(() => expect(cellAt(grid, 1, BUDGET)).not.toHaveAttribute("aria-busy"))
+  })
+
+  it("says Saved, politely, when the edit of one cell is written", async () => {
+    const { grid } = await setup()
+    await select(grid, 1, BUDGET)
+
+    await userEvent.keyboard("42{Enter}")
+
+    const message = await screen.findByText("Saved")
+    expect(message.closest("[role='status']")).toHaveClass("sr-only")
+  })
+
+  it("leaves a refusal to its toast, which is read out on its own", async () => {
+    const { grid } = await setup()
+    server.use(
+      http.post("/api/v1/models/:id/cells", () =>
+        problem(422, "cells.invalid_value", "Some fields are invalid.", {
+          errors: [{ field: "edits[0]", message: "Enter a number" }],
+        }),
+      ),
+    )
+    await select(grid, 1, BUDGET)
+
+    await userEvent.keyboard("42{Enter}")
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledExactlyOnceWith("Enter a number"))
+    expect(screen.queryByText("Saved")).not.toBeInTheDocument()
+    expect(screen.queryByText("Enter a number")).not.toBeInTheDocument()
+  })
+
+  it("does not say Saved for a paste, which has its toast", async () => {
+    const { grid, bodies } = await setup()
+    await select(grid, 1, BUDGET)
+
+    fireEvent.paste(document.body, { clipboardData: { getData: () => "5\n6" } })
+
+    await waitFor(() => expect(bodies).toHaveLength(1))
+    await waitFor(() => expect(toast.success).toHaveBeenCalled())
+    expect(screen.queryByText("Saved")).not.toBeInTheDocument()
+  })
+})
+
+describe("a grid that is read only, in its look", () => {
+  it("gives every cell the default cursor, not the cell cursor", async () => {
+    const { grid } = await setup({ readOnly: true })
+
+    expect(cellAt(grid, 1, BUDGET)).toHaveClass("cursor-default")
+    expect(cellAt(grid, 1, BUDGET)).not.toHaveClass("cursor-cell")
+    expect(cellAt(grid, 1, CALCULATED)).toHaveClass("cursor-default")
+  })
+
+  it("keeps the cell cursor for the cells that can be edited in a grid that is not", async () => {
+    const { grid } = await setup()
+
+    expect(cellAt(grid, 1, BUDGET)).toHaveClass("cursor-cell")
+    expect(cellAt(grid, 1, CALCULATED)).toHaveClass("cursor-not-allowed")
+  })
+})

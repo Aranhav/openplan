@@ -7,16 +7,14 @@ import type { components } from "@/lib/api/schema"
  */
 export type CellWrite = components["schemas"]["CellEditDto"]
 
-export type WriteCellsResponse = components["schemas"]["WriteCellsResponse"]
-
 /**
  * `POST /models/{id}/cells`: all the edits are stored or none. A value that does not fit its cell
  * is a 422 `cells.invalid_value` with `errors` naming the cells, a calculated line item
  * `cells.not_input`, a coordinate that fits no cell `cells.invalid_coordinate`, and a caller who
  * may not plan in the model a 403.
  */
-export function writeCells(modelId: string, edits: CellWrite[], signal?: AbortSignal) {
+export function writeCells(modelId: string, edits: CellWrite[]) {
   return unwrap(
-    api.POST("/models/{id}/cells", { params: { path: { id: modelId } }, body: { edits }, signal }),
+    api.POST("/models/{id}/cells", { params: { path: { id: modelId } }, body: { edits } }),
   )
 }

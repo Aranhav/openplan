@@ -139,7 +139,9 @@ export const GridCell = memo(function GridCell({
     : format.type === "boolean"
       ? "justify-center"
       : "justify-start"
-  const cursor = na ? "cursor-default" : readonly ? "cursor-not-allowed" : "cursor-cell"
+  // A cell of a grid that cannot be edited does not look as if it could: a pointer, not an editor.
+  const cursor =
+    na || gridReadOnly ? "cursor-default" : readonly ? "cursor-not-allowed" : "cursor-cell"
   const surface = style
     ? `${styleClassName(style)}${has(flags, "summary") && !style.bold ? " font-semibold" : ""}`
     : `${surfaceClass(flags)} text-foreground`
@@ -181,6 +183,7 @@ export const GridCell = memo(function GridCell({
       {...position}
       data-note={error ? "error" : has(flags, "switchover") ? "switchover" : undefined}
       aria-readonly={readonly || undefined}
+      aria-busy={pending || undefined}
       aria-describedby={note}
       aria-label={full}
       title={full}

@@ -52,6 +52,8 @@ type Options = {
   moveSelection: (direction: Direction) => void
   /** Selects a range, with the active cell at its top left, and brings it into view. */
   selectRange: (range: CellRange) => void
+  /** Says something politely, to a screen reader. */
+  announce: (text: string) => void
   /** The grid, which has the focus: copy, cut and paste are taken from the document while it does. */
   gridRef: RefObject<HTMLElement | null>
   /** Puts the keyboard back on the grid when an editor closes. */
@@ -121,12 +123,19 @@ export function useGridEditing({
   peek,
   moveSelection,
   selectRange,
+  announce,
   gridRef,
   focusGrid,
 }: Options) {
   const edits = useCellEdits(modelId, moduleId, {
     // Undo and redo show what they changed.
     onReplay: selectRange,
+    // A paste or a fill has its toast, and so has a refusal; one cell saved is said here.
+    onSaved: (count) => {
+      if (count === 1) {
+        announce("Saved")
+      }
+    },
   })
   const { pending } = edits
   const [editor, setEditor] = useState<EditorState | null>(null)
@@ -147,6 +156,15 @@ export function useGridEditing({
       return undefined
     }
     return { lineItemId: target.lineItem.id, coords: target.coords, before, after: value }
+  }
+
+  /** What a cell copies as: nothing for a cell that does not apply or is in error. */
+  function copiedText(target: CellTarget): string {
+    if (target.cell.flags.includes("na") || target.cell.flags.includes("error")) {
+      return ""
+    }
+    const shown = effective(target)
+    return copyText(shown.value, target.lineItem.format, shown.text)
   }
 
   /** Writes what differs from what the cells hold; `where` is what undo and redo select. */
@@ -304,8 +322,7 @@ export function useGridEditing({
         skipped++
         continue
       }
-      const shown = effective(source)
-      const raw = copyText(shown.value, source.lineItem.format, shown.text)
+      const raw = copiedText(source)
       const { format } = target.lineItem
       const parsed = parseInput(raw, format, parseContextFor(format, reference))
       if (!parsed.ok) {
@@ -381,12 +398,7 @@ export function useGridEditing({
         if (!target) {
           return undefined
         }
-        const shown = effective(target)
-        line.push(
-          target.cell.flags.includes("na")
-            ? ""
-            : copyText(shown.value, target.lineItem.format, shown.text),
-        )
+        line.push(copiedText(target))
       }
       rows.push(line)
     }
