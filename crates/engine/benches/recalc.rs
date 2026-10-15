@@ -2,6 +2,8 @@
 //! model recalculates in under 50 ms, ten million stored cells load in under 5 s, and a
 //! calculated line item of a hundred thousand cells rounds in under 10 ms.
 
+use std::sync::{LazyLock, Mutex};
+
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use openplan_engine::{
     AxisSpec, Calendar, CellEdit, Command, CoordToken, Format, InputChunk, ItemId, ItemSpec,
@@ -161,7 +163,15 @@ impl Sales {
     }
 }
 
-fn edit_1m_cells(c: &mut Criterion) {
+/// The model of a million cells, and the cell that is edited.
+struct Edit {
+    model: Model,
+    units: LineItemId,
+    at: Vec<CoordToken>,
+    next: f64,
+}
+
+fn edit_fixture() -> Edit {
     let mut sales = sales(10_000, 3);
     let units = create(&mut sales.model, line_item(sales.module, "Units", None));
     let price = create(&mut sales.model, line_item(sales.module, "Price", None));
@@ -180,19 +190,33 @@ fn edit_1m_cells(c: &mut Criterion) {
             line_item(sales.module, name, Some(formula)),
         );
     }
-
     let at = sales.coords(4_321, 7, 1);
-    let mut next = 100.0;
+    Edit {
+        model: sales.model,
+        units,
+        at,
+        next: 100.0,
+    }
+}
+
+fn edit_1m_cells(c: &mut Criterion) {
+    let fixture = LazyLock::new(|| Mutex::new(edit_fixture()));
     c.bench_function("edit_1m_cells", |b| {
+        let mut guard = fixture.lock().unwrap();
+        let Edit {
+            model,
+            units,
+            at,
+            next,
+        } = &mut *guard;
         b.iter(|| {
-            next += 1.0;
-            sales
-                .model
+            *next += 1.0;
+            model
                 .apply(Command::SetCells {
-                    line_item: units,
+                    line_item: *units,
                     edits: vec![CellEdit {
                         coords: at.clone(),
-                        value: Value::Number(next),
+                        value: Value::Number(*next),
                     }],
                 })
                 .unwrap()
@@ -212,16 +236,13 @@ fn discount_at(product: usize) -> f64 {
     0.01 * (1 + product % 20) as f64
 }
 
-/// A stored model of 10.8 million input cells with two calculated line items over them, and a
-/// cell of the first of those with the value a load must give it.
+/// A stored model of 10.8 million input cells with two calculated line items over them.
 struct Stored {
     doc: StructureDoc,
     chunks: Vec<InputChunk>,
-    revenue: LineItemId,
-    probe: Vec<CoordToken>,
-    revenue_at_probe: f64,
 }
 
+/// Fills a model, stores it, and checks that loading the store gives back what was stored.
 fn stored_10m_cells() -> Stored {
     let mut sales = sales(25_000, 3);
     let inputs: Vec<LineItemId> = ["Units", "Price", "Unit cost", "Discount"]
@@ -247,36 +268,26 @@ fn stored_10m_cells() -> Stored {
         Some("Revenue - Units * 'Unit cost'"),
     );
     doc.line_items.extend([revenue, margin]);
-    let (product, month) = (12_345, 20);
-    Stored {
-        doc,
-        chunks,
-        revenue: revenue_id,
-        probe: sales.coords(product, month, 2),
-        revenue_at_probe: units_at(product, month)
-            * price_at(product)
-            * (1.0 - discount_at(product)),
-    }
-}
 
-fn load_10m_cells(c: &mut Criterion) {
-    let Stored {
-        doc,
-        chunks,
-        revenue,
-        probe,
-        revenue_at_probe,
-    } = stored_10m_cells();
+    let (product, month) = (12_345, 20);
     let loaded = Model::from_parts(doc.clone(), chunks.clone()).unwrap();
     assert_eq!(loaded.load_warnings(), 0);
     assert_eq!(loaded.last_recalc_stats().line_items, 2);
     assert_eq!(
-        loaded.read_cells(revenue, &[probe]).unwrap(),
-        [Value::Number(revenue_at_probe)]
+        loaded
+            .read_cells(revenue_id, &[sales.coords(product, month, 2)])
+            .unwrap(),
+        [Value::Number(
+            units_at(product, month) * price_at(product) * (1.0 - discount_at(product))
+        )]
     );
-    drop(loaded);
+    Stored { doc, chunks }
+}
 
+fn load_10m_cells(c: &mut Criterion) {
+    let stored = LazyLock::new(stored_10m_cells);
     c.bench_function("load_10m_cells", |b| {
+        let Stored { doc, chunks } = &*stored;
         b.iter_batched(
             || (doc.clone(), chunks.clone()),
             |(doc, chunks)| Model::from_parts(doc, chunks).unwrap(),
@@ -300,7 +311,7 @@ fn random_amounts(count: usize) -> Vec<f64> {
         .collect()
 }
 
-fn round_100k_cells(c: &mut Criterion) {
+fn rounding_fixture() -> Model {
     const ROWS: usize = 100_000;
     let mut model = Model::new(calendar(1));
     let (list, rows) = list_with_items(&mut model, "Rows", ROWS);
@@ -327,8 +338,13 @@ fn round_100k_cells(c: &mut Criterion) {
         &mut model,
         line_item(module, "Rounded", Some("ROUND(Amount, 2)")),
     );
+    model
+}
 
+fn round_100k_cells(c: &mut Criterion) {
+    let fixture = LazyLock::new(|| Mutex::new(rounding_fixture()));
     c.bench_function("round_100k_cells", |b| {
+        let mut model = fixture.lock().unwrap();
         b.iter(|| model.recalc_all().unwrap())
     });
 }
