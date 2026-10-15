@@ -45,8 +45,11 @@ test("the sidebar collapses and the theme can be switched to dark", async ({ pag
   await expect(sidebar).toHaveAttribute("data-state", "expanded")
 
   await expect(page.locator("html")).not.toHaveClass(/\bdark\b/)
+  // The browser draws native scrollbars and form controls in the scheme the page declares.
+  await expect(page.locator("html")).toHaveCSS("color-scheme", "light")
   await page.getByRole("button", { name: ADMIN.email }).click()
   await page.getByRole("menuitem", { name: "Theme" }).click()
   await page.getByRole("menuitemradio", { name: "Dark" }).click()
   await expect(page.locator("html")).toHaveClass(/\bdark\b/)
+  await expect(page.locator("html")).toHaveCSS("color-scheme", "dark")
 })
