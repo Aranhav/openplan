@@ -60,7 +60,7 @@ describe("the current workspace", () => {
     mockSession({ me: meInTwoWorkspaces })
     window.localStorage.setItem(LAST_WORKSPACE_KEY, globex.id)
     const { router } = renderApp("/profile")
-    await screen.findByRole("heading", { name: "Profile" })
+    await screen.findByRole("heading", { level: 1, name: "Profile" })
     await router.navigate({ to: "/" })
 
     await waitFor(() => expect(router.state.location.pathname).toBe(`/w/${globex.id}`))

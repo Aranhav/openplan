@@ -14,9 +14,10 @@ import {
 } from "@/components/ui/dialog"
 import { Form } from "@/components/ui/form"
 import type { components } from "@/lib/api/schema"
+import { reportFormError } from "@/lib/form-errors"
 import { useUpdateModel } from "./api"
 import { ModelNameField } from "./model-fields"
-import { modelNameSchema, reportModelFormError } from "./model-form"
+import { MODEL_FIELD_ERRORS, modelNameSchema } from "./model-form"
 
 const schema = z.object({ name: modelNameSchema })
 
@@ -86,7 +87,7 @@ function RenameModelForm({
       toast.success("Model renamed")
       onClose()
     } catch (error) {
-      reportModelFormError(form, error)
+      reportFormError(form, error, MODEL_FIELD_ERRORS)
     }
   }
 

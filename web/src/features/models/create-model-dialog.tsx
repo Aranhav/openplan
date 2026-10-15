@@ -14,9 +14,10 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Form } from "@/components/ui/form"
+import { reportFormError } from "@/lib/form-errors"
 import { useCreateModel } from "./api"
 import { ModelDescriptionField, ModelNameField } from "./model-fields"
-import { modelDescriptionSchema, modelNameSchema, reportModelFormError } from "./model-form"
+import { MODEL_FIELD_ERRORS, modelDescriptionSchema, modelNameSchema } from "./model-form"
 
 const schema = z.object({ name: modelNameSchema, description: modelDescriptionSchema })
 
@@ -80,7 +81,7 @@ function CreateModelForm({
       onClose()
       await navigate({ to: "/m/$modelId", params: { modelId: model.id } })
     } catch (error) {
-      reportModelFormError(form, error)
+      reportFormError(form, error, MODEL_FIELD_ERRORS)
     }
   }
 

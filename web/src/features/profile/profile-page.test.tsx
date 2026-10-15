@@ -17,7 +17,7 @@ const passwordUrl = "/api/v1/auth/me/password"
 type Typist = ReturnType<typeof userEvent.setup>
 
 async function openCard(title: string) {
-  const heading = await screen.findByText(title, { selector: "[data-slot=card-title]" })
+  const heading = await screen.findByRole("heading", { level: 2, name: title })
   return within(heading.closest("[data-slot=card]") as HTMLElement)
 }
 
@@ -197,6 +197,20 @@ describe("the profile card", () => {
 })
 
 describe("the password card", () => {
+  it("tells password managers whose password this is", async () => {
+    mockSession()
+    renderApp("/profile")
+    const password = await openPassword()
+
+    const username = password.getByDisplayValue("ada@example.com")
+    expect(username).toHaveAttribute("autocomplete", "username")
+    expect(username).toHaveAttribute("readonly")
+    expect(username).toHaveAttribute("aria-hidden", "true")
+    expect(username).toHaveAttribute("tabindex", "-1")
+    expect(username).toHaveClass("sr-only")
+    expect(password.queryByLabelText("Email")).not.toBeInTheDocument()
+  })
+
   it("changes the password and clears the form", async () => {
     mockSession()
     const posted = vi.fn()

@@ -76,30 +76,14 @@ export function useUpdateMember(wsId: string) {
   })
 }
 
-export function useRemoveMember(wsId: string) {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: (userId: string) =>
-      unwrap(
-        api.DELETE("/workspaces/{id}/members/{user_id}", {
-          params: { path: { id: wsId, user_id: userId } },
-        }),
-      ),
-    onSuccess: () =>
-      Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.members(wsId) }),
-        refreshWorkspaces(queryClient),
-      ]),
-  })
-}
-
 /**
- * The signed-in user removes themselves from a workspace. They can no longer open its pages, so
- * they move on before the workspace list is refreshed: refreshing first would turn the page they
- * are looking at into "not found" for a moment. Nor is the members list asked for again; they
- * could no longer read it.
+ * Takes a member off a workspace. Pass `leaving` when that is the signed-in user and it also
+ * takes the workspace away from them (not so for an instance admin, who is an admin of every
+ * workspace). They can no longer open its pages, so they move on before the workspace list is
+ * refreshed: refreshing first would turn the page they are looking at into "not found" for a
+ * moment. Nor is the members list asked for again; they could no longer read it.
  */
-export function useLeaveWorkspace(wsId: string) {
+export function useRemoveMember(wsId: string, { leaving = false }: { leaving?: boolean } = {}) {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   return useMutation({
@@ -110,6 +94,13 @@ export function useLeaveWorkspace(wsId: string) {
         }),
       ),
     onSuccess: async () => {
+      if (!leaving) {
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: queryKeys.members(wsId) }),
+          refreshWorkspaces(queryClient),
+        ])
+        return
+      }
       const remaining = queryClient
         .getQueryData<MeResponse>(queryKeys.me)
         ?.workspaces.filter((workspace) => workspace.id !== wsId)

@@ -53,6 +53,9 @@ function serveMembers(initial: MemberDto[]) {
   return store
 }
 
+/** The fixture's user is an instance admin; this is the same person as an ordinary member. */
+const ordinaryMe = { ...me, user: { ...user, is_instance_admin: false } }
+
 function signedInAs(role: Role) {
   return mockSession({ me: { ...me, workspaces: [{ ...workspace, role }] } })
 }
@@ -97,6 +100,27 @@ describe("the members page", () => {
     expect((await rowOf("Grace Hopper")).queryByText("(you)")).not.toBeInTheDocument()
   })
 
+  it("names the table", async () => {
+    mockSession()
+    serveMembers([ada, grace])
+    renderApp(pageUrl)
+
+    expect(await screen.findByRole("table", { name: "Members" })).toBeVisible()
+  })
+
+  it.each([
+    ["Remove Grace Hopper", "Remove member"],
+    ["Leave workspace", "Leave workspace"],
+  ])("explains the %s button in a tooltip", async (button, tip) => {
+    mockSession()
+    serveMembers([ada, grace])
+    const typist = userEvent.setup()
+    renderApp(pageUrl)
+    await typist.hover(await screen.findByRole("button", { name: button }))
+
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(tip)
+  })
+
   it("shows placeholders, and no Add member button, while the members load", async () => {
     mockSession()
     server.use(
@@ -110,7 +134,12 @@ describe("the members page", () => {
     const loading = await screen.findByRole("status", { name: "Loading members" })
     expect(loading.querySelectorAll("[data-slot=skeleton]").length).toBeGreaterThanOrEqual(6)
     expect(screen.queryByRole("button", { name: "Add member" })).not.toBeInTheDocument()
+    const placeholderCells = loading.querySelectorAll("tbody tr:first-child td").length
     expect(await screen.findByText("Grace Hopper")).toBeVisible()
+    // The placeholder has the columns of the table it stands in for.
+    expect(screen.getByRole("row", { name: /Grace Hopper/ }).querySelectorAll("td")).toHaveLength(
+      placeholderCells,
+    )
     expect(screen.queryByRole("status", { name: "Loading members" })).not.toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Add member" })).toBeVisible()
   })
@@ -208,12 +237,19 @@ describe("the members page", () => {
     )
   })
 
-  it("disables the role while it is being saved", async () => {
+  it("keeps the role select enabled while saving, and ignores another choice until it is done", async () => {
     mockSession()
-    serveMembers([ada, grace])
+    const store = serveMembers([ada, grace])
+    const patched = vi.fn()
+    let finish!: () => void
+    const saving = new Promise<void>((resolve) => {
+      finish = resolve
+    })
     server.use(
-      http.patch(`${membersUrl}/${grace.user_id}`, async () => {
-        await delay(300)
+      http.patch(`${membersUrl}/${grace.user_id}`, async ({ request }) => {
+        patched(await request.json())
+        await saving
+        store.members = [ada, { ...grace, role: "builder" }]
         return HttpResponse.json({ ...grace, role: "builder" })
       }),
     )
@@ -222,12 +258,46 @@ describe("the members page", () => {
     await chooseRole(typist, "Grace Hopper", "Builder")
 
     const select = screen.getByRole("combobox", { name: "Role for Grace Hopper" })
-    expect(select).toBeDisabled()
+    expect(select).toBeEnabled()
     expect(select).toHaveTextContent("Builder")
-    expect((await rowOf("Grace Hopper")).getByRole("combobox").parentElement).toContainElement(
-      document.querySelector("svg.animate-spin"),
+    expect(select.parentElement?.querySelector("svg.animate-spin")).toBeInTheDocument()
+    await chooseRole(typist, "Grace Hopper", "Viewer")
+    finish()
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledOnce())
+    expect(patched).toHaveBeenCalledExactlyOnceWith({ role: "builder" })
+    expect(screen.getByRole("combobox", { name: "Role for Grace Hopper" })).toHaveTextContent(
+      "Builder",
     )
-    await waitFor(() => expect(select).toBeEnabled())
+  })
+
+  it("asks before you change your own role, and changes nothing if you cancel", async () => {
+    mockSession()
+    const patched = vi.fn()
+    serveMembers([ada, grace])
+    server.use(
+      http.patch(`${membersUrl}/${user.id}`, () => {
+        patched()
+        return HttpResponse.json(ada)
+      }),
+    )
+    const typist = userEvent.setup()
+    renderApp(pageUrl)
+    await chooseRole(typist, "Ada Lovelace", "Viewer")
+    const dialog = await screen.findByRole("alertdialog", { name: "Change your own role?" })
+    expect(
+      within(dialog).getByText("You may lose the ability to manage this workspace."),
+    ).toBeVisible()
+    expect(patched).not.toHaveBeenCalled()
+    // The page behind the dialog is hidden from assistive technology, but still shows the saved role.
+    expect(
+      screen.getByRole("combobox", { name: "Role for Ada Lovelace", hidden: true }),
+    ).toHaveTextContent("Admin")
+    await typist.click(within(dialog).getByRole("button", { name: "Cancel" }))
+
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument())
+    expect(patched).not.toHaveBeenCalled()
+    expect(screen.getByRole("combobox", { name: "Role for Ada Lovelace" })).toHaveFocus()
   })
 
   it("puts the role back and shows the server's reason when the last admin is demoted", async () => {
@@ -241,17 +311,46 @@ describe("the members page", () => {
     const typist = userEvent.setup()
     renderApp(pageUrl)
     await chooseRole(typist, "Ada Lovelace", "Viewer")
+    await typist.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Change role" }),
+    )
 
     await waitFor(() =>
       expect(toast.error).toHaveBeenCalledWith("A workspace needs at least one admin."),
     )
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument())
     const select = screen.getByRole("combobox", { name: "Role for Ada Lovelace" })
-    await waitFor(() => expect(select).toBeEnabled())
     expect(select).toHaveTextContent("Admin")
+    expect(select).toHaveFocus()
     expect(toast.success).not.toHaveBeenCalled()
   })
 
-  it("lets an admin demote themselves and then sees the page as read-only", async () => {
+  it("can't be dismissed while your own role is being changed", async () => {
+    mockSession()
+    serveMembers([ada, grace])
+    server.use(
+      http.patch(`${membersUrl}/${user.id}`, async () => {
+        await delay(300)
+        return HttpResponse.json({ ...ada, role: "builder" })
+      }),
+    )
+    const typist = userEvent.setup()
+    renderApp(pageUrl)
+    await chooseRole(typist, "Ada Lovelace", "Builder")
+    const dialog = await screen.findByRole("alertdialog", { name: "Change your own role?" })
+    await typist.click(within(dialog).getByRole("button", { name: "Change role" }))
+
+    const confirm = within(dialog).getByRole("button", { name: "Change role" })
+    expect(confirm).toBeDisabled()
+    expect(confirm.querySelector("svg.animate-spin")).toBeInTheDocument()
+    expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled()
+    await typist.keyboard("{Escape}")
+    expect(screen.getByRole("alertdialog")).toBeVisible()
+
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument())
+  })
+
+  it("lets an admin demote themselves, then shows the page as read-only with focus on its heading", async () => {
     const session = mockSession()
     const store = serveMembers([ada, grace])
     server.use(
@@ -264,10 +363,17 @@ describe("the members page", () => {
     const typist = userEvent.setup()
     renderApp(pageUrl)
     await chooseRole(typist, "Ada Lovelace", "Builder")
+    await typist.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Change role" }),
+    )
 
     await waitFor(() => expect(screen.queryByRole("combobox")).not.toBeInTheDocument())
     expect(await (await rowOf("Ada Lovelace")).findByText("Builder")).toBeVisible()
     expect(screen.queryByRole("button", { name: "Add member" })).not.toBeInTheDocument()
+    expect(toast.success).toHaveBeenCalledWith("Role updated")
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { level: 1, name: "Members" })).toHaveFocus(),
+    )
   })
 
   it("asks before removing a member, then takes them off the list", async () => {
@@ -340,7 +446,7 @@ describe("the members page", () => {
     expect(button).toHaveFocus()
   })
 
-  it("keeps the dialog open and says why when the last admin is removed", async () => {
+  it("keeps the dialog open and says why when the last admin leaves", async () => {
     mockSession()
     serveMembers([ada, grace])
     server.use(
@@ -350,15 +456,15 @@ describe("the members page", () => {
     )
     const typist = userEvent.setup()
     renderApp(pageUrl)
-    await typist.click(await screen.findByRole("button", { name: "Remove Ada Lovelace" }))
+    await typist.click(await screen.findByRole("button", { name: "Leave workspace" }))
     const dialog = await screen.findByRole("alertdialog")
-    await typist.click(within(dialog).getByRole("button", { name: "Remove member" }))
+    await typist.click(within(dialog).getByRole("button", { name: "Leave workspace" }))
 
     await waitFor(() =>
       expect(toast.error).toHaveBeenCalledWith("A workspace needs at least one admin."),
     )
     expect(screen.getByRole("alertdialog")).toBeVisible()
-    expect(within(dialog).getByRole("button", { name: "Remove member" })).toBeEnabled()
+    expect(within(dialog).getByRole("button", { name: "Leave workspace" })).toBeEnabled()
   })
 
   it("can't be dismissed while the member is being removed", async () => {
@@ -386,28 +492,52 @@ describe("the members page", () => {
     await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument())
   })
 
-  it("takes the user home after they remove themselves", async () => {
-    const session = mockSession()
+  it("lets an instance admin leave a workspace without being sent away", async () => {
+    mockSession()
+    serveMembers([ada, grace, alan])
+    const typist = userEvent.setup()
+    const { router } = renderApp(pageUrl)
+    expect(await screen.findByRole("button", { name: "Remove Grace Hopper" })).toBeVisible()
+    expect(screen.queryByRole("button", { name: "Remove Ada Lovelace" })).not.toBeInTheDocument()
+    await typist.click(screen.getByRole("button", { name: "Leave workspace" }))
+    const dialog = await screen.findByRole("alertdialog", { name: "Leave Acme Corp?" })
+    expect(
+      within(dialog).getByText(
+        "You'll stay an instance admin, so you can still open this workspace.",
+      ),
+    ).toBeVisible()
+    await typist.click(within(dialog).getByRole("button", { name: "Leave workspace" }))
+
+    await waitFor(() => expect(screen.queryByText("(you)")).not.toBeInTheDocument())
+    expect(toast.success).toHaveBeenCalledWith("You left Acme Corp")
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument())
+    expect(router.state.location.pathname).toBe(pageUrl)
+    expect(screen.getByRole("heading", { level: 1, name: "Members" })).toBeVisible()
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Remove Grace Hopper" })).toHaveFocus(),
+    )
+  })
+
+  it("takes the user home after they leave their only workspace", async () => {
+    const session = mockSession({ me: ordinaryMe })
     const store = serveMembers([ada, grace])
     server.use(
       http.delete(`${membersUrl}/${user.id}`, () => {
         store.members = [grace]
-        session.me = { ...me, workspaces: [] }
+        session.me = { ...ordinaryMe, workspaces: [] }
         return new HttpResponse(null, { status: 204 })
       }),
     )
     const typist = userEvent.setup()
     const { router } = renderApp(pageUrl)
-    await typist.click(await screen.findByRole("button", { name: "Remove Ada Lovelace" }))
-    const dialog = await screen.findByRole("alertdialog", {
-      name: "Remove Ada Lovelace from Acme Corp?",
-    })
+    await typist.click(await screen.findByRole("button", { name: "Leave workspace" }))
+    const dialog = await screen.findByRole("alertdialog", { name: "Leave Acme Corp?" })
     expect(
       within(dialog).getByText(
         "You'll lose access to this workspace and its models. Another admin can add you back.",
       ),
     ).toBeVisible()
-    await typist.click(within(dialog).getByRole("button", { name: "Remove member" }))
+    await typist.click(within(dialog).getByRole("button", { name: "Leave workspace" }))
 
     await waitFor(() => expect(router.state.location.pathname).toBe("/"))
     expect(
@@ -417,18 +547,18 @@ describe("the members page", () => {
   })
 
   it("moves a user who leaves a workspace to another one without ever saying not found", async () => {
-    const session = mockSession({ me: meInTwoWorkspaces })
+    const session = mockSession({ me: { ...ordinaryMe, workspaces: meInTwoWorkspaces.workspaces } })
     const store = serveMembers([ada, grace])
     server.use(
       http.delete(`${membersUrl}/${user.id}`, () => {
         store.members = [grace]
-        session.me = { ...me, workspaces: [globex] }
+        session.me = { ...ordinaryMe, workspaces: [globex] }
         return new HttpResponse(null, { status: 204 })
       }),
     )
     const typist = userEvent.setup()
     const { router } = renderApp(pageUrl)
-    await typist.click(await screen.findByRole("button", { name: "Remove Ada Lovelace" }))
+    await typist.click(await screen.findByRole("button", { name: "Leave workspace" }))
     const listedBefore = store.listed
     let sawNotFound = false
     const watcher = new MutationObserver(() => {
@@ -436,7 +566,9 @@ describe("the members page", () => {
     })
     watcher.observe(document.body, { childList: true, subtree: true, characterData: true })
     await typist.click(
-      within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Remove member" }),
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Leave workspace",
+      }),
     )
 
     await waitFor(() => expect(router.state.location.pathname).toBe(`/w/${globex.id}`))

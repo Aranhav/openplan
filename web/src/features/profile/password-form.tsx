@@ -38,7 +38,7 @@ type PasswordValues = z.infer<typeof schema>
 const EMPTY: PasswordValues = { current_password: "", new_password: "", confirm_password: "" }
 
 /** The contents of the "Password" card. */
-export function PasswordForm() {
+export function PasswordForm({ email }: { email: string }) {
   const changePassword = useChangePassword()
   const form = useForm<PasswordValues>({ resolver: zodResolver(schema), defaultValues: EMPTY })
   const rateLimited = rateLimitMessage(changePassword.error)
@@ -59,6 +59,17 @@ export function PasswordForm() {
     <Form {...form}>
       <form onSubmit={form.handleSubmit(onSubmit)} noValidate className="flex flex-col gap-6">
         <CardContent className="flex flex-col gap-6">
+          {/* Password managers look for the account name beside a password; this one is theirs. */}
+          <Input
+            type="text"
+            name="username"
+            autoComplete="username"
+            value={email}
+            readOnly
+            tabIndex={-1}
+            aria-hidden="true"
+            className="sr-only"
+          />
           {rateLimited && (
             <Alert variant="destructive">
               <CircleAlert />

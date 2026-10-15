@@ -36,17 +36,21 @@ export function ProfilePage() {
       <div className="flex max-w-2xl flex-col gap-6">
         <Card>
           <CardHeader>
-            <CardTitle>Profile</CardTitle>
+            <CardTitle role="heading" aria-level={2}>
+              Profile
+            </CardTitle>
             <CardDescription>The name other people see next to your work.</CardDescription>
           </CardHeader>
           <ProfileForm user={me.user} />
         </Card>
         <Card>
           <CardHeader>
-            <CardTitle>Password</CardTitle>
+            <CardTitle role="heading" aria-level={2}>
+              Password
+            </CardTitle>
             <CardDescription>Changing it signs you out on every other device.</CardDescription>
           </CardHeader>
-          <PasswordForm />
+          <PasswordForm email={me.user.email} />
         </Card>
       </div>
     </>

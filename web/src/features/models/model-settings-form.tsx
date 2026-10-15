@@ -16,9 +16,10 @@ import {
 } from "@/components/ui/form"
 import { Switch } from "@/components/ui/switch"
 import type { components } from "@/lib/api/schema"
+import { reportFormError } from "@/lib/form-errors"
 import { useUpdateModel } from "./api"
 import { ModelDescriptionField, ModelNameField } from "./model-fields"
-import { modelDescriptionSchema, modelNameSchema, reportModelFormError } from "./model-form"
+import { MODEL_FIELD_ERRORS, modelDescriptionSchema, modelNameSchema } from "./model-form"
 import { ModeBadge } from "./mode-badge"
 
 type ModelDto = components["schemas"]["ModelDto"]
@@ -75,7 +76,7 @@ function EditableSettings({ model }: { model: ModelDto }) {
       form.reset(settingsOf(saved), { keepDirtyValues: false })
       toast.success("Changes saved")
     } catch (error) {
-      reportModelFormError(form, error)
+      reportFormError(form, error, MODEL_FIELD_ERRORS)
     }
   }
 

@@ -97,6 +97,14 @@ describe("the users page", () => {
     expect((await rowOf("Alan Turing")).getAllByText("Disabled")).toHaveLength(2)
   })
 
+  it("names the table", async () => {
+    mockSession()
+    serveUsers([ada, grace])
+    renderApp(pageUrl)
+
+    expect(await screen.findByRole("table", { name: "Users" })).toBeVisible()
+  })
+
   it("tells anyone who isn't an instance admin they have no access, without asking for users", async () => {
     const asked = vi.fn()
     mockSession({ me: { ...me, user: { ...user, is_instance_admin: false } } })
@@ -129,7 +137,12 @@ describe("the users page", () => {
     const loading = await screen.findByRole("status", { name: "Loading users" })
     expect(loading.querySelectorAll("[data-slot=skeleton]").length).toBeGreaterThanOrEqual(8)
     expect(screen.queryByRole("button", { name: "New user" })).not.toBeInTheDocument()
+    const placeholderCells = loading.querySelectorAll("tbody tr:first-child td").length
     expect(await screen.findByText("Grace Hopper")).toBeVisible()
+    // The placeholder has the columns of the table it stands in for.
+    expect(screen.getByRole("row", { name: /Grace Hopper/ }).querySelectorAll("td")).toHaveLength(
+      placeholderCells,
+    )
     expect(screen.queryByRole("status", { name: "Loading users" })).not.toBeInTheDocument()
     expect(screen.getByRole("button", { name: "New user" })).toBeVisible()
   })

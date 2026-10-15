@@ -1,5 +1,5 @@
 import { KeyRound, Loader2, MoreHorizontal, Pencil, UserCheck, UserX } from "lucide-react"
-import { useState } from "react"
+import { useRef, useState } from "react"
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -19,9 +19,9 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { useMe } from "@/features/auth/api"
-import { useRestoreFocus } from "@/hooks/use-restore-focus"
 import { errorDetail } from "@/lib/api/client"
 import type { components } from "@/lib/api/schema"
+import { cn } from "@/lib/utils"
 import { useUpdateUser } from "./api"
 import { DisableUserDialog } from "./disable-user-dialog"
 import { ResetPasswordDialog } from "./reset-password-dialog"
@@ -29,18 +29,48 @@ import { UserDialog } from "./user-dialog"
 
 type UserDto = components["schemas"]["UserDto"]
 
+// Below `lg` the Email, Role and Status columns make way for the same facts under the name, which
+// keeps the table within the screen; the placeholder below has to follow the same layout.
+const NAME_CELL = "w-full max-w-0 pl-4 lg:w-auto lg:max-w-64"
+const WIDE_CELL = "hidden lg:table-cell"
+
+type UserDialogKind = "edit" | "reset" | "disable"
+
 export function UsersTable({ users }: { users: UserDto[] }) {
   const { data: me } = useMe()
+  const menuButtons = useRef(new Map<string, HTMLButtonElement>())
+  // The user in the dialogs stays put as one closes; only `dialog` says which one is shown.
+  const [targetId, setTargetId] = useState<string>()
+  const [dialog, setDialog] = useState<UserDialogKind>()
+  // Looked up in the list, so a dialog that is open follows the user as the list refreshes.
+  const target = users.find((user) => user.id === targetId)
+
+  function open(kind: UserDialogKind, user: UserDto) {
+    setTargetId(user.id)
+    setDialog(kind)
+  }
+
+  // The dialogs open from menu items, which are gone by then: focus returns to the menu's button.
+  function restoreFocus(event: Event) {
+    event.preventDefault()
+    menuButtons.current.get(targetId ?? "")?.focus()
+  }
+
+  function onOpenChange(isOpen: boolean) {
+    if (!isOpen) {
+      setDialog(undefined)
+    }
+  }
 
   return (
     <div className="rounded-lg border">
-      <Table>
+      <Table aria-label="Users">
         <TableHeader>
           <TableRow>
             <TableHead className="pl-4">Name</TableHead>
-            <TableHead className="hidden lg:table-cell">Email</TableHead>
-            <TableHead className="hidden lg:table-cell">Role</TableHead>
-            <TableHead className="hidden lg:table-cell">Status</TableHead>
+            <TableHead className={WIDE_CELL}>Email</TableHead>
+            <TableHead className={WIDE_CELL}>Role</TableHead>
+            <TableHead className={WIDE_CELL}>Status</TableHead>
             <TableHead className="w-12 pr-4">
               <span className="sr-only">Actions</span>
             </TableHead>
@@ -51,14 +81,13 @@ export function UsersTable({ users }: { users: UserDto[] }) {
             const isSelf = user.id === me?.user.id
             return (
               <TableRow key={user.id}>
-                <TableCell className="w-full max-w-0 pl-4 lg:w-auto lg:max-w-64">
+                <TableCell className={NAME_CELL}>
                   <div className="flex items-center gap-1.5">
                     <span className="truncate font-medium" title={user.name}>
                       {user.name}
                     </span>
                     {isSelf && <span className="shrink-0 text-muted-foreground">(you)</span>}
                   </div>
-                  {/* Narrow screens have no room for these columns, so they sit under the name. */}
                   <div className="lg:hidden">
                     <div className="truncate text-xs text-muted-foreground" title={user.email}>
                       {user.email}
@@ -70,25 +99,59 @@ export function UsersTable({ users }: { users: UserDto[] }) {
                   </div>
                 </TableCell>
                 <TableCell
-                  className="hidden max-w-64 truncate text-muted-foreground lg:table-cell"
+                  className={cn(WIDE_CELL, "max-w-64 truncate text-muted-foreground")}
                   title={user.email}
                 >
                   {user.email}
                 </TableCell>
-                <TableCell className="hidden lg:table-cell">
+                <TableCell className={WIDE_CELL}>
                   <RoleBadge user={user} />
                 </TableCell>
-                <TableCell className="hidden lg:table-cell">
+                <TableCell className={WIDE_CELL}>
                   <StatusBadge user={user} />
                 </TableCell>
                 <TableCell className="pr-4 text-right">
-                  <UserActions user={user} isSelf={isSelf} />
+                  <UserActions
+                    user={user}
+                    isSelf={isSelf}
+                    buttonRef={(button) => {
+                      if (button) {
+                        menuButtons.current.set(user.id, button)
+                      } else {
+                        menuButtons.current.delete(user.id)
+                      }
+                    }}
+                    onOpen={(kind) => open(kind, user)}
+                  />
                 </TableCell>
               </TableRow>
             )
           })}
         </TableBody>
       </Table>
+      {target && (
+        <>
+          <UserDialog
+            user={target}
+            isSelf={target.id === me?.user.id}
+            open={dialog === "edit"}
+            onOpenChange={onOpenChange}
+            onCloseAutoFocus={restoreFocus}
+          />
+          <ResetPasswordDialog
+            user={target}
+            open={dialog === "reset"}
+            onOpenChange={onOpenChange}
+            onCloseAutoFocus={restoreFocus}
+          />
+          <DisableUserDialog
+            user={target}
+            open={dialog === "disable"}
+            onOpenChange={onOpenChange}
+            onCloseAutoFocus={restoreFocus}
+          />
+        </>
+      )}
     </div>
   )
 }
@@ -109,15 +172,13 @@ interface UserActionsProps {
   user: UserDto
   /** Whether the user is the signed-in one, who can't disable or reset their own account here. */
   isSelf: boolean
+  buttonRef: (button: HTMLButtonElement | null) => void
+  onOpen: (dialog: UserDialogKind) => void
 }
 
-function UserActions({ user, isSelf }: UserActionsProps) {
-  const [dialog, setDialog] = useState<"edit" | "reset" | "disable" | null>(null)
+function UserActions({ user, isSelf, buttonRef, onOpen }: UserActionsProps) {
   const [menuOpen, setMenuOpen] = useState(false)
   const updateUser = useUpdateUser()
-  // The dialogs open from menu items, which are gone by then: focus returns to the menu's button.
-  const { ref: menuButtonRef, onCloseAutoFocus: restoreFocus } =
-    useRestoreFocus<HTMLButtonElement>()
 
   async function enable(event: Event) {
     // Keep the menu open while the request runs, so the spinner shows and a failure leaves it usable.
@@ -132,72 +193,47 @@ function UserActions({ user, isSelf }: UserActionsProps) {
   }
 
   return (
-    <>
-      <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
-        <DropdownMenuTrigger asChild>
-          <Button
-            ref={menuButtonRef}
-            variant="ghost"
-            size="icon-sm"
-            aria-label={`Actions for ${user.name}`}
-          >
-            <MoreHorizontal />
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
-          <DropdownMenuItem onSelect={() => setDialog("edit")}>
-            <Pencil />
-            Edit
-          </DropdownMenuItem>
-          {!isSelf && (
-            <>
-              <DropdownMenuItem onSelect={() => setDialog("reset")}>
-                <KeyRound />
-                Reset password
+    <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
+      <DropdownMenuTrigger asChild>
+        <Button
+          ref={buttonRef}
+          variant="ghost"
+          size="icon-sm"
+          aria-label={`Actions for ${user.name}`}
+        >
+          <MoreHorizontal />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem onSelect={() => onOpen("edit")}>
+          <Pencil />
+          Edit
+        </DropdownMenuItem>
+        {!isSelf && (
+          <>
+            <DropdownMenuItem onSelect={() => onOpen("reset")}>
+              <KeyRound />
+              Reset password
+            </DropdownMenuItem>
+            {user.disabled ? (
+              <DropdownMenuItem disabled={updateUser.isPending} onSelect={enable}>
+                {updateUser.isPending ? <Loader2 className="animate-spin" /> : <UserCheck />}
+                Enable
               </DropdownMenuItem>
-              {user.disabled ? (
-                <DropdownMenuItem disabled={updateUser.isPending} onSelect={enable}>
-                  {updateUser.isPending ? <Loader2 className="animate-spin" /> : <UserCheck />}
-                  Enable
-                </DropdownMenuItem>
-              ) : (
-                <DropdownMenuItem variant="destructive" onSelect={() => setDialog("disable")}>
-                  <UserX />
-                  Disable
-                </DropdownMenuItem>
-              )}
-            </>
-          )}
-        </DropdownMenuContent>
-      </DropdownMenu>
-      <UserDialog
-        user={user}
-        isSelf={isSelf}
-        open={dialog === "edit"}
-        onOpenChange={(open) => setDialog(open ? "edit" : null)}
-        onCloseAutoFocus={restoreFocus}
-      />
-      {!isSelf && (
-        <>
-          <ResetPasswordDialog
-            user={user}
-            open={dialog === "reset"}
-            onOpenChange={(open) => setDialog(open ? "reset" : null)}
-            onCloseAutoFocus={restoreFocus}
-          />
-          <DisableUserDialog
-            user={user}
-            open={dialog === "disable"}
-            onOpenChange={(open) => setDialog(open ? "disable" : null)}
-            onCloseAutoFocus={restoreFocus}
-          />
-        </>
-      )}
-    </>
+            ) : (
+              <DropdownMenuItem variant="destructive" onSelect={() => onOpen("disable")}>
+                <UserX />
+                Disable
+              </DropdownMenuItem>
+            )}
+          </>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 
-/** A stand-in for the table while the users load. */
+/** A stand-in for the table while the users load, with the same columns. */
 export function UsersTableSkeleton() {
   return (
     <div role="status" aria-label="Loading users" className="rounded-lg border">
@@ -205,25 +241,33 @@ export function UsersTableSkeleton() {
         <TableHeader>
           <TableRow>
             <TableHead className="pl-4">Name</TableHead>
-            <TableHead>Email</TableHead>
-            <TableHead>Role</TableHead>
-            <TableHead>Status</TableHead>
+            <TableHead className={WIDE_CELL}>Email</TableHead>
+            <TableHead className={WIDE_CELL}>Role</TableHead>
+            <TableHead className={WIDE_CELL}>Status</TableHead>
+            <TableHead className="w-12 pr-4" />
           </TableRow>
         </TableHeader>
         <TableBody>
           {Array.from({ length: 4 }, (_, index) => (
             <TableRow key={index}>
-              <TableCell className="pl-4">
-                <Skeleton className="h-4 w-32" />
+              <TableCell className={NAME_CELL}>
+                <Skeleton className="h-4 w-32 max-w-full" />
+                <div className="lg:hidden">
+                  <Skeleton className="mt-1.5 h-3 w-40 max-w-full" />
+                  <Skeleton className="mt-2 h-5 w-16 rounded-full" />
+                </div>
               </TableCell>
-              <TableCell>
+              <TableCell className={WIDE_CELL}>
                 <Skeleton className="h-4 w-44" />
               </TableCell>
-              <TableCell>
+              <TableCell className={WIDE_CELL}>
                 <Skeleton className="h-5 w-24 rounded-full" />
               </TableCell>
-              <TableCell>
+              <TableCell className={WIDE_CELL}>
                 <Skeleton className="h-5 w-16 rounded-full" />
+              </TableCell>
+              <TableCell className="pr-4">
+                <Skeleton className="size-8" />
               </TableCell>
             </TableRow>
           ))}
