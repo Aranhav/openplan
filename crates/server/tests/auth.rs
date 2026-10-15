@@ -997,6 +997,63 @@ async fn session_lookup_reports_when_it_renewed(pool: PgPool) {
     assert!(!after.renewed);
 }
 
+async fn insert_session_expiring(pool: &PgPool, user_id: Uuid, expiry_sql: &str) {
+    sqlx::query(&format!(
+        "INSERT INTO sessions (id_hash, user_id, expires_at)
+         VALUES (sha256(convert_to($1, 'UTF8')), $2, {expiry_sql})"
+    ))
+    .bind(Uuid::now_v7().to_string())
+    .bind(user_id)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn purge_deletes_only_expired_sessions(pool: PgPool) {
+    let mut app = TestApp::new(pool.clone());
+    setup_admin(&mut app).await;
+    let user_id: Uuid = sqlx::query_scalar("SELECT id FROM users")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    insert_session_expiring(&pool, user_id, "now() - interval '1 second'").await;
+    insert_session_expiring(&pool, user_id, "now() - interval '30 days'").await;
+    insert_session_expiring(&pool, user_id, "now() + interval '1 hour'").await;
+    assert_eq!(session_count(&pool).await, 4);
+
+    let purged = session::purge_expired(&pool).await.unwrap();
+
+    assert_eq!(purged, 2);
+    assert_eq!(session_count(&pool).await, 2);
+    assert_eq!(app.get("/api/v1/auth/me").await.status, StatusCode::OK);
+    assert_eq!(session::purge_expired(&pool).await.unwrap(), 0);
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn purge_task_clears_expired_sessions_as_soon_as_it_starts(pool: PgPool) {
+    let mut app = TestApp::new(pool.clone());
+    setup_admin(&mut app).await;
+    let user_id: Uuid = sqlx::query_scalar("SELECT id FROM users")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    insert_session_expiring(&pool, user_id, "now() - interval '1 day'").await;
+
+    let task = tokio::spawn(session::purge_expired_periodically(pool.clone()));
+
+    let mut remaining = session_count(&pool).await;
+    for _ in 0..50 {
+        if remaining == 1 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        remaining = session_count(&pool).await;
+    }
+    task.abort();
+    assert_eq!(remaining, 1);
+}
+
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn delete_all_for_user_keeps_other_users_sessions(pool: PgPool) {
     let mut app = TestApp::new(pool.clone());

@@ -1,5 +1,8 @@
+use std::time::Duration;
+
 use sha2::{Digest, Sha256};
 use sqlx::{PgExecutor, PgPool};
+use tokio::time::MissedTickBehavior;
 use uuid::Uuid;
 
 use crate::error::AppResult;
@@ -8,6 +11,7 @@ use super::{CurrentUser, random_token};
 
 pub const SESSION_TTL_DAYS: i32 = 14;
 pub const SESSION_RENEW_BELOW_DAYS: i32 = 7;
+const PURGE_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 #[derive(sqlx::FromRow)]
 struct SessionRow {
@@ -108,4 +112,27 @@ pub async fn delete_others(
         .execute(db)
         .await?;
     Ok(())
+}
+
+/// Deletes every expired session and returns how many there were.
+pub async fn purge_expired(db: &PgPool) -> AppResult<u64> {
+    let result = sqlx::query("DELETE FROM sessions WHERE expires_at < now()")
+        .execute(db)
+        .await?;
+    Ok(result.rows_affected())
+}
+
+/// Purges expired sessions right away and then once an hour, for as long as
+/// the process runs. A failed purge is logged and tried again next time.
+pub async fn purge_expired_periodically(db: PgPool) {
+    let mut ticker = tokio::time::interval(PURGE_INTERVAL);
+    ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    loop {
+        ticker.tick().await;
+        match purge_expired(&db).await {
+            Ok(0) => {}
+            Ok(purged) => tracing::info!(purged, "purged expired sessions"),
+            Err(error) => tracing::warn!(%error, "failed to purge expired sessions"),
+        }
+    }
 }

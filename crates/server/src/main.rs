@@ -4,6 +4,7 @@ use anyhow::Context;
 use clap::{Parser, Subcommand};
 use openplan_server::{
     app::{AppState, build_router},
+    auth::session,
     config::Config,
     db,
     openapi::openapi_json,
@@ -47,6 +48,8 @@ async fn serve() -> anyhow::Result<()> {
         .run(&db)
         .await
         .context("failed to run database migrations")?;
+
+    tokio::spawn(session::purge_expired_periodically(db.clone()));
 
     let bind = config.bind;
     let app = build_router(AppState::new(db, config));
