@@ -33,11 +33,7 @@ export function ModelPage({ modelId }: { modelId: string }) {
     return (
       <>
         <PageHeader title="Model" />
-        <ErrorState
-          error={model.error}
-          isFetching={model.isFetching}
-          onRetry={() => void model.refetch()}
-        />
+        <ErrorState error={model.error} onRetry={() => void model.refetch()} />
       </>
     )
   }

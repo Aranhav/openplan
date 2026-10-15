@@ -55,11 +55,7 @@ function WorkspaceMembers({ workspace }: { workspace: components["schemas"]["Wor
       {members.data ? (
         <MembersTable workspace={workspace} members={members.data} canManage={canManage} />
       ) : members.isError ? (
-        <ErrorState
-          error={members.error}
-          isFetching={members.isFetching}
-          onRetry={() => void members.refetch()}
-        />
+        <ErrorState error={members.error} onRetry={() => void members.refetch()} />
       ) : (
         <MembersTableSkeleton canManage={canManage} />
       )}
