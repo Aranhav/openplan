@@ -30,6 +30,20 @@ function dayOf(iso: string | null): Date | undefined {
   return Number.isNaN(date.getTime()) ? undefined : date
 }
 
+/**
+ * What a day button is called. The picker's own name writes the day as "26th", which is not the
+ * "26" that is on the button, so a voice command that names the button by its text finds nothing.
+ */
+function labelOf(day: Date, modifiers: { today?: boolean; selected?: boolean }): string {
+  const label = day.toLocaleDateString("en-US", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  })
+  return `${modifiers.today ? "Today, " : ""}${label}${modifiers.selected ? ", selected" : ""}`
+}
+
 function isoOf(day: Date): string {
   const pad = (n: number, width = 2) => String(n).padStart(width, "0")
   return `${pad(day.getFullYear(), 4)}-${pad(day.getMonth() + 1)}-${pad(day.getDate())}`
@@ -76,6 +90,7 @@ export function DateEditor({
       </PopoverAnchor>
       <PopoverContent
         ref={calendar}
+        aria-label={`Calendar for ${label}`}
         align="start"
         sideOffset={2}
         className="w-auto p-0"
@@ -92,6 +107,7 @@ export function DateEditor({
       >
         <Calendar
           mode="single"
+          labels={{ labelDayButton: labelOf }}
           selected={selected}
           defaultMonth={selected}
           onSelect={(day) => day && onDate(isoOf(day), null)}

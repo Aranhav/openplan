@@ -52,6 +52,7 @@ export function ColumnWidthPopover({ anchor, width, onSubmit, onClose }: ColumnW
         <div aria-hidden className="pointer-events-none absolute" style={anchor} />
       </PopoverAnchor>
       <PopoverContent
+        aria-label="Column width"
         align="start"
         className="w-60"
         onCloseAutoFocus={(event) => {

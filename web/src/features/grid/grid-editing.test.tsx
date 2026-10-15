@@ -646,7 +646,7 @@ describe("date cells", () => {
 
     await userEvent.keyboard("{Enter}")
     expect(screen.getByRole("textbox", { name: "Start, Product 1" })).toHaveValue("2026-03-15")
-    await userEvent.click(screen.getByRole("button", { name: /March 20th, 2026/ }))
+    await userEvent.click(screen.getByRole("button", { name: /March 20, 2026/ }))
 
     await waitFor(() =>
       expect(bodies).toEqual([{ edits: [written("li-start", 1, { t: "date", v: "2026-03-20" })] }]),

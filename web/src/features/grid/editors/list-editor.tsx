@@ -73,6 +73,7 @@ export function ListEditor({
         <div className="size-full ring-2 ring-primary ring-inset" />
       </PopoverAnchor>
       <PopoverContent
+        aria-label={`Items for ${label}`}
         align="start"
         sideOffset={2}
         className="w-64 p-0"
@@ -112,13 +113,17 @@ export function ListEditor({
               {options.map((option) => (
                 <CommandItem
                   key={option.id}
+                  className="group"
                   value={option.id}
                   keywords={option.code ? [option.name, option.code] : [option.name]}
                   onSelect={() => onPick(option.id, null)}
                 >
                   <span className="flex-1 truncate">{option.name}</span>
                   {option.code && (
-                    <span className="text-xs text-muted-foreground">{option.code}</span>
+                    // The highlighted row is tinted, which the muted text does not read on.
+                    <span className="text-xs text-muted-foreground group-data-[selected=true]:text-accent-foreground">
+                      {option.code}
+                    </span>
                   )}
                   {option.id === current && (
                     <>

@@ -53,11 +53,26 @@ describe("DateEditor", () => {
     expect(screen.getByRole("grid")).toHaveAccessibleName(/June 2026/)
   })
 
+  it("names a day with the number that is on its button, as a word of its own", () => {
+    setup()
+
+    const day = screen.getByRole("button", { name: /March 20, 2026/ })
+
+    expect(day).toHaveTextContent("20")
+    expect(day.getAttribute("aria-label")).toMatch(/\b20\b/)
+  })
+
+  it("says which day is selected in its name", () => {
+    setup()
+
+    expect(screen.getByRole("button", { name: /March 15, 2026, selected/ })).toBeInTheDocument()
+  })
+
   it("picks a day from the calendar", async () => {
     vi.useRealTimers()
     const { onDate, onText } = setup()
 
-    await userEvent.click(screen.getByRole("button", { name: /March 20th, 2026/ }))
+    await userEvent.click(screen.getByRole("button", { name: /March 20, 2026/ }))
 
     expect(onDate).toHaveBeenCalledExactlyOnceWith("2026-03-20", null)
     expect(onText).not.toHaveBeenCalled()
@@ -68,7 +83,7 @@ describe("DateEditor", () => {
     const { onDate } = setup()
 
     await userEvent.click(screen.getByRole("button", { name: /next month/i }))
-    await userEvent.click(screen.getByRole("button", { name: /April 2nd, 2026/ }))
+    await userEvent.click(screen.getByRole("button", { name: /April 2, 2026/ }))
 
     expect(onDate).toHaveBeenCalledExactlyOnceWith("2026-04-02", null)
   })
@@ -100,7 +115,7 @@ describe("DateEditor", () => {
 
     await userEvent.keyboard("{ArrowDown}")
 
-    expect(screen.getByRole("button", { name: /March 15th, 2026/ })).toHaveFocus()
+    expect(screen.getByRole("button", { name: /March 15, 2026/ })).toHaveFocus()
   })
 
   it("picks the focused day with Enter", async () => {
