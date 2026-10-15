@@ -131,8 +131,8 @@ export async function unwrap<T>(
 
 /**
  * Posts `body` as JSON to an endpoint the generated schema does not describe yet and returns the
- * JSON answer, with the same CSRF header and `ApiError`s as `api`. A caller that aborts gets the
- * `AbortError` back.
+ * JSON answer, with the same CSRF header and `ApiError`s as `api` (an answer that is not JSON is
+ * one too). A caller that aborts gets the `AbortError` back.
  */
 export async function postJson<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
   const request = new Request(`/api/v1${path}`, {
@@ -148,8 +148,15 @@ export async function postJson<T>(path: string, body: unknown, signal?: AbortSig
   } catch (error) {
     throw isAbort(error) ? error : new ApiError(0, "network", NETWORK_DETAIL)
   }
-  const answer: unknown = await response.json().catch(() => undefined)
-  if (!response.ok) {
+  let answer: unknown
+  let readable = true
+  try {
+    answer = await response.json()
+  } catch {
+    readable = false
+  }
+  // An answer that is not JSON is not what the endpoint promises, even with a success status.
+  if (!response.ok || !readable) {
     throw toApiError(response, answer)
   }
   return answer as T

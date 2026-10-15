@@ -27,10 +27,37 @@ const ORIGIN: Block = { rowBlock: 0, colBlock: 0 }
 const NO_DIMS: ViewDim[] = []
 const NO_PAGES: PageMember[] = []
 
-function blockOptions(modelId: string, query: GridQuery, block: Block) {
+// How long a block that is not on screen waits before it is asked for. A fast scroll passes over
+// many blocks; one that is gone again within this time is cancelled before any request is sent.
+const SETTLE_MS = 80
+
+function settle(signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason)
+      return
+    }
+    const timer = setTimeout(resolve, SETTLE_MS)
+    signal.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer)
+        reject(signal.reason)
+      },
+      { once: true },
+    )
+  })
+}
+
+function blockOptions(modelId: string, query: GridQuery, block: Block, waitToSettle = false) {
   return queryOptions({
     queryKey: queryKeys.query(modelId, query, block),
-    queryFn: ({ signal }) => queryView(modelId, { ...query, window: windowOf(block) }, signal),
+    queryFn: async ({ signal }) => {
+      if (waitToSettle) {
+        await settle(signal)
+      }
+      return queryView(modelId, { ...query, window: windowOf(block) }, signal)
+    },
   })
 }
 
@@ -79,7 +106,7 @@ export type ViewData = ViewShape & {
   refetch(): Promise<void>
 }
 
-type Loaded = { block: Block; result: QueryResult }
+type Loaded = { block: Block; result: QueryResult; fetching: boolean }
 
 type Lookup = Pick<ViewData, "lineItems" | "rowHeaders" | "colHeaders" | "cell">
 
@@ -90,18 +117,28 @@ function blockKey(rowBlock: number, colBlock: number): number {
   return rowBlock * KEY_STRIDE + colBlock
 }
 
-/** Merges loaded blocks into lookups by the position of a row, column or cell in the whole view. */
-function assemble(loaded: readonly Loaded[]): Lookup {
+/**
+ * Merges loaded blocks into lookups by the position of a row, column or cell in the whole view.
+ * A block read at another revision of the model than the first block would not line up with it,
+ * so it is left out, unless it is being loaded again, when what it holds is the best there is.
+ */
+function assemble(loaded: readonly Loaded[], seq: number | undefined): Lookup {
   const cellBlocks = new Map<number, QueryResult>()
   const rowBlocks = new Map<number, QueryResult>()
   const colBlocks = new Map<number, QueryResult>()
   const lineItems = new Map<string, LineItemInfo>()
-  for (const { block, result } of loaded) {
+  for (const { block, result, fetching } of loaded) {
+    if (seq !== undefined && result.seq !== seq && !fetching) {
+      continue
+    }
     cellBlocks.set(blockKey(block.rowBlock, block.colBlock), result)
     rowBlocks.set(block.rowBlock, result)
     colBlocks.set(block.colBlock, result)
     for (const lineItem of result.line_items) {
-      lineItems.set(lineItem.id, lineItem)
+      // The first block to list a line item gives its object, so it does not change as others load.
+      if (!lineItems.has(lineItem.id)) {
+        lineItems.set(lineItem.id, lineItem)
+      }
     }
   }
   return {
@@ -115,11 +152,14 @@ function assemble(loaded: readonly Loaded[]): Lookup {
   }
 }
 
+type Wanted = { block: Block; /** Next to what is visible, not part of it. */ neighbour: boolean }
+
 /**
  * The blocks to load besides the first: those that hold the visible cells and, once the size of
  * the view is known, the blocks next to them, so scrolling by a screen finds its cells loaded.
  */
-function wantedBlocks(visible: CellRange, size?: { rows: number; cols: number }): Block[] {
+function wantedBlocks(visible: CellRange, size?: { rows: number; cols: number }): Wanted[] {
+  const holding = blocksFor(visible)
   const blocks = size
     ? blocksFor({
         rowStart: visible.rowStart - ROW_BLOCK,
@@ -130,8 +170,15 @@ function wantedBlocks(visible: CellRange, size?: { rows: number; cols: number })
         ({ rowBlock, colBlock }) =>
           rowBlock * ROW_BLOCK < size.rows && colBlock * COL_BLOCK < size.cols,
       )
-    : blocksFor(visible)
-  return blocks.filter(({ rowBlock, colBlock }) => rowBlock !== 0 || colBlock !== 0)
+    : holding
+  return blocks
+    .filter(({ rowBlock, colBlock }) => rowBlock !== 0 || colBlock !== 0)
+    .map((block) => ({
+      block,
+      neighbour: !holding.some(
+        (held) => held.rowBlock === block.rowBlock && held.colBlock === block.colBlock,
+      ),
+    }))
 }
 
 /**
@@ -140,16 +187,19 @@ function wantedBlocks(visible: CellRange, size?: { rows: number; cols: number })
  */
 class BlockResults {
   readonly data: readonly (QueryResult | undefined)[]
+  /** Whether each block is being loaded (again) right now. */
+  readonly fetching: readonly boolean[]
   readonly isFetching: boolean
   readonly error: Error | null
 
   constructor(
     data: readonly (QueryResult | undefined)[],
-    isFetching: boolean,
+    fetching: readonly boolean[],
     error: Error | null,
   ) {
     this.data = data
-    this.isFetching = isFetching
+    this.fetching = fetching
+    this.isFetching = fetching.some(Boolean)
     this.error = error
   }
 }
@@ -157,7 +207,7 @@ class BlockResults {
 function combineBlocks(results: UseQueryResult<QueryResult, Error>[]): BlockResults {
   return new BlockResults(
     results.map((result) => result.data),
-    results.some((result) => result.isFetching),
+    results.map((result) => result.isFetching),
     results.find((result) => result.error)?.error ?? null,
   )
 }
@@ -192,21 +242,23 @@ export function useViewData(modelId: string, query: GridQuery, visible: CellRang
     [firstRowBlock, lastRowBlock, firstColBlock, lastColBlock, sized, totalRows, totalColumns],
   )
   const others = useQueries({
-    queries: wanted.map((block) => blockOptions(modelId, query, block)),
+    queries: wanted.map(({ block, neighbour }) => blockOptions(modelId, query, block, neighbour)),
     combine: combineBlocks,
   })
 
   const originResult = origin.isPlaceholderData ? undefined : origin.data
   const lookup = useMemo(() => {
-    const loaded: Loaded[] = originResult ? [{ block: ORIGIN, result: originResult }] : []
-    wanted.forEach((block, index) => {
+    const loaded: Loaded[] = originResult
+      ? [{ block: ORIGIN, result: originResult, fetching: false }]
+      : []
+    wanted.forEach(({ block }, index) => {
       const result = others.data[index]
       if (result) {
-        loaded.push({ block, result })
+        loaded.push({ block, result, fetching: others.fetching[index] })
       }
     })
-    return assemble(loaded)
-  }, [originResult, wanted, others.data])
+    return assemble(loaded, originResult?.seq)
+  }, [originResult, wanted, others.data, others.fetching])
 
   return {
     ...shape,

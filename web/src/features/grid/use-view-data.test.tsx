@@ -1,9 +1,10 @@
 import { QueryClientProvider } from "@tanstack/react-query"
 import { act, renderHook, waitFor } from "@testing-library/react"
 import type { ReactNode } from "react"
-import { HttpResponse, http } from "msw"
+import { HttpResponse, delay, http } from "msw"
 import { describe, expect, it } from "vitest"
 import { queryKeys } from "@/lib/api/keys"
+import { QUERY_STALE_TIME } from "@/lib/query-client"
 import { createTestQueryClient } from "@/test/render"
 import { server } from "@/test/server"
 import {
@@ -19,7 +20,7 @@ import { useViewData } from "./use-view-data"
 import type { GridQuery, ViewQuery } from "./view-types"
 
 function wrapper() {
-  const queryClient = createTestQueryClient()
+  const queryClient = createTestQueryClient({ staleTime: QUERY_STALE_TIME })
   return {
     queryClient,
     Wrapper: ({ children }: { children: ReactNode }) => (
@@ -280,5 +281,196 @@ describe("useViewData", () => {
     await act(() => result.current.refetch())
 
     await waitFor(() => expect(result.current.error).toBeNull())
+  })
+})
+
+describe("useViewData settling and caching", () => {
+  const far: CellRange = { rowStart: 500, rowEnd: 520, colStart: 0, colEnd: 5 }
+  const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+  /** Answers every block after `ms`, and records whether the browser gave up on it. */
+  function serveSlowly(ms: number) {
+    const seen: { key: string; aborted: boolean }[] = []
+    server.use(
+      http.post("/api/v1/models/:id/query", async ({ request }) => {
+        const query = (await request.json()) as ViewQuery
+        const entry = { key: windows([query])[0], aborted: false }
+        seen.push(entry)
+        request.signal.addEventListener("abort", () => {
+          entry.aborted = true
+        })
+        await delay(ms)
+        return HttpResponse.json(answer(salesView(), query))
+      }),
+    )
+    return seen
+  }
+
+  it("does not ask for the blocks next to the view when it moves on before they settle", async () => {
+    const served = serveViewQuery()
+    const { Wrapper } = wrapper()
+    const { result, rerender } = renderHook(
+      ({ visible }: { visible: CellRange }) => useViewData(MODEL_ID, salesQuery, visible),
+      { wrapper: Wrapper, initialProps: { visible: topLeft } },
+    )
+    await waitFor(() => expect(result.current.hasShape).toBe(true), { interval: 2 })
+
+    rerender({ visible: far })
+    await waitFor(() => expect(result.current.cell(500, 0)).toBeDefined())
+    await wait(250)
+
+    // The blocks that were next to the top left never left the settling, so they cost nothing.
+    expect(windows(served.requests)).toEqual(["0,0", "4,0", "4,1", "5,0", "5,1", "6,0", "6,1"])
+  })
+
+  it("asks at once for the blocks that hold what is visible", async () => {
+    const served = serveViewQuery()
+    const { Wrapper } = wrapper()
+    const visible: CellRange = { rowStart: 250, rowEnd: 270, colStart: 5, colEnd: 9 }
+
+    const { result } = renderHook(() => useViewData(MODEL_ID, salesQuery, visible), {
+      wrapper: Wrapper,
+    })
+
+    await waitFor(() => expect(result.current.cell(250, 5)).toBeDefined())
+    expect(windows(served.requests)).toContain("2,0")
+  })
+
+  it("cancels the requests of blocks the view has left", async () => {
+    const seen = serveSlowly(400)
+    const { Wrapper } = wrapper()
+    const { result, rerender } = renderHook(
+      ({ visible }: { visible: CellRange }) => useViewData(MODEL_ID, salesQuery, visible),
+      { wrapper: Wrapper, initialProps: { visible: topLeft } },
+    )
+    await waitFor(() => expect(result.current.hasShape).toBe(true), { timeout: 3000 })
+    await waitFor(() => expect(seen.length).toBeGreaterThanOrEqual(4), { timeout: 3000 })
+
+    rerender({ visible: far })
+
+    await waitFor(
+      () => {
+        const left = seen.filter((entry) => ["0,1", "1,0", "1,1"].includes(entry.key))
+        expect(left).toHaveLength(3)
+        expect(left.every((entry) => entry.aborted)).toBe(true)
+      },
+      { timeout: 3000 },
+    )
+  })
+
+  it("loads nothing again when the view goes away and comes back", async () => {
+    const served = serveViewQuery()
+    const { Wrapper } = wrapper()
+    const { result, rerender } = renderHook(
+      ({ visible }: { visible: CellRange }) => useViewData(MODEL_ID, salesQuery, visible),
+      { wrapper: Wrapper, initialProps: { visible: topLeft } },
+    )
+    await waitFor(() => expect(result.current.isFetching).toBe(false))
+    await waitFor(() => expect(served.requests).toHaveLength(4))
+    rerender({ visible: far })
+    await waitFor(() => expect(result.current.cell(500, 0)).toBeDefined())
+    await waitFor(() => expect(result.current.isFetching).toBe(false))
+    const after = served.requests.length
+
+    rerender({ visible: topLeft })
+    await wait(250)
+
+    expect(result.current.cell(0, 0)).toBeDefined()
+    expect(result.current.cell(150, 0)).toBeDefined()
+    expect(served.requests).toHaveLength(after)
+  })
+
+  it("never asks for the same block twice, however many views want it", async () => {
+    const served = serveViewQuery()
+    const { Wrapper } = wrapper()
+
+    const { result, rerender } = renderHook(
+      ({ visible }: { visible: CellRange }) => [
+        useViewData(MODEL_ID, salesQuery, visible),
+        useViewData(MODEL_ID, salesQuery, topLeft),
+      ],
+      { wrapper: Wrapper, initialProps: { visible: topLeft } },
+    )
+    await waitFor(() => expect(result.current[0].isFetching).toBe(false))
+    await waitFor(() => expect(served.requests).toHaveLength(4))
+    rerender({ visible: { ...topLeft, rowEnd: 30, colEnd: 8 } })
+    await wait(250)
+
+    const asked = windows(served.requests)
+    expect(new Set(asked).size).toBe(asked.length)
+    expect(asked).toEqual(["0,0", "0,1", "1,0", "1,1"])
+  })
+})
+
+describe("useViewData consistency", () => {
+  it("counts a block read at another revision than the first block as not loaded", async () => {
+    server.use(
+      http.post("/api/v1/models/:id/query", async ({ request }) => {
+        const query = (await request.json()) as ViewQuery
+        const origin = query.window.row_offset === 0 && query.window.col_offset === 0
+        return HttpResponse.json(answer(salesView(), query, origin ? 5 : 6))
+      }),
+    )
+    const { Wrapper } = wrapper()
+
+    const { result } = renderHook(() => useViewData(MODEL_ID, salesQuery, topLeft), {
+      wrapper: Wrapper,
+    })
+
+    await waitFor(() => expect(result.current.cell(0, 0)).toBeDefined())
+    await waitFor(() => expect(result.current.isFetching).toBe(false))
+    expect(result.current.cell(0, 41)).toBeUndefined()
+    expect(result.current.rowHeaders(150)).toBeUndefined()
+  })
+
+  it("keeps showing a block of the old revision while it is being loaded again", async () => {
+    const served = serveViewQuery()
+    const { Wrapper, queryClient } = wrapper()
+    const { result } = renderHook(() => useViewData(MODEL_ID, salesQuery, topLeft), {
+      wrapper: Wrapper,
+    })
+    await waitFor(() => expect(result.current.isFetching).toBe(false))
+    await waitFor(() => expect(served.requests).toHaveLength(4))
+    server.use(
+      http.post("/api/v1/models/:id/query", async ({ request }) => {
+        const query = (await request.json()) as ViewQuery
+        const origin = query.window.row_offset === 0 && query.window.col_offset === 0
+        if (!origin) {
+          await delay(300)
+        }
+        return HttpResponse.json(answer(salesView(), query, 2))
+      }),
+    )
+
+    await act(async () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.query(MODEL_ID) })
+      await new Promise((resolve) => setTimeout(resolve, 120))
+    })
+
+    expect(result.current.isFetching).toBe(true)
+    expect(result.current.cell(0, 41)).toBeDefined()
+    await waitFor(() => expect(result.current.isFetching).toBe(false), { timeout: 3000 })
+    expect(result.current.cell(0, 41)).toBeDefined()
+  })
+
+  it("hands out one object for a line item however many blocks list it", async () => {
+    serveViewQuery()
+    const { Wrapper } = wrapper()
+    const identities = new Set<unknown>()
+
+    const { result } = renderHook(
+      () => {
+        const data = useViewData(MODEL_ID, salesQuery, topLeft)
+        if (data.lineItems[0]) {
+          identities.add(data.lineItems[0])
+        }
+        return data
+      },
+      { wrapper: Wrapper },
+    )
+
+    await waitFor(() => expect(result.current.isFetching).toBe(false))
+    await waitFor(() => expect(result.current.cell(0, 41)).toBeDefined())
+    expect(identities.size).toBe(1)
   })
 })

@@ -9,9 +9,10 @@ import {
 import { render } from "@testing-library/react"
 import type { ReactElement } from "react"
 
-export function createTestQueryClient() {
+/** A query client that never retries; pass `staleTime` for tests that depend on caching. */
+export function createTestQueryClient({ staleTime }: { staleTime?: number } = {}) {
   return new QueryClient({
-    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    defaultOptions: { queries: { retry: false, staleTime }, mutations: { retry: false } },
   })
 }
 

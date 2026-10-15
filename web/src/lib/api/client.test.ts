@@ -243,3 +243,17 @@ describe("postJson", () => {
     await expect(result).rejects.toMatchObject({ name: "AbortError" })
   })
 })
+
+describe("postJson answers that are not JSON", () => {
+  it("throws an ApiError for a success status with a body that is not JSON", async () => {
+    server.use(http.post("/api/v1/models/m1/query", () => HttpResponse.text("<html></html>")))
+
+    const result = postJson("/models/m1/query", {})
+
+    await expect(result).rejects.toBeInstanceOf(ApiError)
+    await expect(result).rejects.toMatchObject({
+      code: "internal",
+      detail: "Something went wrong.",
+    })
+  })
+})
