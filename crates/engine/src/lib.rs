@@ -16,8 +16,8 @@ pub use codec::{InputChunk, ItemDoc, ListDoc, StructureDoc};
 pub use command::{CellEdit, ChangeSet, Command, CoordToken, ItemSpec, LineItemPatch};
 pub use error::{CellIssue, EngineError, FormulaError};
 pub use formula::{
-    BinOp, Expr, Modifier, ModifierKind, Name, SelectTarget, Span, TExpr, TModifier, UnOp,
-    functions, parse, resolve,
+    BinOp, Completion, CompletionKind, Expr, Modifier, ModifierKind, Name, SelectTarget, Span,
+    TExpr, TModifier, UnOp, functions, parse, resolve,
 };
 pub use ids::{ItemId, LineItemId, ListId, ModuleId, SubsetId, TimeRangeId, VersionId};
 pub use model::{Model, RecalcStats};

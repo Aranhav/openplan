@@ -4,6 +4,7 @@
 
 mod align;
 mod ast;
+mod completions;
 mod eval;
 pub mod functions;
 mod lexer;
@@ -11,6 +12,8 @@ mod parser;
 mod resolve;
 
 pub use ast::{BinOp, Expr, Modifier, ModifierKind, Name, Span, UnOp};
+pub(crate) use completions::completions;
+pub use completions::{Completion, CompletionKind};
 pub(crate) use eval::{ColumnSource, EvalCtx, eval_all, eval_cells};
 pub use parser::parse;
 pub use resolve::{SelectTarget, TExpr, TModifier, resolve};

@@ -573,7 +573,7 @@ fn evaluate(
 }
 
 /// The problems of a formula that could not be evaluated, as formula errors.
-fn formula_errors(error: EngineError) -> Vec<FormulaError> {
+pub(super) fn formula_errors(error: EngineError) -> Vec<FormulaError> {
     match error {
         EngineError::Formula(errors) => errors,
         other => vec![FormulaError {

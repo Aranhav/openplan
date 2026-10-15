@@ -19,7 +19,8 @@ mod calls;
 mod modifiers;
 mod names;
 
-use names::{Names, Referent, display_name};
+pub(crate) use names::display_name;
+use names::{Names, Referent};
 
 const TYPE_MISMATCH: &str = "formula.type_mismatch";
 

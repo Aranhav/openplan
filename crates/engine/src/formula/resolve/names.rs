@@ -372,7 +372,7 @@ fn edit_distance(a: &[char], b: &[char]) -> usize {
 
 /// `name` as it is written in a formula: as it is when that reads back as the same single
 /// name, else in quotes.
-pub(super) fn display_name(name: &str) -> String {
+pub(crate) fn display_name(name: &str) -> String {
     let reads_back = matches!(
         parse(name),
         Ok(Expr::Ref { parts, .. })

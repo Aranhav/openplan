@@ -5,9 +5,9 @@ use std::sync::Arc;
 use chrono::{Datelike, NaiveDate};
 
 use crate::calendar::Calendar;
-use crate::command::{CellEdit, ChangeSet, Command, CoordToken};
+use crate::command::{CellEdit, ChangeSet, Command, CoordToken, LineItemPatch};
 use crate::error::{CellIssue, EngineError, FormulaError};
-use crate::formula::ColumnSource;
+use crate::formula::{ColumnSource, Completion, completions};
 use crate::graph::Graph;
 use crate::ids::{LineItemId, ListId, VersionId};
 use crate::shape::{Axis, Shape};
@@ -18,7 +18,7 @@ use crate::value::{BLANK_DATE, BLANK_ITEM, BLANK_PERIOD, Cell, Column, Format, V
 mod recalc;
 mod working;
 
-use recalc::Session;
+use recalc::{Session, formula_errors};
 use working::{Working, summarised_by_formula};
 
 /// Days from 0001-01-01 (day 1 of the common era) to 1970-01-01.
@@ -169,6 +169,39 @@ impl Model {
     /// it, as of the last recalculation.
     pub fn line_item_errors(&self, li: LineItemId) -> Option<&[FormulaError]> {
         self.errors.get(&li).map(Vec::as_slice)
+    }
+
+    /// Checks `src` as the formula of the line item `li` without changing the model, and
+    /// returns the type it would have, which is that of the line item's format, or every problem
+    /// that setting it would be rejected for. That includes problems with the dimensions of the
+    /// line items it reads and circular references, which are found by trying the formula on a
+    /// copy of the model, so the cost is that of setting it.
+    ///
+    /// A blank formula is none, which makes the line item an input and is always valid. A line
+    /// item that does not exist is reported as a problem with code `structure.not_found`.
+    pub fn check_formula(&self, li: LineItemId, src: &str) -> Result<ValueType, Vec<FormulaError>> {
+        let Some(line_item) = self.structure.line_item(li) else {
+            return Err(formula_errors(missing_line_item(li)));
+        };
+        let ty = line_item.format.value_type();
+        if src.trim().is_empty() {
+            return Ok(ty);
+        }
+        let patch = LineItemPatch {
+            formula: Some(Some(src.to_string())),
+            ..LineItemPatch::default()
+        };
+        self.clone()
+            .apply(Command::UpdateLineItem { id: li, patch })
+            .map(|_| ty)
+            .map_err(formula_errors)
+    }
+
+    /// What the formula editor offers after `prefix` in the formula of the line item `li`: line
+    /// items, lists, functions and keywords, those of the line item's own module first. See
+    /// [`Completion`]. Empty for a line item that does not exist.
+    pub fn completions(&self, li: LineItemId, prefix: &str) -> Vec<Completion> {
+        completions(&self.structure, li, prefix)
     }
 
     /// Reads leaf cells of a line item, each addressed by one token per axis.
