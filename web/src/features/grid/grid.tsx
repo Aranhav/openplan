@@ -41,6 +41,7 @@ import { useViewData } from "./use-view-data"
 import type {
   ConditionalFormat,
   GridQuery,
+  Header,
   LineItemInfo,
   Member,
   MemberRef,
@@ -106,6 +107,44 @@ function GridSkeleton() {
 
 // How long after the active cell moves that headers arriving late may still move the grid to it.
 const LATE_HEADERS_MS = 1000
+
+// How long the active cell waits for the view that a keyboard collapse asked for.
+const FOLLOW_MS = 5000
+
+/** The member a keyboard collapse or expand acted on, which the active cell goes to. */
+type Following = {
+  axis: "row" | "column"
+  /** The keys of the member and of the members it is under, outermost first. */
+  path: string[]
+  /** Where the member was, to look for it nearest to that place. */
+  from: number
+  /** The row of the active cell for a column, the column for a row: it stays. */
+  other: number
+  until: number
+}
+
+const FOLLOW_RADIUS = 400
+
+/** The position nearest to `from` whose header is under the path, if any such header is loaded. */
+function nearestUnder(
+  path: readonly string[],
+  from: number,
+  count: number,
+  headerAt: (index: number) => Header | undefined,
+): number | undefined {
+  const matches = (index: number) => {
+    const header = headerAt(index)
+    return header !== undefined && path.every((key, level) => header.members[level]?.key === key)
+  }
+  for (let distance = 0; distance <= FOLLOW_RADIUS; distance++) {
+    for (const index of [from - distance, from + distance]) {
+      if (index >= 0 && index < count && matches(index)) {
+        return index
+      }
+    }
+  }
+  return undefined
+}
 
 /** How many cells a range holds, in words, or nothing for a single cell. */
 function selectionMessage(range: CellRange): string {
@@ -254,25 +293,62 @@ export function Grid({
     }
   }, [focusRow, focusCol, focusStart])
 
-  const [announcement, setAnnouncement] = useState("")
+  // What the status region says. A new message replaces the node, so the same words said twice
+  // are read twice.
+  const [announcement, setAnnouncement] = useState({ text: "", id: 0 })
+  const announce = (text: string) => setAnnouncement((now) => ({ text, id: now.id + 1 }))
   const toggleMember = useMemo(
     () =>
       onToggleCollapse &&
       ((dim: ViewDim, member: Member) => {
         onToggleCollapse({ dim, key: member.key })
         scrollRef.current?.focus({ preventScroll: true })
-        setAnnouncement(`${member.collapsed ? "Expanded" : "Collapsed"} ${member.label}`)
+        setAnnouncement((now) => ({
+          text: `${member.collapsed ? "Expanded" : "Collapsed"} ${member.label}`,
+          id: now.id + 1,
+        }))
       }),
     [onToggleCollapse],
   )
   const headerCallbacks: HeaderCallbacks = { ...callbacks, onToggleCollapse: toggleMember }
+
+  // A member that comes after its children (a time summary) moves when it collapses or expands,
+  // and the index the active cell had would then lie on its neighbour. So after a keyboard
+  // collapse the active cell goes to the member, once the view with the member in its new place
+  // has loaded.
+  const follow = useRef<Following | null>(null)
+  const goTo = useEffectEvent((pos: Pos) => select(pos))
+  useEffect(() => {
+    const pending = follow.current
+    if (!pending) {
+      return
+    }
+    if (Date.now() > pending.until) {
+      follow.current = null
+      return
+    }
+    const row = pending.axis === "row"
+    const found = nearestUnder(
+      pending.path,
+      pending.from,
+      row ? totalRows : totalColumns,
+      row ? rowHeaders : colHeaders,
+    )
+    if (found !== undefined) {
+      follow.current = null
+      goTo(row ? { row: found, col: pending.other } : { row: pending.other, col: found })
+    }
+  }, [rowHeaders, colHeaders, totalRows, totalColumns])
 
   // The notes: what a switchover or error cell cannot say by its value, in one tooltip that
   // follows the pointer, or the active cell while the grid has focus.
   const [focused, setFocused] = useState(false)
   const { hovered, onPointerOver, onPointerLeave } = useHoveredNote()
   const active = selection.anchor
-  const tipCell = hovered ?? (focused ? active : null)
+  // The view can shrink under a pointer that has not moved, so the hovered cell may be gone.
+  const hoveredHere =
+    hovered && hovered.row < totalRows && hovered.col < totalColumns ? hovered : null
+  const tipCell = hoveredHere ?? (focused ? active : null)
   const tipKey = tipCell ? `${tipCell.row}:${tipCell.col}` : ""
   const tipNote = tipCell
     ? noteOf(
@@ -289,7 +365,10 @@ export function Grid({
     return Math.floor((element.clientHeight - headerHeight) / ROW_HEIGHT)
   }
 
-  /** Collapses or expands the member with children in the header of the active row or column. */
+  /**
+   * Collapses or expands the member with children in the header of the active row or column, and
+   * says so when there is none. The active cell then follows the member (see `follow`).
+   */
   function collapseActive(command: Extract<GridCommand, { type: "collapse" }>) {
     const header = command.axis === "row" ? rowHeaders(active.row) : colHeaders(active.col)
     const dims = command.axis === "row" ? rowDims : columnDims
@@ -301,11 +380,19 @@ export function Grid({
       if (member.has_children) {
         // Only a member that is not in the state asked for changes.
         if (member.collapsed === command.expand) {
+          follow.current = {
+            axis: command.axis,
+            path: header.members.slice(0, level + 1).map((m) => m.key),
+            from: command.axis === "row" ? active.row : active.col,
+            other: command.axis === "row" ? active.col : active.row,
+            until: Date.now() + FOLLOW_MS,
+          }
           toggleMember(dims[level], member)
         }
         return
       }
     }
+    announce("Nothing to collapse")
   }
 
   function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
@@ -315,6 +402,11 @@ export function Grid({
     }
     const command = resolveKey(event.nativeEvent, "navigate")
     if (command.type === "none") {
+      return
+    }
+    // Copy and paste stay the browser's: their own events carry the clipboard to whatever
+    // handles them (a handler gets the clipboard without asking for permission).
+    if (command.type === "copy" || command.type === "paste") {
       return
     }
     if (command.type === "collapse") {
@@ -520,11 +612,12 @@ export function Grid({
                 <TooltipTrigger asChild>
                   <div
                     aria-hidden
+                    data-tooltip-anchor
                     className="pointer-events-none absolute"
                     style={rect(anchor.row, anchor.row, anchor.col, anchor.col)}
                   />
                 </TooltipTrigger>
-                <TooltipContent onEscapeKeyDown={() => setDismissed(tipKey)}>
+                <TooltipContent hideWhenDetached onEscapeKeyDown={() => setDismissed(tipKey)}>
                   {tipNote}
                 </TooltipContent>
               </Tooltip>
@@ -543,7 +636,7 @@ export function Grid({
           ))}
       </div>
       <div role="status" className="sr-only">
-        {announcement}
+        <span key={announcement.id}>{announcement.text}</span>
       </div>
       <div role="status" className="sr-only">
         {selectionMessage(range)}

@@ -13,8 +13,10 @@ import type { Cell, CellFlag, ConditionalFormat, LineItemInfo } from "./view-typ
 const BASE =
   "group/cell absolute top-0 box-border flex h-full select-none items-center border-r border-b text-sm"
 
-// The horizontal padding of a cell (px-2) and its right border.
+// The horizontal padding of a cell (px-2) and its right border, and a little room besides, so a
+// number is not cut off by a rounding of the text width.
 const CELL_PADDING = 17
+const FIT_SLACK = 2
 
 const TEXT_FORMAT: Format = { type: "text" }
 
@@ -117,7 +119,8 @@ export const GridCell = memo(function GridCell({
   const blank = na || error
   const format = lineItem?.format ?? TEXT_FORMAT
   const style = lineItem && !blank ? conditionalStyle(rules, lineItem, cell) : undefined
-  const bold = style ? style.bold : has(flags, "summary")
+  // The weight the text is drawn in (font-bold, font-semibold or normal), which sets its width.
+  const weight = style?.bold ? 700 : has(flags, "summary") ? 600 : 400
 
   const rightAligned = format.type === "number"
   const align = rightAligned
@@ -153,7 +156,7 @@ export const GridCell = memo(function GridCell({
     const text = formatValue(cell.value, format, cell.text)
     // A number that is cut off reads as another number, so a column too narrow for it shows ###,
     // like a spreadsheet, and the number itself is the label and the title.
-    const fits = !rightAligned || measureTextWidth(text, bold) <= width - CELL_PADDING
+    const fits = !rightAligned || measureTextWidth(text, weight) <= width - CELL_PADDING - FIT_SLACK
     full = fits ? undefined : text
     content = <span className="truncate">{fits ? text : "###"}</span>
   }

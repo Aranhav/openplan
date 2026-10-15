@@ -27,6 +27,7 @@ import {
 import type { ViewFixture } from "@/test/view-query"
 import { mockViewport } from "@/test/viewport"
 import { Grid } from "./grid"
+import { measureTextWidth } from "./measure-text"
 import type {
   Cell,
   ConditionalFormat,
@@ -37,7 +38,9 @@ import type {
 } from "./view-types"
 
 // jsdom has no canvas: every character is 8 px wide.
-vi.mock("./measure-text", () => ({ measureTextWidth: (text: string) => text.length * 8 }))
+vi.mock("./measure-text", () => ({
+  measureTextWidth: vi.fn((text: string) => text.length * 8),
+}))
 
 // Each test loads blocks through msw into jsdom, which is slow while the whole suite runs at once.
 vi.setConfig({ testTimeout: 20_000 })
@@ -318,7 +321,13 @@ describe("hierarchy", () => {
   }
 
   /** A grid whose parent collapses what is toggled, as the module screen will. */
-  function Collapsing({ onToggle }: { onToggle?: (member: MemberRef) => void }) {
+  function Collapsing({
+    onToggle,
+    base = query,
+  }: {
+    onToggle?: (member: MemberRef) => void
+    base?: GridQuery
+  }) {
     const [collapsed, setCollapsed] = useState<MemberRef[]>([])
     const toggle = useCallback(
       (target: MemberRef) => {
@@ -331,15 +340,19 @@ describe("hierarchy", () => {
       },
       [onToggle],
     )
-    const current = useMemo(() => ({ ...query, collapsed }), [collapsed])
+    const current = useMemo(() => ({ ...base, collapsed }), [base, collapsed])
     return <Grid modelId={MODEL_ID} query={current} onToggleCollapse={toggle} />
   }
 
-  function renderCollapsing(onToggle?: (member: MemberRef) => void) {
-    serveViewQueryBy(hierarchyFor)
+  function renderCollapsing(
+    onToggle?: (member: MemberRef) => void,
+    fixtureFor: (q: { collapsed?: MemberRef[] }) => ViewFixture = hierarchyFor,
+    base: GridQuery = query,
+  ) {
+    serveViewQueryBy(fixtureFor)
     render(
       <QueryClientProvider client={createTestQueryClient({ staleTime: QUERY_STALE_TIME })}>
-        <Collapsing onToggle={onToggle} />
+        <Collapsing onToggle={onToggle} base={base} />
       </QueryClientProvider>,
     )
     return loadedGrid()
@@ -549,6 +562,188 @@ describe("hierarchy", () => {
       expect(onToggle).not.toHaveBeenCalled()
     })
 
+    it("says so, politely, when the active row or column has nothing to collapse", async () => {
+      const grid = await renderCollapsing()
+      grid.focus()
+      await userEvent.keyboard("{ArrowDown}{ArrowDown}{ArrowRight}")
+      expect(screen.queryByText("Nothing to collapse")).not.toBeInTheDocument()
+
+      await userEvent.keyboard(altShift("ArrowLeft"))
+
+      const message = screen.getByText("Nothing to collapse")
+      expect(message.closest("[role='status']")).toHaveClass("sr-only")
+
+      // The same words again are a new message: the node is replaced, which a screen reader reads.
+      await userEvent.keyboard(altShift("ArrowUp"))
+      expect(screen.getByText("Nothing to collapse")).not.toBe(message)
+    })
+
+    it("stays quiet about collapsing when the grid cannot collapse at all", async () => {
+      serveViewQuery(hierarchyFor(query))
+      renderGrid({ query })
+      const grid = await loadedGrid()
+      grid.focus()
+      await userEvent.keyboard("{ArrowDown}{ArrowDown}")
+
+      await userEvent.keyboard(altShift("ArrowLeft"))
+
+      expect(screen.queryByText("Nothing to collapse")).not.toBeInTheDocument()
+    })
+
+    describe("follows the member that was collapsed or expanded", () => {
+      const quarter = (key: string, collapsed: Set<string>) =>
+        member(key, key, {
+          depth: 1,
+          is_summary: true,
+          has_children: true,
+          collapsed: collapsed.has(key),
+        })
+      const month = (key: string) => member(key, key)
+
+      /** Two quarters, each after its months, and a month after them. */
+      function quartersFor(q: { collapsed?: MemberRef[] }): ViewFixture {
+        const collapsed = new Set((q.collapsed ?? []).map((m) => m.key))
+        const columns = [
+          ...(collapsed.has("Q1 FY26") ? [] : [month("Jan 26"), month("Feb 26")]),
+          quarter("Q1 FY26", collapsed),
+          ...(collapsed.has("Q2 FY26") ? [] : [month("Apr 26"), month("May 26")]),
+          quarter("Q2 FY26", collapsed),
+          month("Jul 26"),
+        ]
+        return salesView({
+          rowDims: [regionsList],
+          columnDims: [timeDim],
+          pages: [{ dim: lineItemsDim, member: member("li-0", "Revenue") }],
+          lineItems: [lineItem("li-0", "Revenue")],
+          totalRows: 1,
+          totalColumns: columns.length,
+          rowHeader: () => header(member("top", "All Regions")),
+          columnHeader: (col) => header(columns[col]),
+          cell: (row, col) => numberCell(row * 10 + col),
+        })
+      }
+
+      const columnOf = (grid: HTMLElement, name: string) =>
+        Number(within(grid).getByRole("columnheader", { name }).getAttribute("aria-colindex")) - 2
+
+      it("moves the active cell to the collapsed column, not to the one that takes its place", async () => {
+        const grid = await renderCollapsing(undefined, quartersFor)
+        grid.focus()
+        await userEvent.keyboard("{ArrowRight}{ArrowRight}")
+        expect(grid).toHaveAttribute("aria-activedescendant", cellAt(grid, 0, 2).id)
+
+        await userEvent.keyboard(altShift("ArrowUp"))
+
+        await waitFor(() =>
+          expect(
+            within(grid).queryByRole("columnheader", { name: "Jan 26" }),
+          ).not.toBeInTheDocument(),
+        )
+        const collapsed = columnOf(grid, "Q1 FY26")
+        expect(collapsed).toBe(0)
+        await waitFor(() =>
+          expect(grid).toHaveAttribute("aria-activedescendant", cellAt(grid, 0, collapsed).id),
+        )
+      })
+
+      it("moves it to the column that was expanded, where its children now come before it", async () => {
+        const grid = await renderCollapsing(undefined, quartersFor)
+        grid.focus()
+        await userEvent.keyboard("{ArrowRight}{ArrowRight}" + altShift("ArrowUp"))
+        await waitFor(() => expect(columnOf(grid, "Q1 FY26")).toBe(0))
+
+        await userEvent.keyboard(altShift("ArrowDown"))
+
+        await waitFor(() => expect(columnOf(grid, "Q1 FY26")).toBe(2))
+        await waitFor(() =>
+          expect(grid).toHaveAttribute("aria-activedescendant", cellAt(grid, 0, 2).id),
+        )
+      })
+
+      it("follows a member that moves because an earlier one collapsed", async () => {
+        const grid = await renderCollapsing(undefined, quartersFor)
+        grid.focus()
+        await userEvent.keyboard("{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}")
+        expect(grid).toHaveAttribute("aria-activedescendant", cellAt(grid, 0, 5).id)
+
+        await userEvent.keyboard(altShift("ArrowUp"))
+
+        await waitFor(() => expect(columnOf(grid, "Q2 FY26")).toBe(3))
+        await waitFor(() =>
+          expect(grid).toHaveAttribute("aria-activedescendant", cellAt(grid, 0, 3).id),
+        )
+      })
+
+      it("follows a row member in the same way", async () => {
+        const rowsQuery: GridQuery = {
+          module: MODULE_ID,
+          rows: [timeDim],
+          columns: [lineItemsDim],
+        }
+        function timeRowsFor(q: { collapsed?: MemberRef[] }): ViewFixture {
+          const collapsed = new Set((q.collapsed ?? []).map((m) => m.key))
+          const rows = [
+            ...(collapsed.has("Q1 FY26") ? [] : [month("Jan 26"), month("Feb 26")]),
+            quarter("Q1 FY26", collapsed),
+            month("Apr 26"),
+          ]
+          return salesView({
+            rowDims: [timeDim],
+            columnDims: [lineItemsDim],
+            totalRows: rows.length,
+            totalColumns: 1,
+            lineItems: [lineItem("li-0", "Revenue")],
+            rowHeader: (row) => header(rows[row]),
+            columnHeader: () => header(member("li-0", "Revenue")),
+            cell: (row) => numberCell(row),
+          })
+        }
+        const grid = await renderCollapsing(undefined, timeRowsFor, rowsQuery)
+        grid.focus()
+        await userEvent.keyboard("{ArrowDown}{ArrowDown}")
+        expect(grid).toHaveAttribute("aria-activedescendant", cellAt(grid, 2, 0).id)
+
+        await userEvent.keyboard(altShift("ArrowLeft"))
+
+        await waitFor(() =>
+          expect(within(grid).queryByRole("rowheader", { name: "Jan 26" })).not.toBeInTheDocument(),
+        )
+        await waitFor(() =>
+          expect(grid).toHaveAttribute("aria-activedescendant", cellAt(grid, 0, 0).id),
+        )
+      })
+
+      it("keeps the active cell where it is when the member's place does not change", async () => {
+        const grid = await renderCollapsing()
+        grid.focus()
+        await userEvent.keyboard("{ArrowDown}")
+
+        await userEvent.keyboard(altShift("ArrowLeft"))
+
+        await waitFor(() =>
+          expect(
+            within(grid).queryByRole("rowheader", { name: "United Kingdom" }),
+          ).not.toBeInTheDocument(),
+        )
+        expect(grid).toHaveAttribute("aria-activedescendant", cellAt(grid, 1, 0).id)
+      })
+
+      it("does not move the active cell for a collapse by chevron", async () => {
+        const grid = await renderCollapsing(undefined, quartersFor)
+        grid.focus()
+        await userEvent.keyboard("{ArrowRight}")
+
+        await userEvent.click(within(grid).getByRole("button", { name: "Collapse Q1 FY26" }))
+
+        await waitFor(() =>
+          expect(
+            within(grid).queryByRole("columnheader", { name: "Jan 26" }),
+          ).not.toBeInTheDocument(),
+        )
+        expect(grid).toHaveAttribute("aria-activedescendant", cellAt(grid, 0, 1).id)
+      })
+    })
+
     it("does nothing when the grid cannot collapse", async () => {
       serveViewQuery(hierarchyFor(query))
       renderGrid({ query })
@@ -565,6 +760,9 @@ describe("hierarchy", () => {
 })
 
 describe("cell styling", () => {
+  // The tooltip hides itself when its anchor is out of sight, and jsdom, which has no layout, takes
+  // every anchor for out of sight: its tooltip is in the page but not "visible" to role queries.
+
   const flagged: Record<number, Cell["flags"]> = {
     0: ["input"],
     1: ["calculated", "readonly"],
@@ -663,10 +861,10 @@ describe("cell styling", () => {
     expect(cell).toHaveAccessibleDescription("Before the switchover: showing Actual.")
     await userEvent.hover(cell)
 
-    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+    expect(await screen.findByRole("tooltip", { hidden: true })).toHaveTextContent(
       "Before the switchover: showing Actual.",
     )
-    expect(screen.getAllByRole("tooltip")).toHaveLength(1)
+    expect(screen.getAllByRole("tooltip", { hidden: true })).toHaveLength(1)
   })
 
   it("leaves a cell in error blank and says so", async () => {
@@ -702,61 +900,69 @@ describe("cell styling", () => {
     ).toHaveAccessibleDescription("Unknown name 'Pricee'.")
     expect(cellAt(grid, 0, 0)).not.toHaveAttribute("aria-describedby")
     await userEvent.hover(cellAt(grid, 0, 5))
-    expect(await screen.findByRole("tooltip")).toHaveTextContent("Unknown name 'Pricee'.")
+    expect(await screen.findByRole("tooltip", { hidden: true })).toHaveTextContent(
+      "Unknown name 'Pricee'.",
+    )
   })
 
   it("shows the note of the active cell in the one tooltip while the grid has focus", async () => {
     const grid = await renderFlags()
-    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument()
+    expect(screen.queryByRole("tooltip", { hidden: true })).not.toBeInTheDocument()
 
     grid.focus()
     await userEvent.keyboard("{ArrowRight}{ArrowRight}{ArrowRight}")
-    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument()
+    expect(screen.queryByRole("tooltip", { hidden: true })).not.toBeInTheDocument()
     await userEvent.keyboard("{ArrowRight}")
 
-    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+    expect(await screen.findByRole("tooltip", { hidden: true })).toHaveTextContent(
       "Before the switchover: showing Actual.",
     )
-    expect(screen.getAllByRole("tooltip")).toHaveLength(1)
+    expect(screen.getAllByRole("tooltip", { hidden: true })).toHaveLength(1)
 
     await userEvent.keyboard("{ArrowLeft}")
-    await waitFor(() => expect(screen.queryByRole("tooltip")).not.toBeInTheDocument())
+    await waitFor(() =>
+      expect(screen.queryByRole("tooltip", { hidden: true })).not.toBeInTheDocument(),
+    )
   })
 
   it("hides the tooltip when the grid loses focus", async () => {
     const grid = await renderFlags()
     grid.focus()
     await userEvent.keyboard("{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}")
-    await screen.findByRole("tooltip")
+    await screen.findByRole("tooltip", { hidden: true })
 
     grid.blur()
 
-    await waitFor(() => expect(screen.queryByRole("tooltip")).not.toBeInTheDocument())
+    await waitFor(() =>
+      expect(screen.queryByRole("tooltip", { hidden: true })).not.toBeInTheDocument(),
+    )
   })
 
   it("keeps the tooltip while the grid scrolls to the active cell", async () => {
     const grid = await renderFlags()
     grid.focus()
     await userEvent.keyboard("{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}")
-    await screen.findByRole("tooltip")
+    await screen.findByRole("tooltip", { hidden: true })
 
     fireEvent.scroll(grid)
     fireEvent.scroll(window)
 
-    expect(screen.getByRole("tooltip")).toBeInTheDocument()
+    expect(screen.getByRole("tooltip", { hidden: true })).toBeInTheDocument()
   })
 
   it("dismisses the tooltip with Escape and shows it again for the next cell", async () => {
     const grid = await renderFlags()
     grid.focus()
     await userEvent.keyboard("{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}")
-    await screen.findByRole("tooltip")
+    await screen.findByRole("tooltip", { hidden: true })
 
     await userEvent.keyboard("{Escape}")
 
-    await waitFor(() => expect(screen.queryByRole("tooltip")).not.toBeInTheDocument())
+    await waitFor(() =>
+      expect(screen.queryByRole("tooltip", { hidden: true })).not.toBeInTheDocument(),
+    )
     await userEvent.keyboard("{ArrowRight}")
-    expect(await screen.findByRole("tooltip")).toBeInTheDocument()
+    expect(await screen.findByRole("tooltip", { hidden: true })).toBeInTheDocument()
   })
 
   it("right-aligns numbers in tabular figures", async () => {
@@ -764,6 +970,67 @@ describe("cell styling", () => {
 
     expect(cellAt(grid, 0, 0)).toHaveClass("justify-end", "tabular-nums")
     expect(cellAt(grid, 0, 0)).toHaveTextContent("1,234")
+  })
+
+  it("keeps the tooltip anchor on a cell that exists when the view shrinks under the pointer", async () => {
+    const months = [member("Jan 26", "Jan 26"), member("Feb 26", "Feb 26")]
+    const q1 = (collapsed: boolean) =>
+      member("Q1 FY26", "Q1 FY26", { depth: 1, is_summary: true, has_children: true, collapsed })
+    const hoverQuery: GridQuery = {
+      module: MODULE_ID,
+      rows: [regionsList],
+      columns: [timeDim],
+      pages: [{ dim: lineItemsDim, key: "li-0" }],
+    }
+    function Shrinking() {
+      const [collapsed, setCollapsed] = useState<MemberRef[]>([])
+      const current = useMemo(() => ({ ...hoverQuery, collapsed }), [collapsed])
+      return (
+        <Grid
+          modelId={MODEL_ID}
+          query={current}
+          onToggleCollapse={(m) => setCollapsed((now) => [...now, m])}
+        />
+      )
+    }
+    serveViewQueryBy((q) => {
+      const closed = (q.collapsed ?? []).length > 0
+      const columns = closed ? [q1(true)] : [...months, q1(false)]
+      return salesView({
+        rowDims: [regionsList],
+        columnDims: [timeDim],
+        pages: [{ dim: lineItemsDim, member: member("li-0", "Revenue") }],
+        lineItems: [lineItem("li-0", "Revenue")],
+        totalRows: 1,
+        totalColumns: columns.length,
+        rowHeader: () => header(member("top", "All Regions")),
+        columnHeader: (col) => header(columns[col]),
+        cell: (_, col) =>
+          numberCell(col, col === 1 ? ["calculated", "readonly", "switchover"] : ["input"]),
+      })
+    })
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+    render(
+      <QueryClientProvider client={createTestQueryClient({ staleTime: QUERY_STALE_TIME })}>
+        <Shrinking />
+      </QueryClientProvider>,
+    )
+    const grid = await loadedGrid()
+    await userEvent.hover(cellAt(grid, 0, 1))
+    await screen.findByRole("tooltip", { hidden: true })
+
+    // The pointer stays where it is while the keys collapse the quarter and the column goes.
+    grid.focus()
+    await userEvent.keyboard("{ArrowRight}{ArrowRight}{Alt>}{Shift>}{ArrowUp}{/Shift}{/Alt}")
+    await waitFor(() =>
+      expect(within(grid).queryByRole("columnheader", { name: "Jan 26" })).not.toBeInTheDocument(),
+    )
+
+    const anchor = grid.querySelector<HTMLElement>("[data-tooltip-anchor]")!
+    for (const property of ["top", "left", "width", "height"] as const) {
+      expect(Number.isFinite(parseFloat(anchor.style[property])), property).toBe(true)
+    }
+    expect(consoleError).not.toHaveBeenCalled()
   })
 
   it("shows ### for a number that does not fit its column, and the number as its label and title", async () => {
@@ -779,6 +1046,37 @@ describe("cell styling", () => {
     expect(cellAt(grid, 2, 1)).not.toHaveAttribute("title")
     // Text is clipped with an ellipsis instead, however narrow.
     expect(cellAt(grid, 2, 4)).toHaveTextContent("Note 2")
+  })
+
+  it("keeps two pixels of slack: a number that just fits is cut off", async () => {
+    serveViewQuery()
+    // "2,000" is 40 px wide here; a 57 px column has 40 px of room, before the slack.
+    renderGrid({ columnWidths: { "v0|li-0": 57, "v0|li-1": 130 } })
+    const grid = await loadedGrid()
+
+    expect(cellAt(grid, 2, 0)).toHaveTextContent("###")
+    expect(cellAt(grid, 2, 1)).toHaveTextContent("$2,001.00")
+  })
+
+  it("measures a number in the weight it is drawn in", async () => {
+    serveViewQuery(flagsView())
+    renderGrid({
+      query: flagsQuery,
+      conditionalFormats: [
+        {
+          name: "Bold",
+          line_item_ids: ["li-1"],
+          op: "positive",
+          style: { color: "blue", bold: true },
+        },
+      ],
+    })
+    await loadedGrid()
+
+    // Input cells draw at 400, a summary at 600 (semibold), and a bold rule at 700.
+    expect(measureTextWidth).toHaveBeenCalledWith("1,234", 400)
+    expect(measureTextWidth).toHaveBeenCalledWith("1,234", 600)
+    expect(measureTextWidth).toHaveBeenCalledWith("1,234", 700)
   })
 
   it("fits a number again when its column is wide enough", async () => {
@@ -812,7 +1110,9 @@ describe("cell styling", () => {
     expect(icon).toHaveClass("text-destructive")
     expect(within(grid).getByRole("columnheader", { name: "Line item 0" })).toBeInTheDocument()
     await userEvent.hover(icon)
-    expect(await screen.findByRole("tooltip")).toHaveTextContent("Unknown name 'Pricee'.")
+    expect(await screen.findByRole("tooltip", { hidden: true })).toHaveTextContent(
+      "Unknown name 'Pricee'.",
+    )
   })
 
   it("applies the first conditional format that matches", async () => {
@@ -1456,8 +1756,31 @@ describe("keyboard", () => {
         `${JSON.stringify(key)} was left to the browser`,
       ).toBe(false)
     }
-    expect(fireEvent.keyDown(grid, { key: "c", ctrlKey: true })).toBe(false)
-    expect(fireEvent.keyDown(grid, { key: "z", ctrlKey: true })).toBe(false)
+    // Undo and redo are the grid's; the browser has nothing for them to do.
+    for (const init of [
+      { key: "z", ctrlKey: true },
+      { key: "z", metaKey: true },
+      { key: "z", ctrlKey: true, shiftKey: true },
+      { key: "y", ctrlKey: true },
+    ]) {
+      expect(fireEvent.keyDown(grid, init), JSON.stringify(init)).toBe(false)
+    }
+  })
+
+  it("leaves copy, cut and paste to the browser, so their own events fire", async () => {
+    serveViewQuery()
+    renderGrid()
+    const grid = await loadedGrid()
+    grid.focus()
+
+    for (const key of ["c", "x", "v"]) {
+      for (const modifier of [{ ctrlKey: true }, { metaKey: true }]) {
+        expect(
+          fireEvent.keyDown(grid, { key, ...modifier }),
+          `${key} ${JSON.stringify(modifier)}`,
+        ).toBe(true)
+      }
+    }
   })
 
   it("leaves the keys that are not the grid's to the browser", async () => {
