@@ -1,5 +1,6 @@
 //! The operators of the formula language over columns: loops over whole vectors, one per
-//! operator, with the language's rules for blanks and division by zero.
+//! operator, with the language's rules for blanks and division by zero. A result that
+//! overflowed or has no value is 0 at once, so it never reaches a comparison or a text.
 
 use std::fmt::Write;
 use std::sync::Arc;
@@ -11,7 +12,7 @@ use crate::formula::BinOp;
 use crate::ids::ListId;
 use crate::model::EPOCH_DAYS_FROM_CE;
 use crate::structure::Structure;
-use crate::value::{BLANK_DATE, Column, ValueType};
+use crate::value::{BLANK_DATE, Column, ValueType, sanitize_number};
 
 fn mismatch() -> EngineError {
     EngineError::Invalid {
@@ -24,7 +25,7 @@ pub(super) fn negate(operand: Column) -> Result<Column, EngineError> {
         return Err(mismatch());
     };
     for number in &mut numbers {
-        *number = -*number;
+        *number = sanitize_number(-*number);
     }
     Ok(Column::Number(numbers))
 }
@@ -67,10 +68,16 @@ fn arithmetic(op: BinOp, left: Column, right: Column) -> Result<Column, EngineEr
         }
     }
     match op {
-        BinOp::Add => apply(&mut left, &right, |a, b| a + b),
-        BinOp::Sub => apply(&mut left, &right, |a, b| a - b),
-        BinOp::Mul => apply(&mut left, &right, |a, b| a * b),
-        BinOp::Div => apply(&mut left, &right, |a, b| if b == 0.0 { 0.0 } else { a / b }),
+        BinOp::Add => apply(&mut left, &right, |a, b| sanitize_number(a + b)),
+        BinOp::Sub => apply(&mut left, &right, |a, b| sanitize_number(a - b)),
+        BinOp::Mul => apply(&mut left, &right, |a, b| sanitize_number(a * b)),
+        BinOp::Div => apply(&mut left, &right, |a, b| {
+            if b == 0.0 {
+                0.0
+            } else {
+                sanitize_number(a / b)
+            }
+        }),
         _ => return Err(mismatch()),
     }
     Ok(Column::Number(left))

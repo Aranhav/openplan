@@ -11,6 +11,7 @@ use crate::formula::ModifierKind;
 use crate::ids::LineItemId;
 use crate::shape::{Axis, Shape};
 use crate::structure::LineItem;
+use crate::summary::with_actual_before_switchover;
 use crate::value::{Column, ValueType};
 
 use super::{Builder, Driver, NONE, Work, dimension, invalid, list_of, not_found};
@@ -78,7 +79,15 @@ impl Builder<'_> {
         let mut lens = work.shape.lens.clone();
         lens[replaced] = new_len as u32;
         let shape = Shape::new(axes, lens);
-        let column = combine(kind, &work.column, &targets, shape.size())?;
+        let combined = combine(kind, &work.column, &targets, shape.size())?;
+        // A Time axis made by the mapping needs the switchover like any other.
+        let column = with_actual_before_switchover(
+            structure,
+            &shape,
+            work.restriction.as_deref(),
+            &combined,
+        )?
+        .unwrap_or(combined);
         work.shape = shape;
         work.column = Arc::new(column);
         work.pristine = false;

@@ -1738,6 +1738,171 @@ fn a_coarser_source_reads_actual_in_the_target_months_before_the_switchover() {
     assert_eq!(fx.number_at(view, vec![period("Feb 26"), actual]), 100.0);
 }
 
+#[test]
+fn a_scattered_time_axis_reads_the_switchover() {
+    let mut fx = Fx::new(1);
+    let transactions = fx.list("Transactions", None, None);
+    let [t1, t2] = fx.items(transactions, &[("T1", None), ("T2", None)])[..] else {
+        unreachable!()
+    };
+    let bookings = fx.module("Bookings", vec![list_axis(transactions)]);
+    let booked = fx.input(
+        bookings,
+        "Booked In",
+        Format::TimePeriod {
+            level: TimeLevel::Month,
+        },
+    );
+    let ledger = fx.module("Ledger", vec![list_axis(transactions), AxisSpec::Versions]);
+    let amount = fx.number(ledger, "Amount");
+    let monthly = fx.module("Monthly", vec![month_axis(), AxisSpec::Versions]);
+    let by_month = fx.calc_number(monthly, "Booked Total", "Amount[SUM: Booked In]");
+    let quarterly = fx.module(
+        "Quarterly",
+        vec![time_axis(TimeLevel::Quarter), AxisSpec::Versions],
+    );
+    let by_quarter = fx.calc_number(quarterly, "Quarter Booked", "Amount[SUM: Booked In]");
+    let budget_id = fx.model.structure().version_by_name("Budget").unwrap().id;
+    fx.model
+        .apply(Command::UpsertVersion {
+            id: budget_id,
+            name: "Budget".to_string(),
+            is_actual: false,
+            is_current: true,
+            switchover: Some(1),
+        })
+        .unwrap();
+    let (actual, budget) = (fx.version("Actual"), fx.version("Budget"));
+    fx.set(
+        booked,
+        vec![item(t1)],
+        Value::Period(Some((TimeLevel::Month, 0))),
+    );
+    fx.set(
+        booked,
+        vec![item(t2)],
+        Value::Period(Some((TimeLevel::Month, 1))),
+    );
+    fx.set_number(amount, vec![item(t1), actual.clone()], 10.0);
+    fx.set_number(amount, vec![item(t1), budget.clone()], 7.0);
+    fx.set_number(amount, vec![item(t2), budget.clone()], 3.0);
+
+    fx.recalc();
+
+    // January is before the Budget's switchover, so it shows Actual's January, not its own.
+    assert_eq!(
+        fx.number_at(by_month, vec![period("Jan 26"), budget.clone()]),
+        10.0
+    );
+    assert_eq!(
+        fx.number_at(by_month, vec![period("Feb 26"), budget.clone()]),
+        3.0
+    );
+    assert_eq!(
+        fx.number_at(by_month, vec![period("Jan 26"), actual.clone()]),
+        10.0
+    );
+    assert_eq!(
+        fx.number_at(by_quarter, vec![period("Q1 FY26"), budget.clone()]),
+        13.0
+    );
+    assert_eq!(
+        fx.number_at(by_quarter, vec![period("Q1 FY26"), actual.clone()]),
+        10.0
+    );
+    let quarter = LevelSpec(vec![time_axis_of(TimeLevel::Quarter), Axis::Versions]);
+    let rolled = fx
+        .model
+        .read_summary(by_month, &[period("Q1 FY26"), budget], &quarter)
+        .unwrap();
+    assert_eq!(rolled, Value::Number(13.0));
+}
+
+#[test]
+fn a_looked_up_time_axis_reads_the_switchover() {
+    let mut fx = Fx::new(1);
+    let orders = fx.list("Orders", None, None);
+    let [o1, o2] = fx.items(orders, &[("O1", None), ("O2", None)])[..] else {
+        unreachable!()
+    };
+    let rates = fx.module("Rates", vec![month_axis(), AxisSpec::Versions]);
+    let rate = fx.number(rates, "Rate");
+    let bookings = fx.module("Bookings", vec![list_axis(orders)]);
+    let order_month = fx.input(
+        bookings,
+        "Order Month",
+        Format::TimePeriod {
+            level: TimeLevel::Month,
+        },
+    );
+    let per_order = fx.module("Per Order", vec![list_axis(orders), AxisSpec::Versions]);
+    let order_rate = fx.calc_number(per_order, "Order Rate", "Rate[LOOKUP: Order Month]");
+    let budget_id = fx.model.structure().version_by_name("Budget").unwrap().id;
+    fx.model
+        .apply(Command::UpsertVersion {
+            id: budget_id,
+            name: "Budget".to_string(),
+            is_actual: false,
+            is_current: true,
+            switchover: Some(2),
+        })
+        .unwrap();
+    let (actual, budget) = (fx.version("Actual"), fx.version("Budget"));
+    fx.set(
+        order_month,
+        vec![item(o1)],
+        Value::Period(Some((TimeLevel::Month, 0))),
+    );
+    fx.set(
+        order_month,
+        vec![item(o2)],
+        Value::Period(Some((TimeLevel::Month, 2))),
+    );
+    fx.set_number(rate, vec![period("Jan 26"), actual.clone()], 1.0);
+    fx.set_number(rate, vec![period("Mar 26"), actual.clone()], 5.0);
+    fx.set_number(rate, vec![period("Mar 26"), budget.clone()], 8.0);
+
+    fx.recalc();
+
+    // The month an order is looked up at decides, not the target's own periods.
+    assert_eq!(
+        fx.number_at(order_rate, vec![item(o1), budget.clone()]),
+        1.0
+    );
+    assert_eq!(fx.number_at(order_rate, vec![item(o2), budget]), 8.0);
+    assert_eq!(fx.number_at(order_rate, vec![item(o2), actual]), 5.0);
+}
+
+#[test]
+fn non_finite_intermediates_do_not_reach_text_or_comparisons() {
+    let mut fx = Fx::new(1);
+    let module = fx.module("Edge", vec![month_axis()]);
+    let text = fx.calc(
+        module,
+        "Overflow Text",
+        Format::Text,
+        "\"V=\" & (1.7e308 * 10)",
+    );
+    let negative_zero = fx.calc(module, "Zero Text", Format::Text, "\"Z=\" & (0 * -5)");
+    let compared = fx.calc_number(
+        module,
+        "Overflow Compared",
+        "IF 1.7e308 * 10 > 5 THEN 1 ELSE 2",
+    );
+    let divided = fx.calc_number(
+        module,
+        "Overflow Divided",
+        "IF 1.7e308 * 10 / 0.5 = 0 THEN 1 ELSE 2",
+    );
+
+    fx.recalc();
+
+    assert_eq!(fx.text_at(text, vec![period("Jan 26")]), "V=0");
+    assert_eq!(fx.text_at(negative_zero, vec![period("Jan 26")]), "Z=0");
+    assert_eq!(fx.number_at(compared, vec![period("Jan 26")]), 2.0);
+    assert_eq!(fx.number_at(divided, vec![period("Jan 26")]), 1.0);
+}
+
 fn time_axis_of(level: TimeLevel) -> Axis {
     Axis::Time { level, range: None }
 }
@@ -2092,7 +2257,7 @@ fn mapped_readers_work_across_chunk_boundaries() {
 
     fx.recalc();
 
-    // Cell 4095 is product 340, April, and cell 4096 is product 341, May.
+    // Cell 4095 is product 341, April, and cell 4096 is product 341, May.
     let cell = |product: usize, month: &str| vec![item(ids[product]), period(month)];
     assert_eq!(fx.number_at(scaled, cell(340, "Dec 26")), 20.0);
     assert_eq!(fx.number_at(scaled, cell(341, "Apr 26")), 55.0);

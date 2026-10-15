@@ -119,6 +119,16 @@ pub(crate) enum Cell {
     Period(u32),
 }
 
+/// A number as a cell can hold it: one that overflowed or has no value is 0, and so is a
+/// negative zero.
+pub(crate) fn sanitize_number(number: f64) -> f64 {
+    if number.is_finite() && number != 0.0 {
+        number
+    } else {
+        0.0
+    }
+}
+
 impl Column {
     /// A column of `len` blank cells of type `ty`.
     pub fn new_blank(ty: &ValueType, len: usize) -> Column {
@@ -157,15 +167,12 @@ impl Column {
         }
     }
 
-    /// Makes every number of a number column one that a cell can hold: a number that
-    /// overflowed or has no value becomes 0, and so does a negative zero. Other columns are
-    /// left alone.
+    /// Makes every number of a number column one that a cell can hold (see
+    /// [`sanitize_number`]). Other columns are left alone.
     pub(crate) fn sanitize(&mut self) {
         if let Column::Number(cells) = self {
             for cell in cells {
-                if !cell.is_finite() || *cell == 0.0 {
-                    *cell = 0.0;
-                }
+                *cell = sanitize_number(*cell);
             }
         }
     }
