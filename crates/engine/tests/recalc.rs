@@ -1142,6 +1142,36 @@ fn a_source_without_time_is_switched_by_the_periods_of_the_line_item_reading_it(
     assert_eq!(fx.number_at(priced, at(&budget, 11)), 8.0);
 }
 
+#[test]
+fn the_line_items_of_a_change_are_listed_in_id_order() {
+    let mut fx = Fx::new(1);
+    let products = fx.list("Products", None);
+    fx.named_items(products, "P", 3);
+    let sheet = fx.module("Sheet", vec![list_axis(products)]);
+    let (mut all, mut calculated) = (Vec::new(), Vec::new());
+    for n in 0..12 {
+        all.push(fx.number(sheet, &format!("Input{n}")));
+        let calc = fx.calc(sheet, &format!("Calc{n}"), &format!("Input{n} * 2"));
+        all.push(calc);
+        calculated.push(calc);
+    }
+
+    // Every line item of the module is laid out again, and every calculated one calculated.
+    let reshaped = fx
+        .model
+        .apply(Command::UpdateModule {
+            id: sheet,
+            name: None,
+            axes: Some(vec![list_axis(products), month_axis()]),
+            functional_area: None,
+        })
+        .unwrap();
+    let recalculated = fx.model.recalc_all().unwrap();
+
+    assert_eq!(reshaped.changed_line_items, sorted(all));
+    assert_eq!(recalculated.changed_line_items, sorted(calculated));
+}
+
 /// A scalar module with a Text line item `Step0` that holds `seed` and Text line items
 /// `Step1`, `Step2`, ... that each write the one before it twice.
 fn doubling_text(fx: &mut Fx, seed: &str, steps: usize) -> LineItemId {

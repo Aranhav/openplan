@@ -272,17 +272,18 @@ pub struct ChangeSet {
     /// The model generation after the change.
     pub generation: u64,
     /// Line items that were created or deleted, whose stored cells were written, cleared,
-    /// re-laid out or dropped, or that were calculated again, whole or in part.
+    /// re-laid out or dropped, or that were calculated again, whole or in part, in id order.
     pub changed_line_items: Vec<LineItemId>,
     /// Whether lists, time, versions, modules or line items changed.
     pub structure_changed: bool,
 }
 
 impl ChangeSet {
-    /// Records `line_item` as changed once.
+    /// Records `line_item` as changed once, keeping the line items in id order whatever order
+    /// they were found in.
     pub(crate) fn note(&mut self, line_item: LineItemId) {
-        if !self.changed_line_items.contains(&line_item) {
-            self.changed_line_items.push(line_item);
+        if let Err(at) = self.changed_line_items.binary_search(&line_item) {
+            self.changed_line_items.insert(at, line_item);
         }
     }
 }
