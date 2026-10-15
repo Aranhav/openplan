@@ -119,7 +119,6 @@ struct Batch<'a> {
     /// The row and column of each cell in the window.
     targets: Vec<(usize, usize)>,
     coords: Vec<Vec<CoordToken>>,
-    flags: Vec<Vec<CellFlag>>,
 }
 
 impl<'a> Batch<'a> {
@@ -128,7 +127,6 @@ impl<'a> Batch<'a> {
             plan,
             targets: Vec::new(),
             coords: Vec::new(),
-            flags: Vec::new(),
         }
     }
 }
@@ -262,33 +260,25 @@ impl<'a> Cx<'a> {
     ) -> Result<Vec<Vec<Cell>>, EngineError> {
         // The line items come last among the dimensions.
         let line_item_dim = self.dims.len() - 1;
-        let mut cells: Vec<Vec<Option<Cell>>> = rows
-            .iter()
-            .map(|_| columns.iter().map(|_| None).collect())
-            .collect();
         let mut batches: HashMap<LineItemId, Batch<'a>> = HashMap::new();
+        let mut cells = Vec::with_capacity(rows.len());
         for (row_at, row) in rows.iter().enumerate() {
+            let mut cells_of_row = Vec::with_capacity(columns.len());
             for (column_at, column) in columns.iter().enumerate() {
                 let pick = |dim: usize| frame.node(dim, row, column);
                 let Id::LineItem(id) = pick(line_item_dim).id else {
-                    continue;
+                    unreachable!("the line items dimension holds line items");
                 };
                 let batch = match batches.entry(id) {
                     Entry::Occupied(batch) => batch.into_mut(),
                     Entry::Vacant(slot) => slot.insert(Batch::new(self.plan(id)?)),
                 };
-                let blank = || blank_value(&batch.plan.line_item.format.value_type());
-                cells[row_at][column_at] = match batch.plan.project(self, pick) {
-                    Projection::Na => Some(Cell {
-                        value: blank(),
-                        text: None,
-                        flags: vec![CellFlag::Readonly, CellFlag::Na],
-                    }),
-                    Projection::Cell { .. } if batch.plan.error => Some(Cell {
-                        value: blank(),
-                        text: None,
-                        flags: vec![CellFlag::Readonly, CellFlag::Error],
-                    }),
+                let format = &batch.plan.line_item.format;
+                cells_of_row.push(match batch.plan.project(self, pick) {
+                    Projection::Na => blank_cell(format, vec![CellFlag::Readonly, CellFlag::Na]),
+                    Projection::Cell { .. } if batch.plan.error => {
+                        blank_cell(format, vec![CellFlag::Readonly, CellFlag::Error])
+                    }
                     Projection::Cell {
                         tokens,
                         summary,
@@ -296,33 +286,37 @@ impl<'a> Cx<'a> {
                     } => {
                         batch.targets.push((row_at, column_at));
                         batch.coords.push(tokens);
-                        batch
-                            .flags
-                            .push(cell_flags(batch.plan.line_item, summary, switchover));
-                        None
+                        // Blank until the cells of the line item are read.
+                        blank_cell(
+                            format,
+                            cell_flags(batch.plan.line_item, summary, switchover),
+                        )
                     }
-                };
+                });
             }
+            cells.push(cells_of_row);
         }
         for (id, batch) in batches {
             if batch.coords.is_empty() {
                 continue;
             }
             let values = self.model.read(id, &batch.coords)?;
-            for (((row_at, column_at), value), flags) in
-                batch.targets.into_iter().zip(values).zip(batch.flags)
-            {
-                cells[row_at][column_at] = Some(Cell {
-                    text: self.text_of(&batch.plan.line_item.format, &value),
-                    value,
-                    flags,
-                });
+            for ((row_at, column_at), value) in batch.targets.into_iter().zip(values) {
+                let cell = &mut cells[row_at][column_at];
+                cell.text = self.text_of(&batch.plan.line_item.format, &value);
+                cell.value = value;
             }
         }
-        Ok(cells
-            .into_iter()
-            .map(|row| row.into_iter().flatten().collect())
-            .collect())
+        Ok(cells)
+    }
+}
+
+/// A cell with the blank value of a format.
+fn blank_cell(format: &Format, flags: Vec<CellFlag>) -> Cell {
+    Cell {
+        value: blank_value(&format.value_type()),
+        text: None,
+        flags,
     }
 }
 
