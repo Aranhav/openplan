@@ -1,4 +1,4 @@
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 
 use axum::http::{HeaderMap, HeaderName};
 
@@ -12,12 +12,28 @@ const X_FORWARDED_FOR: HeaderName = HeaderName::from_static("x-forwarded-for");
 /// appends the address it received to `X-Forwarded-For`, so the client is the entry
 /// `hops` positions from the right. A missing, malformed or too short header falls
 /// back to the peer address.
+///
+/// IPv6 clients are keyed by their /64 prefix, since one host usually controls a whole
+/// /64. IPv4-mapped addresses are keyed as IPv4.
 pub fn client_ip(headers: &HeaderMap, peer: Option<SocketAddr>, hops: u8) -> String {
-    let peer_ip = || peer.map_or_else(|| UNKNOWN_IP.to_string(), |addr| addr.ip().to_string());
+    let peer_ip = || peer.map_or_else(|| UNKNOWN_IP.to_string(), |addr| rate_limit_key(addr.ip()));
     if hops == 0 {
         return peer_ip();
     }
-    forwarded_client(headers, hops).map_or_else(peer_ip, |ip| ip.to_string())
+    forwarded_client(headers, hops).map_or_else(peer_ip, rate_limit_key)
+}
+
+fn rate_limit_key(ip: IpAddr) -> String {
+    match ip {
+        IpAddr::V4(ip) => ip.to_string(),
+        IpAddr::V6(ip) => match ip.to_ipv4_mapped() {
+            Some(ip) => ip.to_string(),
+            None => {
+                let [a, b, c, d, ..] = ip.segments();
+                format!("{}/64", Ipv6Addr::new(a, b, c, d, 0, 0, 0, 0))
+            }
+        },
+    }
 }
 
 fn forwarded_client(headers: &HeaderMap, hops: u8) -> Option<IpAddr> {
@@ -96,10 +112,28 @@ mod tests {
     }
 
     #[test]
-    fn ipv6_entries_are_accepted() {
-        let headers = forwarded(&["2001:db8::7"]);
+    fn ipv6_clients_are_keyed_by_their_slash_64() {
+        let same_prefix = forwarded(&["2001:db8:1:2:aaaa:bbbb:cccc:dddd"]);
+        let other_host = forwarded(&["2001:db8:1:2:ffff::9"]);
+        let other_prefix = forwarded(&["2001:db8:1:3::1"]);
 
-        assert_eq!(client_ip(&headers, peer(), 1), "2001:db8::7");
+        assert_eq!(client_ip(&same_prefix, peer(), 1), "2001:db8:1:2::/64");
+        assert_eq!(client_ip(&other_host, peer(), 1), "2001:db8:1:2::/64");
+        assert_eq!(client_ip(&other_prefix, peer(), 1), "2001:db8:1:3::/64");
+    }
+
+    #[test]
+    fn ipv6_peer_is_keyed_by_its_slash_64() {
+        let peer = Some("[2001:db8:1:2::5]:4444".parse().unwrap());
+
+        assert_eq!(client_ip(&HeaderMap::new(), peer, 0), "2001:db8:1:2::/64");
+    }
+
+    #[test]
+    fn ipv4_mapped_ipv6_is_keyed_as_ipv4() {
+        let headers = forwarded(&["::ffff:203.0.113.9"]);
+
+        assert_eq!(client_ip(&headers, peer(), 1), "203.0.113.9");
     }
 
     #[test]

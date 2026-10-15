@@ -3,7 +3,7 @@ mod common;
 use std::net::SocketAddr;
 
 use axum::{
-    Extension,
+    Extension, Router,
     extract::{ConnectInfo, Request},
     http::{HeaderValue, StatusCode, header},
     middleware,
@@ -442,43 +442,103 @@ async fn login_rate_limit_is_per_client_ip(pool: PgPool) {
     assert_eq!(other_ip.status, StatusCode::OK, "{}", other_ip.text);
 }
 
-#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
-async fn login_rate_limit_keys_on_the_forwarded_client_behind_a_proxy(pool: PgPool) {
-    let config = Config::from_lookup(|name| match name {
+/// The router as seen through a proxy at 10.0.0.1 that forwards `forwarded_for` as the client address.
+fn behind_proxy(router: &Router, forwarded_for: HeaderValue) -> Router {
+    let proxy: SocketAddr = "10.0.0.1:50000".parse().unwrap();
+    router
+        .clone()
+        .layer(Extension(ConnectInfo(proxy)))
+        .layer(middleware::map_request(move |mut request: Request| {
+            let forwarded_for = forwarded_for.clone();
+            async move {
+                request
+                    .headers_mut()
+                    .insert("x-forwarded-for", forwarded_for);
+                request
+            }
+        }))
+}
+
+fn one_trusted_proxy_config() -> Config {
+    Config::from_lookup(|name| match name {
         "DATABASE_URL" => Some("postgres://invalid".to_string()),
         "OPENPLAN_PUBLIC_URL" => Some("http://localhost:8080".to_string()),
         "OPENPLAN_TRUSTED_PROXY_HOPS" => Some("1".to_string()),
         _ => None,
     })
-    .unwrap();
+    .unwrap()
+}
+
+fn forwarded(address: &str) -> HeaderValue {
+    HeaderValue::from_str(address).unwrap()
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn login_rate_limit_keys_on_the_forwarded_client_behind_a_proxy(pool: PgPool) {
     let mut app = TestApp::new(pool.clone());
     setup_admin(&mut app).await;
-    let router = build_router(AppState::new(pool, config));
-    let proxy: SocketAddr = "10.0.0.1:50000".parse().unwrap();
-    let proxied = |client: &'static str| {
-        router
-            .clone()
-            .layer(Extension(ConnectInfo(proxy)))
-            .layer(middleware::map_request(
-                move |mut request: Request| async move {
-                    request
-                        .headers_mut()
-                        .insert("x-forwarded-for", HeaderValue::from_static(client));
-                    request
-                },
-            ))
-    };
+    let router = build_router(AppState::new(pool, one_trusted_proxy_config()));
 
-    app.router = proxied("203.0.113.9");
+    app.router = behind_proxy(&router, forwarded("203.0.113.9"));
     for _ in 0..10 {
         login(&mut app, EMAIL, "not the password").await;
     }
     let blocked = login(&mut app, EMAIL, PASSWORD).await;
     assert_eq!(blocked.status, StatusCode::TOO_MANY_REQUESTS);
 
-    app.router = proxied("203.0.113.10");
+    app.router = behind_proxy(&router, forwarded("203.0.113.10"));
     let other_client = login(&mut app, EMAIL, PASSWORD).await;
     assert_eq!(other_client.status, StatusCode::OK, "{}", other_client.text);
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn login_email_ceiling_applies_across_forwarded_clients(pool: PgPool) {
+    let mut app = TestApp::new(pool.clone());
+    setup_admin(&mut app).await;
+    let router = build_router(AppState::new(pool, one_trusted_proxy_config()));
+
+    // Each guess arrives from a new address, so only the per-email ceiling can stop them.
+    for client in 1..=50 {
+        app.router = behind_proxy(&router, forwarded(&format!("203.0.113.{client}")));
+        let response = login(&mut app, EMAIL, "not the password").await;
+        assert_eq!(
+            response.status,
+            StatusCode::UNAUTHORIZED,
+            "attempt {client}"
+        );
+    }
+    app.router = behind_proxy(&router, forwarded("203.0.113.51"));
+    let blocked = login(&mut app, EMAIL, "not the password").await;
+    assert_eq!(blocked.status, StatusCode::TOO_MANY_REQUESTS);
+
+    app.router = behind_proxy(&router, forwarded("203.0.113.52"));
+    let correct_password = login(&mut app, EMAIL, PASSWORD).await;
+    assert_eq!(correct_password.status, StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn successful_login_resets_the_email_ceiling(pool: PgPool) {
+    let mut app = TestApp::new(pool.clone());
+    setup_admin(&mut app).await;
+    let router = build_router(AppState::new(pool, one_trusted_proxy_config()));
+
+    for client in 1..=49 {
+        app.router = behind_proxy(&router, forwarded(&format!("203.0.113.{client}")));
+        login(&mut app, EMAIL, "not the password").await;
+    }
+    app.router = behind_proxy(&router, forwarded("203.0.113.50"));
+    let success = login(&mut app, EMAIL, PASSWORD).await;
+    assert_eq!(success.status, StatusCode::OK, "{}", success.text);
+
+    for client in 51..=100 {
+        app.router = behind_proxy(&router, forwarded(&format!("203.0.113.{client}")));
+        let response = login(&mut app, EMAIL, "not the password").await;
+        assert_eq!(
+            response.status,
+            StatusCode::UNAUTHORIZED,
+            "attempt {client}"
+        );
+    }
 }
 
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]

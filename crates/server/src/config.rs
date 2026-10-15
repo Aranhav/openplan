@@ -35,7 +35,11 @@ impl Config {
     }
 
     pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> anyhow::Result<Config> {
-        let value = |name: &str| get(name).filter(|v| !v.trim().is_empty());
+        let value = |name: &str| {
+            get(name)
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+        };
         let required = |name: &str| value(name).with_context(|| format!("{name} is required"));
 
         // Hosts such as Render inject PORT and expect the server to listen on all interfaces.
@@ -229,5 +233,41 @@ mod tests {
             err.to_string().contains("OPENPLAN_TRUSTED_PROXY_HOPS"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn blank_bind_falls_through_to_port() {
+        let config = config_from(&[
+            ("DATABASE_URL", "postgres://localhost/openplan"),
+            ("OPENPLAN_PUBLIC_URL", "https://plan.acme.com"),
+            ("OPENPLAN_BIND", "  "),
+            ("PORT", "10000"),
+        ])
+        .unwrap();
+        assert_eq!(config.bind.to_string(), "0.0.0.0:10000");
+    }
+
+    #[test]
+    fn surrounding_whitespace_is_ignored() {
+        let config = config_from(&[
+            ("DATABASE_URL", "postgres://localhost/openplan"),
+            ("OPENPLAN_PUBLIC_URL", "https://plan.acme.com"),
+            ("OPENPLAN_BIND", " 127.0.0.1:9000 "),
+            ("OPENPLAN_TRUSTED_PROXY_HOPS", " 2 "),
+        ])
+        .unwrap();
+        assert_eq!(config.bind.to_string(), "127.0.0.1:9000");
+        assert_eq!(config.trusted_proxy_hops, 2);
+    }
+
+    #[test]
+    fn port_is_trimmed() {
+        let config = config_from(&[
+            ("DATABASE_URL", "postgres://localhost/openplan"),
+            ("OPENPLAN_PUBLIC_URL", "https://plan.acme.com"),
+            ("PORT", " 10000 "),
+        ])
+        .unwrap();
+        assert_eq!(config.bind.to_string(), "0.0.0.0:10000");
     }
 }

@@ -234,6 +234,12 @@ pub(crate) async fn login(
         .login_limiter
         .check_and_record(&limiter_key)
         .map_err(|retry_after_secs| AppError::RateLimited { retry_after_secs })?;
+    // Client addresses can be forged when the server is reachable without the proxy, so
+    // the email is also capped on its own.
+    state
+        .login_email_limiter
+        .check_and_record(&email)
+        .map_err(|retry_after_secs| AppError::RateLimited { retry_after_secs })?;
 
     let candidate = sqlx::query_as::<_, LoginCandidate>(
         "SELECT id, email, name, is_instance_admin, password_hash FROM users
@@ -251,6 +257,7 @@ pub(crate) async fn login(
         _ => return Err(AppError::InvalidCredentials),
     };
     state.login_limiter.reset(&limiter_key);
+    state.login_email_limiter.reset(&email);
 
     let token = session::create(&state.db, user.id, user_agent(&headers)).await?;
     let (session_cookie, csrf_cookie) = session_cookies(&token, state.config.secure_cookies());

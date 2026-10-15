@@ -25,7 +25,7 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --all --check
 ```
 
-Server configuration comes from `DATABASE_URL`, `OPENPLAN_PUBLIC_URL`, `OPENPLAN_BIND` (default `0.0.0.0:8080`) and `OPENPLAN_LOG` (default `info`).
+Server configuration comes from `DATABASE_URL`, `OPENPLAN_PUBLIC_URL`, `OPENPLAN_BIND` (default `0.0.0.0:8080`; `PORT` is used on all interfaces when `OPENPLAN_BIND` is unset), `OPENPLAN_LOG` (default `info`) and `OPENPLAN_TRUSTED_PROXY_HOPS` (default `0`; see `docs/deploy.md`).
 
 Web:
 

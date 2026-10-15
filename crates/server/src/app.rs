@@ -30,13 +30,18 @@ use crate::{
 
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
 const LOGIN_MAX_FAILURES: u32 = 10;
+/// Ceiling for one email across every client address; see `docs/deploy.md`.
+const LOGIN_EMAIL_MAX_FAILURES: u32 = 50;
 const LOGIN_FAILURE_WINDOW: Duration = Duration::from_secs(15 * 60);
 
 #[derive(Clone)]
 pub struct AppState {
     pub db: PgPool,
     pub config: Arc<Config>,
+    /// Per email and client address.
     pub login_limiter: Arc<LoginLimiter>,
+    /// Per email, whatever the client address.
+    pub login_email_limiter: Arc<LoginLimiter>,
 }
 
 impl AppState {
@@ -45,6 +50,10 @@ impl AppState {
             db,
             config: Arc::new(config),
             login_limiter: Arc::new(LoginLimiter::new(LOGIN_MAX_FAILURES, LOGIN_FAILURE_WINDOW)),
+            login_email_limiter: Arc::new(LoginLimiter::new(
+                LOGIN_EMAIL_MAX_FAILURES,
+                LOGIN_FAILURE_WINDOW,
+            )),
         }
     }
 }
