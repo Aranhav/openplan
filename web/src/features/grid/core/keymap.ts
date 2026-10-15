@@ -7,6 +7,8 @@ export type KeyInput = {
   ctrlKey: boolean
   metaKey: boolean
   altKey: boolean
+  /** True while an input method is composing text; the composition owns every key then. */
+  isComposing?: boolean
 }
 
 /** `navigate` while cells are selected, `edit` while a cell editor has focus. */
@@ -19,6 +21,8 @@ export type GridCommand =
   | { type: "edge"; edge: Edge; extend: boolean; jump: boolean }
   | { type: "page"; dir: "up" | "down"; extend: boolean }
   | { type: "selectAll" }
+  | { type: "selectRow" }
+  | { type: "selectColumn" }
   /** Open the editor on the active cell, keeping its value. */
   | { type: "edit" }
   /** Open the editor on the active cell with `text` in place of its value. */
@@ -45,10 +49,14 @@ const ARROWS = new Map<string, Direction>([
 
 /**
  * Turns a key press into a grid command. Ctrl and Command are interchangeable, so a shortcut
- * works on every platform. Keys that are not the grid's come back as `none`; the caller
- * should only prevent the browser default when the command is anything else.
+ * works on every platform. Keys that are not the grid's come back as `none`, and so does every
+ * key while an input method is composing; the caller should only prevent the browser default
+ * when the command is anything else.
  */
 export function resolveKey(event: KeyInput, mode: KeyMode): GridCommand {
+  if (event.isComposing) {
+    return NONE
+  }
   return mode === "edit" ? resolveEditKey(event) : resolveNavigateKey(event)
 }
 
@@ -96,7 +104,13 @@ function resolveNavigateKey(event: KeyInput): GridCommand {
     case "F2":
       return plain ? { type: "edit" } : NONE
     case " ":
-      return plain ? { type: "toggle" } : NONE
+      if (event.altKey) {
+        return NONE
+      }
+      if (event.ctrlKey || event.metaKey) {
+        return event.shiftKey ? NONE : { type: "selectColumn" }
+      }
+      return event.shiftKey ? { type: "selectRow" } : { type: "toggle" }
     case "Delete":
     case "Backspace":
       return plain ? { type: "clear" } : NONE

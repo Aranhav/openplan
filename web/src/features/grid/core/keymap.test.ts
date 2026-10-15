@@ -111,6 +111,18 @@ describe("resolveKey in navigate mode", () => {
       expect(navigate(" ")).toEqual({ type: "toggle" })
     })
 
+    it("selects the row on Shift+Space", () => {
+      expect(navigate(" ", { shiftKey: true })).toEqual({ type: "selectRow" })
+    })
+
+    it.each(platforms)("selects the column on Space with $name", ({ mod }) => {
+      expect(navigate(" ", mod)).toEqual({ type: "selectColumn" })
+    })
+
+    it.each(platforms)("leaves Shift and $name with Space alone", ({ mod }) => {
+      expect(navigate(" ", { ...mod, shiftKey: true })).toEqual(none)
+    })
+
     it("clears on Delete and Backspace", () => {
       expect(navigate("Delete")).toEqual({ type: "clear" })
       expect(navigate("Backspace")).toEqual({ type: "clear" })
@@ -238,6 +250,26 @@ describe("resolveKey in navigate mode", () => {
         expect(navigate(key)).toEqual(none)
       },
     )
+  })
+})
+
+describe("resolveKey while an input method is composing", () => {
+  it("ignores every key in navigate mode", () => {
+    for (const key of ["a", "7", "Enter", "Tab", "Escape", "ArrowLeft", " ", "Delete"]) {
+      expect(navigate(key, { isComposing: true })).toEqual(none)
+    }
+    expect(navigate("c", { ctrlKey: true, isComposing: true })).toEqual(none)
+  })
+
+  it("ignores every key in edit mode, so Enter confirms the composition and does not commit", () => {
+    for (const key of ["a", "Enter", "Tab", "Escape"]) {
+      expect(edit(key, { isComposing: true })).toEqual(none)
+    }
+  })
+
+  it("reads keys normally once composing is false or absent", () => {
+    expect(edit("Enter", { isComposing: false })).toEqual({ type: "commit", move: "down" })
+    expect(navigate("a", { isComposing: false })).toEqual({ type: "replace", text: "a" })
   })
 })
 

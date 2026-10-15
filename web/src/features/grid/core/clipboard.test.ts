@@ -182,9 +182,77 @@ describe("planPaste", () => {
     ])
   })
 
-  it("does not tile a block over a larger selection", () => {
-    const plan = planPaste([["a", "b"]], range([0, 0], [3, 3]), bounds)
-    expect(plan).toHaveLength(2)
+  describe("when the selection is a whole number of copies of the block", () => {
+    it("repeats the block across the selection in both directions", () => {
+      const plan = planPaste([["a", "b"]], range([0, 0], [3, 3]), bounds)
+      expect(plan).toHaveLength(16)
+      expect(plan.slice(0, 4)).toEqual([
+        { pos: { row: 0, col: 0 }, raw: "a" },
+        { pos: { row: 0, col: 1 }, raw: "b" },
+        { pos: { row: 0, col: 2 }, raw: "a" },
+        { pos: { row: 0, col: 3 }, raw: "b" },
+      ])
+      expect(plan[15]).toEqual({ pos: { row: 3, col: 3 }, raw: "b" })
+    })
+
+    it("repeats a taller block down a taller selection", () => {
+      const grid = [
+        ["a", "b"],
+        ["c", "d"],
+      ]
+      const plan = planPaste(grid, range([1, 1], [4, 2]), bounds)
+      expect(plan.map((edit) => [edit.pos.row, edit.pos.col, edit.raw])).toEqual([
+        [1, 1, "a"],
+        [1, 2, "b"],
+        [2, 1, "c"],
+        [2, 2, "d"],
+        [3, 1, "a"],
+        [3, 2, "b"],
+        [4, 1, "c"],
+        [4, 2, "d"],
+      ])
+    })
+
+    it("pastes once when the selection is exactly the size of the block", () => {
+      const plan = planPaste([["a", "b"]], range([2, 1], [2, 2]), bounds)
+      expect(plan).toEqual([
+        { pos: { row: 2, col: 1 }, raw: "a" },
+        { pos: { row: 2, col: 2 }, raw: "b" },
+      ])
+    })
+
+    it("cuts the repeats off at the grid's last row and column", () => {
+      const plan = planPaste([["a", "b"]], range([8, 3], [11, 4]), bounds)
+      expect(plan.map((edit) => [edit.pos.row, edit.pos.col, edit.raw])).toEqual([
+        [8, 3, "a"],
+        [8, 4, "b"],
+        [9, 3, "a"],
+        [9, 4, "b"],
+      ])
+    })
+
+    it("skips the cells a short row of a ragged block does not have", () => {
+      const plan = planPaste([["a", "b", "c"], ["d"]], range([0, 0], [1, 2]), bounds)
+      expect(plan.map((edit) => edit.raw)).toEqual(["a", "b", "c", "d"])
+    })
+  })
+
+  describe("when the selection is not a whole number of copies of the block", () => {
+    it("pastes the block once at the top left", () => {
+      expect(planPaste([["a", "b"]], range([0, 0], [0, 2]), bounds)).toEqual([
+        { pos: { row: 0, col: 0 }, raw: "a" },
+        { pos: { row: 0, col: 1 }, raw: "b" },
+      ])
+    })
+
+    it("pastes once when only one direction divides evenly", () => {
+      const grid = [
+        ["a", "b"],
+        ["c", "d"],
+      ]
+      expect(planPaste(grid, range([0, 0], [3, 2]), bounds)).toHaveLength(4)
+      expect(planPaste(grid, range([0, 0], [2, 1]), bounds)).toHaveLength(4)
+    })
   })
 
   it("fills a larger selection with a single value", () => {
@@ -272,8 +340,28 @@ describe("planFillDown", () => {
     ])
   })
 
-  it("has nothing to fill in a single row", () => {
-    expect(planFillDown(range([3, 0], [3, 4]))).toEqual([])
-    expect(planFillDown(cell(3, 3))).toEqual([])
+  it("copies the row above into a single selected row, column by column", () => {
+    expect(planFillDown(range([3, 1], [3, 3]))).toEqual([
+      { from: { row: 2, col: 1 }, to: { row: 3, col: 1 } },
+      { from: { row: 2, col: 2 }, to: { row: 3, col: 2 } },
+      { from: { row: 2, col: 3 }, to: { row: 3, col: 3 } },
+    ])
+  })
+
+  it("copies the cell above into a single selected cell", () => {
+    expect(planFillDown(cell(3, 3))).toEqual([
+      { from: { row: 2, col: 3 }, to: { row: 3, col: 3 } },
+    ])
+  })
+
+  it("has nothing to copy from above the first row", () => {
+    expect(planFillDown(cell(0, 2))).toEqual([])
+    expect(planFillDown(range([0, 0], [0, 4]))).toEqual([])
+  })
+
+  it("still copies the top row of a taller selection that starts at the first row", () => {
+    expect(planFillDown(range([0, 1], [1, 1]))).toEqual([
+      { from: { row: 0, col: 1 }, to: { row: 1, col: 1 } },
+    ])
   })
 })

@@ -42,11 +42,35 @@ export function contains(sel: Selection, pos: Pos): boolean {
   )
 }
 
-/** Every cell. A grid with no rows or columns has nothing to select, so this is the origin. */
+/** Every cell. A grid with no rows or no columns has nothing to select, so this is the origin. */
 export function selectAll(bounds: Bounds): Selection {
+  if (isEmpty(bounds)) {
+    return { anchor: { row: 0, col: 0 }, focus: { row: 0, col: 0 } }
+  }
+  return { anchor: { row: 0, col: 0 }, focus: { row: bounds.rows - 1, col: bounds.cols - 1 } }
+}
+
+/** Shift+Space: every column of the rows the selection touches. */
+export function selectRows(sel: Selection, bounds: Bounds): Selection {
+  if (isEmpty(bounds)) {
+    return sel
+  }
+  const range = rangeOf(sel)
   return {
-    anchor: { row: 0, col: 0 },
-    focus: { row: Math.max(bounds.rows - 1, 0), col: Math.max(bounds.cols - 1, 0) },
+    anchor: { row: clamp(range.rowStart, bounds.rows - 1), col: 0 },
+    focus: { row: clamp(range.rowEnd, bounds.rows - 1), col: bounds.cols - 1 },
+  }
+}
+
+/** Ctrl+Space: every row of the columns the selection touches. */
+export function selectColumns(sel: Selection, bounds: Bounds): Selection {
+  if (isEmpty(bounds)) {
+    return sel
+  }
+  const range = rangeOf(sel)
+  return {
+    anchor: { row: 0, col: clamp(range.colStart, bounds.cols - 1) },
+    focus: { row: bounds.rows - 1, col: clamp(range.colEnd, bounds.cols - 1) },
   }
 }
 
@@ -122,11 +146,15 @@ function clamp(value: number, last: number): number {
   return Math.min(Math.max(value, 0), last)
 }
 
-/** Put the focus at `target`, inside the grid, and collapse to it unless extending. */
+function clampPos(pos: Pos, bounds: Bounds): Pos {
+  return { row: clamp(pos.row, bounds.rows - 1), col: clamp(pos.col, bounds.cols - 1) }
+}
+
+/**
+ * Put the focus at `target` and collapse to it unless extending. Both ends end up inside the
+ * grid, so a selection left over from a larger grid cannot keep an anchor that no longer exists.
+ */
 function land(sel: Selection, target: Pos, extend: boolean, bounds: Bounds): Selection {
-  const focus = {
-    row: clamp(target.row, bounds.rows - 1),
-    col: clamp(target.col, bounds.cols - 1),
-  }
-  return { anchor: extend ? sel.anchor : focus, focus }
+  const focus = clampPos(target, bounds)
+  return { anchor: extend ? clampPos(sel.anchor, bounds) : focus, focus }
 }

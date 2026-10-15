@@ -6,6 +6,8 @@ import {
   movePage,
   rangeOf,
   selectAll,
+  selectColumns,
+  selectRows,
   type Selection,
 } from "./selection"
 
@@ -64,8 +66,70 @@ describe("selectAll", () => {
     })
   })
 
-  it("falls back to the origin for a grid with nothing in it", () => {
+  it("falls back to the origin when the grid has no rows or no columns", () => {
     expect(selectAll({ rows: 0, cols: 0 })).toEqual(cell(0, 0))
+    expect(selectAll({ rows: 0, cols: 4 })).toEqual(cell(0, 0))
+    expect(selectAll({ rows: 3, cols: 0 })).toEqual(cell(0, 0))
+  })
+})
+
+describe("selectRows", () => {
+  it("selects every column of the rows the selection touches", () => {
+    const range = { anchor: { row: 3, col: 1 }, focus: { row: 5, col: 2 } }
+    expect(selectRows(range, bounds)).toEqual({
+      anchor: { row: 3, col: 0 },
+      focus: { row: 5, col: 4 },
+    })
+  })
+
+  it("selects one whole row from a single cell", () => {
+    expect(selectRows(cell(3, 2), bounds)).toEqual({
+      anchor: { row: 3, col: 0 },
+      focus: { row: 3, col: 4 },
+    })
+  })
+
+  it("orders the rows when the range was dragged upward", () => {
+    const range = { anchor: { row: 5, col: 2 }, focus: { row: 3, col: 1 } }
+    expect(selectRows(range, bounds)).toEqual({
+      anchor: { row: 3, col: 0 },
+      focus: { row: 5, col: 4 },
+    })
+  })
+
+  it("leaves the selection alone when the grid is empty", () => {
+    const sel = cell(0, 0)
+    expect(selectRows(sel, { rows: 0, cols: 3 })).toBe(sel)
+  })
+})
+
+describe("selectColumns", () => {
+  it("selects every row of the columns the selection touches", () => {
+    const range = { anchor: { row: 3, col: 1 }, focus: { row: 5, col: 2 } }
+    expect(selectColumns(range, bounds)).toEqual({
+      anchor: { row: 0, col: 1 },
+      focus: { row: 9, col: 2 },
+    })
+  })
+
+  it("selects one whole column from a single cell", () => {
+    expect(selectColumns(cell(3, 2), bounds)).toEqual({
+      anchor: { row: 0, col: 2 },
+      focus: { row: 9, col: 2 },
+    })
+  })
+
+  it("orders the columns when the range was dragged leftward", () => {
+    const range = { anchor: { row: 5, col: 2 }, focus: { row: 3, col: 1 } }
+    expect(selectColumns(range, bounds)).toEqual({
+      anchor: { row: 0, col: 1 },
+      focus: { row: 9, col: 2 },
+    })
+  })
+
+  it("leaves the selection alone when the grid is empty", () => {
+    const sel = cell(0, 0)
+    expect(selectColumns(sel, { rows: 3, cols: 0 })).toBe(sel)
   })
 })
 
@@ -166,6 +230,38 @@ describe("move", () => {
     const sel = cell(0, 0)
     expect(move(sel, "down", plain, { rows: 0, cols: 5 })).toBe(sel)
     expect(move(sel, "right", plain, { rows: 5, cols: 0 })).toBe(sel)
+  })
+
+  describe("when the grid shrank under the selection", () => {
+    const small = { rows: 3, cols: 3 }
+    const stale = { anchor: { row: 50, col: 50 }, focus: { row: 2, col: 2 } }
+
+    it("pulls the anchor back inside the grid when extending", () => {
+      expect(move(stale, "up", { extend: true, jump: false }, small)).toEqual({
+        anchor: { row: 2, col: 2 },
+        focus: { row: 1, col: 2 },
+      })
+    })
+
+    it("pulls the anchor back inside the grid on Home, End and paging", () => {
+      expect(moveToEdge(stale, "home", { extend: true, jump: false }, small).anchor).toEqual({
+        row: 2,
+        col: 2,
+      })
+      expect(movePage(stale, "up", 1, { extend: true }, small).anchor).toEqual({ row: 2, col: 2 })
+    })
+
+    it("lands inside the grid when not extending", () => {
+      expect(move(stale, "down", plain, small)).toEqual(cell(2, 2))
+    })
+
+    it("pulls a negative anchor to the first row and column", () => {
+      const before = { anchor: { row: -3, col: -1 }, focus: { row: 1, col: 1 } }
+      expect(move(before, "right", { extend: true, jump: false }, small).anchor).toEqual({
+        row: 0,
+        col: 0,
+      })
+    })
   })
 })
 

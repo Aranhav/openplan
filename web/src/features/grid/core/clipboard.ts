@@ -82,38 +82,54 @@ export function parseTsv(text: string): string[][] {
 }
 
 /**
- * Where each pasted value goes. A single value fills the whole selection. Anything bigger is
- * placed with its top left cell at the selection's top left, and is cut off at the grid's
- * last row and column.
+ * Where each pasted value goes. The block is placed with its top left cell at the selection's
+ * top left. When the selection is a whole number of blocks tall and wide (a single value over
+ * any selection is the common case) the block is repeated to fill it; otherwise it is pasted
+ * once. Nothing is placed past the grid's last row or column.
  */
 export function planPaste(grid: string[][], selection: Selection, bounds: Bounds): PasteEdit[] {
-  const range = rangeOf(selection)
-  const lastRow = Math.min(range.rowEnd, bounds.rows - 1)
-  const lastCol = Math.min(range.colEnd, bounds.cols - 1)
-  const edits: PasteEdit[] = []
-
-  if (grid.length === 1 && grid[0].length === 1) {
-    for (let row = range.rowStart; row <= lastRow; row++) {
-      for (let col = range.colStart; col <= lastCol; col++) {
-        edits.push({ pos: { row, col }, raw: grid[0][0] })
-      }
-    }
-    return edits
+  const height = grid.length
+  const width = grid.reduce((widest, row) => Math.max(widest, row.length), 0)
+  if (height === 0 || width === 0) {
+    return []
   }
+  const range = rangeOf(selection)
+  const rows = range.rowEnd - range.rowStart + 1
+  const cols = range.colEnd - range.colStart + 1
+  const repeat = rows % height === 0 && cols % width === 0
+  const lastRow = range.rowStart + (repeat ? rows : height) - 1
+  const lastCol = range.colStart + (repeat ? cols : width) - 1
 
-  for (let r = 0; r < grid.length && range.rowStart + r < bounds.rows; r++) {
-    const row = range.rowStart + r
-    for (let c = 0; c < grid[r].length && range.colStart + c < bounds.cols; c++) {
-      edits.push({ pos: { row, col: range.colStart + c }, raw: grid[r][c] })
+  const edits: PasteEdit[] = []
+  for (let row = range.rowStart; row <= lastRow && row < bounds.rows; row++) {
+    const cells = grid[(row - range.rowStart) % height]
+    for (let col = range.colStart; col <= lastCol && col < bounds.cols; col++) {
+      // A row shorter than the widest has no cell to put here.
+      const raw = cells[(col - range.colStart) % width]
+      if (raw !== undefined) {
+        edits.push({ pos: { row, col }, raw })
+      }
     }
   }
   return edits
 }
 
-/** Copies the top row of the selection into every row below it, column by column. */
+/**
+ * Fill down (Ctrl+D): the top row of the selection is copied into every row below it, column by
+ * column. A single selected row copies the row above it instead, and has nothing to copy on the
+ * first row.
+ */
 export function planFillDown(selection: Selection): FillEdit[] {
   const range = rangeOf(selection)
   const edits: FillEdit[] = []
+  if (range.rowStart === range.rowEnd) {
+    if (range.rowStart > 0) {
+      for (let col = range.colStart; col <= range.colEnd; col++) {
+        edits.push({ from: { row: range.rowStart - 1, col }, to: { row: range.rowStart, col } })
+      }
+    }
+    return edits
+  }
   for (let row = range.rowStart + 1; row <= range.rowEnd; row++) {
     for (let col = range.colStart; col <= range.colEnd; col++) {
       edits.push({ from: { row: range.rowStart, col }, to: { row, col } })
