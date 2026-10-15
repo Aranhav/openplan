@@ -93,6 +93,21 @@ pub enum Value {
     Period(Option<(TimeLevel, u32)>),
 }
 
+impl Value {
+    /// Whether this is the blank value of its type: 0, false, empty text, or no date, item or
+    /// period. [`Column::is_blank_at`] says the same of a stored cell.
+    pub fn is_blank(&self) -> bool {
+        match self {
+            Value::Number(number) => *number == 0.0,
+            Value::Boolean(flag) => !flag,
+            Value::Text(text) => text.is_empty(),
+            Value::Date(date) => date.is_none(),
+            Value::Item(item) => item.is_none(),
+            Value::Period(period) => period.is_none(),
+        }
+    }
+}
+
 /// Typed storage for the cells of one line item.
 ///
 /// Dates are days since 1970-01-01 (`i32::MIN` is blank); items are dense indices into
@@ -311,6 +326,28 @@ mod tests {
             Column::Period(vec![u32::MAX; 2])
         );
         assert_eq!(Column::new_blank(&ValueType::Text, 0).len(), 0);
+    }
+
+    #[test]
+    fn values_are_blank_exactly_when_their_stored_cells_are() {
+        let blank = [
+            Value::Number(0.0),
+            Value::Boolean(false),
+            Value::Text(Arc::from("")),
+            Value::Date(None),
+            Value::Item(None),
+            Value::Period(None),
+        ];
+        assert!(blank.iter().all(Value::is_blank));
+        let filled = [
+            Value::Number(1.5),
+            Value::Boolean(true),
+            Value::Text(Arc::from("a")),
+            Value::Date(NaiveDate::from_ymd_opt(2026, 1, 1)),
+            Value::Item(Some(ItemId::new())),
+            Value::Period(Some((TimeLevel::Month, 0))),
+        ];
+        assert!(filled.iter().all(|value| !value.is_blank()));
     }
 
     #[test]

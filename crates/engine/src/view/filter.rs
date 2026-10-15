@@ -169,8 +169,8 @@ impl<'a> Cx<'a> {
                     .is_some_and(|name| fold(&name).contains(&fold(needle))),
                 _ => false,
             },
-            FilterOp::IsBlank => is_blank(cell),
-            FilterOp::NotBlank => !is_blank(cell),
+            FilterOp::IsBlank => cell.is_blank(),
+            FilterOp::NotBlank => !cell.is_blank(),
             FilterOp::IsTrue => matches!(cell, Value::Boolean(true)),
             FilterOp::IsFalse => matches!(cell, Value::Boolean(false)),
         }
@@ -187,17 +187,5 @@ fn compare(cell: &Value, wanted: &Value) -> Option<Ordering> {
         (Value::Item(a), Value::Item(b)) => (a == b).then_some(Ordering::Equal),
         (Value::Period(a), Value::Period(b)) => (a == b).then_some(Ordering::Equal),
         _ => None,
-    }
-}
-
-/// Whether a value is the blank one of its type.
-fn is_blank(value: &Value) -> bool {
-    match value {
-        Value::Number(number) => *number == 0.0,
-        Value::Boolean(flag) => !flag,
-        Value::Text(text) => text.is_empty(),
-        Value::Date(date) => date.is_none(),
-        Value::Item(item) => item.is_none(),
-        Value::Period(period) => period.is_none(),
     }
 }
