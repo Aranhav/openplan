@@ -1,86 +1,16 @@
 mod common;
 
-use axum::http::{Method, StatusCode, header};
-use common::{TestApp, TestResponse};
+use axum::http::{Method, StatusCode};
+use common::{
+    TestApp, TestResponse, assert_problem, create_member, create_model, create_user, setup_admin,
+    sign_in,
+};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-const ADMIN_EMAIL: &str = "admin@acme.com";
-const PASSWORD: &str = "correct horse battery";
 const PRODUCTION_LOCKED: &str =
     "This model is in production mode. Structural changes arrive through ALM sync.";
-
-/// Completes first-run setup and returns the id of the "Acme" workspace it creates.
-async fn setup_admin(app: &mut TestApp) -> String {
-    let response = app
-        .post(
-            "/api/v1/setup",
-            Some(json!({
-                "email": ADMIN_EMAIL,
-                "name": "Ada Admin",
-                "password": PASSWORD,
-                "workspace_name": "Acme",
-            })),
-        )
-        .await;
-    assert_eq!(response.status, StatusCode::CREATED, "{}", response.text);
-    response.json["workspace"]["id"]
-        .as_str()
-        .unwrap()
-        .to_string()
-}
-
-async fn create_user(admin: &mut TestApp, email: &str, name: &str) -> String {
-    let response = admin
-        .post(
-            "/api/v1/users",
-            Some(json!({
-                "email": email,
-                "name": name,
-                "password": PASSWORD,
-                "is_instance_admin": false,
-            })),
-        )
-        .await;
-    assert_eq!(response.status, StatusCode::CREATED, "{}", response.text);
-    response.json["id"].as_str().unwrap().to_string()
-}
-
-async fn sign_in(pool: &PgPool, email: &str) -> TestApp {
-    let mut app = TestApp::new(pool.clone());
-    let response = app
-        .post(
-            "/api/v1/auth/login",
-            Some(json!({ "email": email, "password": PASSWORD })),
-        )
-        .await;
-    assert_eq!(response.status, StatusCode::OK, "{}", response.text);
-    app
-}
-
-/// Creates a user and adds them to `workspace_id` with `role`, as the signed-in `admin`.
-async fn create_member(admin: &mut TestApp, workspace_id: &str, email: &str, role: &str) {
-    create_user(admin, email, "Member").await;
-    let added = admin
-        .post(
-            &format!("/api/v1/workspaces/{workspace_id}/members"),
-            Some(json!({ "email": email, "role": role })),
-        )
-        .await;
-    assert_eq!(added.status, StatusCode::CREATED, "{}", added.text);
-}
-
-async fn create_model(admin: &mut TestApp, workspace_id: &str, name: &str) -> String {
-    let response = admin
-        .post(
-            &format!("/api/v1/workspaces/{workspace_id}/models"),
-            Some(json!({ "name": name })),
-        )
-        .await;
-    assert_eq!(response.status, StatusCode::CREATED, "{}", response.text);
-    response.json["id"].as_str().unwrap().to_string()
-}
 
 /// Signs the admin up to a workspace called Acme, and gives a new model a calendar of the
 /// three years from January 2026, so that the period labels in these tests mean the same
@@ -142,16 +72,6 @@ async fn structure_rows(pool: &PgPool, model: &str) -> i64 {
         .fetch_one(pool)
         .await
         .unwrap()
-}
-
-fn assert_problem(response: &TestResponse, status: StatusCode, code: &str) {
-    assert_eq!(response.status, status, "{}", response.text);
-    let content_type = response.headers[header::CONTENT_TYPE].to_str().unwrap();
-    assert!(
-        content_type.starts_with("application/problem+json"),
-        "{content_type}"
-    );
-    assert_eq!(response.json["code"], code, "{}", response.text);
 }
 
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
@@ -702,7 +622,14 @@ async fn time_ranges_are_created_and_deleted(pool: PgPool) {
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn viewer_cannot_write_structure(pool: PgPool) {
     let (mut admin, workspace, model) = plan(&pool).await;
-    create_member(&mut admin, &workspace, "viewer@acme.com", "viewer").await;
+    create_member(
+        &mut admin,
+        &workspace,
+        "viewer@acme.com",
+        "Vera Viewer",
+        "viewer",
+    )
+    .await;
     let mut viewer = sign_in(&pool, "viewer@acme.com").await;
     let (list, item, subset, version, range) = (
         Uuid::now_v7(),

@@ -336,7 +336,7 @@ fn month_of(calendar: &EngineCalendar, label: &str, field: &str) -> Result<u32, 
 }
 
 /// The model's row: its workspace and mode. `NotFound` when there is no such model.
-async fn model_row(db: &PgPool, model_id: Uuid) -> AppResult<(Uuid, ModelMode)> {
+pub(crate) async fn model_row(db: &PgPool, model_id: Uuid) -> AppResult<(Uuid, ModelMode)> {
     sqlx::query_as::<_, (Uuid, ModelMode)>("SELECT workspace_id, mode FROM models WHERE id = $1")
         .bind(model_id)
         .fetch_optional(db)
@@ -345,7 +345,7 @@ async fn model_row(db: &PgPool, model_id: Uuid) -> AppResult<(Uuid, ModelMode)> 
 }
 
 /// The model's actor, for a caller who may read its structure.
-async fn read_handle(
+pub(crate) async fn read_handle(
     state: &AppState,
     user: &CurrentUser,
     model_id: Uuid,
@@ -357,7 +357,7 @@ async fn read_handle(
 
 /// The model's actor, for a caller who may change its structure: a builder, while the model is in
 /// development mode.
-async fn write_handle(
+pub(crate) async fn write_handle(
     state: &AppState,
     user: &CurrentUser,
     model_id: Uuid,

@@ -13,7 +13,7 @@ use openplan_server::{
     auth::{CSRF_COOKIE, CSRF_HEADER},
     config::Config,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 use sqlx::{PgPool, postgres::PgPoolOptions};
 use tower::ServiceExt;
 
@@ -209,4 +209,100 @@ impl TestApp {
             json,
         }
     }
+}
+
+pub const ADMIN_EMAIL: &str = "admin@acme.com";
+pub const PASSWORD: &str = "correct horse battery";
+
+/// Completes first-run setup and returns the id of the "Acme" workspace it creates.
+pub async fn setup_admin(app: &mut TestApp) -> String {
+    let response = app
+        .post(
+            "/api/v1/setup",
+            Some(json!({
+                "email": ADMIN_EMAIL,
+                "name": "Ada Admin",
+                "password": PASSWORD,
+                "workspace_name": "Acme",
+            })),
+        )
+        .await;
+    assert_eq!(response.status, StatusCode::CREATED, "{}", response.text);
+    response.json["workspace"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// Creates a user as the signed-in `admin` and returns their id.
+pub async fn create_user(admin: &mut TestApp, email: &str, name: &str) -> String {
+    let response = admin
+        .post(
+            "/api/v1/users",
+            Some(json!({
+                "email": email,
+                "name": name,
+                "password": PASSWORD,
+                "is_instance_admin": false,
+            })),
+        )
+        .await;
+    assert_eq!(response.status, StatusCode::CREATED, "{}", response.text);
+    response.json["id"].as_str().unwrap().to_string()
+}
+
+/// A client signed in as `email`, whose password is `PASSWORD`.
+pub async fn sign_in(pool: &PgPool, email: &str) -> TestApp {
+    let mut app = TestApp::new(pool.clone());
+    let response = app
+        .post(
+            "/api/v1/auth/login",
+            Some(json!({ "email": email, "password": PASSWORD })),
+        )
+        .await;
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text);
+    app
+}
+
+/// Creates a user and adds them to `workspace_id` with `role`, as the signed-in `admin`.
+/// Returns the new user's id.
+pub async fn create_member(
+    admin: &mut TestApp,
+    workspace_id: &str,
+    email: &str,
+    name: &str,
+    role: &str,
+) -> String {
+    let user_id = create_user(admin, email, name).await;
+    let added = admin
+        .post(
+            &format!("/api/v1/workspaces/{workspace_id}/members"),
+            Some(json!({ "email": email, "role": role })),
+        )
+        .await;
+    assert_eq!(added.status, StatusCode::CREATED, "{}", added.text);
+    user_id
+}
+
+/// Creates a model named `name` in a workspace as the signed-in `admin` and returns its id.
+pub async fn create_model(admin: &mut TestApp, workspace_id: &str, name: &str) -> String {
+    let response = admin
+        .post(
+            &format!("/api/v1/workspaces/{workspace_id}/models"),
+            Some(json!({ "name": name })),
+        )
+        .await;
+    assert_eq!(response.status, StatusCode::CREATED, "{}", response.text);
+    response.json["id"].as_str().unwrap().to_string()
+}
+
+/// Asserts an `application/problem+json` response with this status and code.
+pub fn assert_problem(response: &TestResponse, status: StatusCode, code: &str) {
+    assert_eq!(response.status, status, "{}", response.text);
+    let content_type = response.headers[header::CONTENT_TYPE].to_str().unwrap();
+    assert!(
+        content_type.starts_with("application/problem+json"),
+        "{content_type}"
+    );
+    assert_eq!(response.json["code"], code, "{}", response.text);
 }
