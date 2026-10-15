@@ -1,0 +1,13 @@
+.git
+.github
+.superpowers
+.env
+target
+**/node_modules
+web/dist
+web/.tanstack
+web/.vitest
+e2e/screenshots
+e2e/test-results
+e2e/playwright-report
+docs

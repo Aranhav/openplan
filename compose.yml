@@ -1,0 +1,31 @@
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: openplan
+      POSTGRES_PASSWORD: openplan
+      POSTGRES_DB: openplan
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openplan"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  openplan:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: postgres://openplan:openplan@postgres:5432/openplan
+      OPENPLAN_PUBLIC_URL: http://localhost:8080
+      OPENPLAN_BIND: 0.0.0.0:8080
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
