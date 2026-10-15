@@ -14,9 +14,9 @@ services:
         sync: false
       - key: OPENPLAN_LOG
         value: info
-      # Vercel replaces X-Forwarded-For with the client address and Render appends the address it
-      # received from Vercel, so the client is the second entry from the right. The Render URL is
-      # public, so a direct caller can forge the header; the per-email login ceiling (50 attempts per
-      # 15 minutes, any address) limits guessing in that case. See docs/deploy.md.
+      # Assumed: Vercel replaces X-Forwarded-For with the client address and Render appends the address
+      # it received from Vercel, so the client is the second entry from the right. Verify after the first
+      # deploy (docs/deploy.md). The Render URL is public, so a direct caller can forge the header; the
+      # per-email login ceiling (50 attempts per 15 minutes, any address) limits guessing in that case.
       - key: OPENPLAN_TRUSTED_PROXY_HOPS
         value: "2"
