@@ -678,6 +678,109 @@ async fn checkpoint_replaces_every_stored_chunk(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn a_checkpoint_older_than_the_stored_one_changes_nothing(pool: PgPool) {
+    let (stored, mut model) = stored_model(&pool).await;
+    let (plan, structure) = plan_structure();
+    let behind_seq = commit(&pool, &stored, &mut model, structure).await;
+    let behind = model.clone();
+    let cells = vec![number_cells(&model, &plan, plan.units, &[(0, 0, 1, 10.0)])];
+    let last = commit(&pool, &stored, &mut model, cells).await;
+    engine_store::checkpoint(&pool, stored.id, &model, last)
+        .await
+        .unwrap();
+
+    engine_store::checkpoint(&pool, stored.id, &behind, behind_seq)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT checkpoint_seq FROM models WHERE id = $1")
+            .bind(stored.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        last
+    );
+    sqlx::query("DELETE FROM change_log WHERE model_id = $1")
+        .bind(stored.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (loaded, seq) = engine_store::load(&pool, stored.id).await.unwrap();
+    assert_eq!(seq, last);
+    assert_same(&loaded, &model, &plan);
+}
+
+/// Waits until a statement that starts with `prefix` waits for a lock another transaction holds.
+async fn wait_for_lock_wait(pool: &PgPool, prefix: &str) {
+    for _ in 0..200 {
+        let waiting: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_stat_activity
+             WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE $1",
+        )
+        .bind(format!("{prefix}%"))
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        if waiting > 0 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!("no statement starting with {prefix:?} is waiting for a lock");
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn a_checkpoint_and_a_model_delete_do_not_deadlock(pool: PgPool) {
+    let (stored, mut model) = stored_model(&pool).await;
+    let (plan, structure) = plan_structure();
+    commit(&pool, &stored, &mut model, structure).await;
+    let cells = vec![number_cells(&model, &plan, plan.units, &[(0, 0, 1, 10.0)])];
+    let last = commit(&pool, &stored, &mut model, cells).await;
+    // The checkpoint stops at the delete of the stored chunks, past its first writes, for as
+    // long as this transaction holds the row it deletes.
+    sqlx::query(
+        "INSERT INTO line_item_data (model_id, line_item_id, chunk, data)
+         VALUES ($1, $2, 0, '\\x00')",
+    )
+    .bind(stored.id)
+    .bind(Uuid::now_v7())
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut holder = pool.begin().await.unwrap();
+    sqlx::query("SELECT 1 FROM line_item_data WHERE model_id = $1 FOR UPDATE")
+        .bind(stored.id)
+        .fetch_all(&mut *holder)
+        .await
+        .unwrap();
+    let checkpointing = tokio::spawn({
+        let pool = pool.clone();
+        let model = model.clone();
+        let model_id = stored.id;
+        async move { engine_store::checkpoint(&pool, model_id, &model, last).await }
+    });
+    wait_for_lock_wait(&pool, "DELETE FROM line_item_data").await;
+    let deleting = tokio::spawn({
+        let pool = pool.clone();
+        let model_id = stored.id;
+        async move {
+            sqlx::query("DELETE FROM models WHERE id = $1")
+                .bind(model_id)
+                .execute(&pool)
+                .await
+        }
+    });
+    wait_for_lock_wait(&pool, "DELETE FROM models").await;
+
+    holder.commit().await.unwrap();
+
+    checkpointing.await.unwrap().unwrap();
+    assert_eq!(deleting.await.unwrap().unwrap().rows_affected(), 1);
+    assert_eq!(count(&pool, "model_structure", stored.id).await, 0);
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn append_needs_an_old_value_for_every_edited_cell(pool: PgPool) {
     let (stored, mut model) = stored_model(&pool).await;
     let (plan, structure) = plan_structure();

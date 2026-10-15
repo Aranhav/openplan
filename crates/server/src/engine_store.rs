@@ -276,6 +276,14 @@ pub async fn append(
 /// Saves the model as the checkpoint at `upto_seq`, the sequence number of the last change it
 /// includes: its structure replaces the stored one, its input cells replace every stored chunk
 /// and the model's `checkpoint_seq` becomes `upto_seq`, all in one transaction.
+///
+/// `model` must hold exactly the changes up to `upto_seq`: take the snapshot between commands,
+/// only after the append of the batch numbered `upto_seq` has committed. A snapshot that lags
+/// behind `upto_seq` makes every later `load` replay changes the stored structure already has,
+/// and one that runs ahead of it replays them twice.
+///
+/// A checkpoint older than the stored one (`upto_seq` below the model's `checkpoint_seq`) is
+/// dropped and returns `Ok`: the stored checkpoint stays as it is.
 pub async fn checkpoint(
     db: &PgPool,
     model_id: Uuid,
@@ -290,6 +298,14 @@ pub async fn checkpoint(
     .map_err(|err| AppError::Internal(err.into()))?;
 
     let mut tx = db.begin().await?;
+    // The model row first. Deleting a model locks its row and then the rows that refer to it, so
+    // taking the row first, in the mode the foreign keys of the writes below would, keeps the
+    // two from waiting on each other. It does not hold up `append` or an update of the model.
+    sqlx::query_scalar::<_, i32>("SELECT 1 FROM models WHERE id = $1 FOR KEY SHARE")
+        .bind(model_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(AppError::NotFound)?;
     sqlx::query(
         "INSERT INTO model_structure (model_id, doc) VALUES ($1, $2)
          ON CONFLICT (model_id) DO UPDATE SET doc = EXCLUDED.doc, updated_at = now()",
@@ -302,28 +318,47 @@ pub async fn checkpoint(
     sqlx::query("DELETE FROM line_item_data WHERE model_id = $1")
         .bind(model_id)
         .execute(&mut *tx)
-        .await?;
-    for chunk in chunks {
+        .await
+        .map_err(map_store_error)?;
+    if !chunks.is_empty() {
+        let mut line_items = Vec::with_capacity(chunks.len());
+        let mut numbers = Vec::with_capacity(chunks.len());
+        let mut data = Vec::with_capacity(chunks.len());
+        for chunk in chunks {
+            line_items.push(chunk.line_item.0);
+            numbers
+                .push(i32::try_from(chunk.chunk).context("a chunk number does not fit the table")?);
+            data.push(chunk.data);
+        }
         sqlx::query(
             "INSERT INTO line_item_data (model_id, line_item_id, chunk, data)
-             VALUES ($1, $2, $3, $4)",
+             SELECT $1, c.line_item_id, c.chunk, c.data
+             FROM UNNEST($2, $3, $4) AS c(line_item_id, chunk, data)",
         )
         .bind(model_id)
-        .bind(chunk.line_item.0)
-        .bind(i32::try_from(chunk.chunk).context("a chunk number does not fit the table")?)
-        .bind(chunk.data)
+        .bind(line_items)
+        .bind(numbers)
+        .bind(data)
         .execute(&mut *tx)
-        .await?;
+        .await
+        .map_err(map_store_error)?;
     }
     // Last, so that the lock this takes on the model is held no longer than it takes to commit
     // and edits are not held up while the chunks are written.
-    let updated = sqlx::query("UPDATE models SET checkpoint_seq = $2 WHERE id = $1")
-        .bind(model_id)
-        .bind(upto_seq)
-        .execute(&mut *tx)
-        .await?;
+    let updated =
+        sqlx::query("UPDATE models SET checkpoint_seq = $2 WHERE id = $1 AND checkpoint_seq <= $2")
+            .bind(model_id)
+            .bind(upto_seq)
+            .execute(&mut *tx)
+            .await?;
     if updated.rows_affected() == 0 {
-        return Err(AppError::NotFound);
+        tracing::warn!(
+            %model_id,
+            upto_seq,
+            "a checkpoint older than the stored one was dropped"
+        );
+        tx.rollback().await?;
+        return Ok(());
     }
     tx.commit().await?;
     Ok(())
