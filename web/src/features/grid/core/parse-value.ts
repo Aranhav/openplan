@@ -2,12 +2,16 @@
  * Reads what was typed or pasted into a cell. Numbers use the English notation that
  * `formatValue` writes (1,234.50, (1,234.50), 25%), whatever the browser's locale.
  */
-import type { Format, Value } from "./types"
+import type { Format, PeriodLevel, Value } from "./types"
 
-/** Item ids by lower-cased name and by lower-cased code, for a list format's list. */
+/**
+ * What entries can name. Item ids are by lower-cased name and by lower-cased code, for a list
+ * format's list; periods are by lower-cased label ("jan 26", "q1 fy26", "total").
+ */
 export type ParseContext = {
   itemsByName: Map<string, string>
   itemsByCode: Map<string, string>
+  periodsByLabel: Map<string, [PeriodLevel, number]>
 }
 
 export type ParseResult = { ok: true; value: Value } | { ok: false; message: string }
@@ -44,9 +48,7 @@ export function parseInput(raw: string, format: Format, ctx: ParseContext): Pars
     case "list":
       return parseItem(raw, ctx)
     case "time_period":
-      return raw.trim() === ""
-        ? ok({ t: "period", v: null })
-        : refuse("Time period values can't be typed in.")
+      return parsePeriod(raw, ctx)
   }
 }
 
@@ -227,4 +229,16 @@ function parseItem(raw: string, ctx: ParseContext): ParseResult {
     return refuse(`${quoted(entry)} isn't in this list.`)
   }
   return ok({ t: "item", v: id })
+}
+
+function parsePeriod(raw: string, ctx: ParseContext): ParseResult {
+  const entry = raw.trim()
+  if (entry === "") {
+    return ok({ t: "period", v: null })
+  }
+  const period = ctx.periodsByLabel.get(entry.toLowerCase())
+  if (period === undefined) {
+    return refuse(`${quoted(entry)} isn't a period of this timeline.`)
+  }
+  return ok({ t: "period", v: [period[0], period[1]] })
 }

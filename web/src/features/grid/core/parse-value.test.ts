@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { copyText, editText } from "./format-value"
 import { parseInput, type ParseContext } from "./parse-value"
-import type { Format, NumberUnit, Value } from "./types"
+import type { Format, NumberUnit, PeriodLevel, Value } from "./types"
 
 const NORTH = "0198f0aa-0000-7000-8000-00000000000a"
 const SOUTH = "0198f0aa-0000-7000-8000-00000000000b"
@@ -14,6 +14,13 @@ const ctx: ParseContext = {
   itemsByCode: new Map([
     ["na", NORTH],
     ["sa", SOUTH],
+  ]),
+  periodsByLabel: new Map<string, [PeriodLevel, number]>([
+    ["jan 26", ["month", 0]],
+    ["feb 26", ["month", 1]],
+    ["q1 fy26", ["quarter", 0]],
+    ["fy26", ["year", 0]],
+    ["total", ["all", 0]],
   ]),
 }
 
@@ -367,6 +374,7 @@ describe("parseInput list items", () => {
 
   it("prefers the name when a name and a code are the same text", () => {
     const clash: ParseContext = {
+      ...ctx,
       itemsByName: new Map([["x", "by-name"]]),
       itemsByCode: new Map([["x", "by-code"]]),
     }
@@ -388,12 +396,56 @@ describe("parseInput list items", () => {
 describe("parseInput time periods", () => {
   const format: Format = { type: "time_period", level: "month" }
 
-  it("takes an empty entry as the blank period", () => {
-    expect(parseInput("", format, ctx)).toEqual({ ok: true, value: { t: "period", v: null } })
+  it("finds a period by its label, ignoring case", () => {
+    expect(parseInput("Jan 26", format, ctx)).toEqual({
+      ok: true,
+      value: { t: "period", v: ["month", 0] },
+    })
+    expect(parseInput("FEB 26", format, ctx)).toEqual({
+      ok: true,
+      value: { t: "period", v: ["month", 1] },
+    })
   })
 
-  it("refuses typed periods, which the client cannot resolve", () => {
-    expect(messageOf("Jan 26", format)).toBe("Time period values can't be typed in.")
+  it("finds a period of any level", () => {
+    expect(parseInput("Q1 FY26", format, ctx)).toEqual({
+      ok: true,
+      value: { t: "period", v: ["quarter", 0] },
+    })
+    expect(parseInput("FY26", format, ctx)).toEqual({
+      ok: true,
+      value: { t: "period", v: ["year", 0] },
+    })
+    expect(parseInput("Total", format, ctx)).toEqual({
+      ok: true,
+      value: { t: "period", v: ["all", 0] },
+    })
+  })
+
+  it("ignores spaces around the label", () => {
+    expect(parseInput("  jan 26 ", format, ctx)).toEqual({
+      ok: true,
+      value: { t: "period", v: ["month", 0] },
+    })
+  })
+
+  it("gives a copy of the period, so changing the result leaves the lookup alone", () => {
+    const result = parseInput("Jan 26", format, ctx)
+    if (!result.ok || result.value.t !== "period" || result.value.v === null) {
+      throw new Error("expected a period")
+    }
+    result.value.v[1] = 99
+    expect(ctx.periodsByLabel.get("jan 26")).toEqual(["month", 0])
+  })
+
+  it("takes an empty entry as the blank period", () => {
+    expect(parseInput("", format, ctx)).toEqual({ ok: true, value: { t: "period", v: null } })
+    expect(parseInput("  ", format, ctx)).toEqual({ ok: true, value: { t: "period", v: null } })
+  })
+
+  it("refuses a label that is not on the timeline", () => {
+    expect(messageOf("Foo", format)).toBe("'Foo' isn't a period of this timeline.")
+    expect(messageOf("Mar 26", format)).toBe("'Mar 26' isn't a period of this timeline.")
   })
 })
 
@@ -467,6 +519,9 @@ describe("copying a cell and pasting the text back", () => {
     [{ t: "item", v: NORTH }, { type: "list", list: "list-id" }, "North America"],
     [{ t: "item", v: SOUTH }, { type: "list", list: "list-id" }, "South America"],
     [{ t: "item", v: null }, { type: "list", list: "list-id" }, undefined],
+    [{ t: "period", v: ["month", 1] }, { type: "time_period", level: "month" }, "Feb 26"],
+    [{ t: "period", v: ["all", 0] }, { type: "time_period", level: "all" }, "Total"],
+    [{ t: "period", v: null }, { type: "time_period", level: "month" }, undefined],
   ] as [Value, Format, string | undefined][])("gives back %j", (value, format, text) => {
     expect(parseInput(copyText(value, format, text), format, ctx)).toEqual({ ok: true, value })
   })
