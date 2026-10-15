@@ -53,6 +53,25 @@ fn set_cookie<'a>(response: &'a TestResponse, name: &str) -> &'a str {
         .unwrap_or_else(|| panic!("no Set-Cookie for {name}"))
 }
 
+fn cookie_value(set_cookie: &str) -> &str {
+    let (_, rest) = set_cookie.split_once('=').unwrap();
+    rest.split(';').next().unwrap()
+}
+
+fn assert_problem(response: &TestResponse, status: StatusCode, code: &str) {
+    assert_eq!(response.status, status, "{}", response.text);
+    let content_type = response.headers[header::CONTENT_TYPE].to_str().unwrap();
+    assert!(
+        content_type.starts_with("application/problem+json"),
+        "{content_type}"
+    );
+    assert_eq!(response.json["code"], code);
+}
+
+fn assert_no_store(response: &TestResponse) {
+    assert_eq!(response.headers[header::CACHE_CONTROL], "no-store");
+}
+
 fn field_names(response: &TestResponse) -> Vec<String> {
     let mut fields: Vec<String> = response.json["errors"]
         .as_array()
@@ -77,6 +96,13 @@ async fn insert_member(pool: &PgPool, email: &str) -> Uuid {
     .await
     .unwrap();
     id
+}
+
+async fn session_user(pool: &PgPool, token: &str) -> Option<Uuid> {
+    session::lookup(pool, token)
+        .await
+        .unwrap()
+        .map(|session| session.user_id)
 }
 
 async fn session_count(pool: &PgPool) -> i64 {
@@ -483,6 +509,7 @@ async fn me_requires_session(pool: PgPool) {
 
     assert_eq!(response.status, StatusCode::UNAUTHORIZED);
     assert_eq!(response.json["code"], "auth.unauthenticated");
+    assert!(response.headers.get(header::SET_COOKIE).is_none());
 }
 
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
@@ -521,7 +548,9 @@ async fn expired_session_rejected(pool: PgPool) {
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn session_renewed_when_near_expiry(pool: PgPool) {
     let mut app = TestApp::new(pool.clone());
-    setup_admin(&mut app).await;
+    let created = setup_admin(&mut app).await;
+    let session_before = cookie_value(set_cookie(&created, "op_session")).to_string();
+    let csrf_before = cookie_value(set_cookie(&created, "op_csrf")).to_string();
     sqlx::query("UPDATE sessions SET expires_at = now() + interval '1 day'")
         .execute(&pool)
         .await
@@ -536,6 +565,18 @@ async fn session_renewed_when_near_expiry(pool: PgPool) {
             .await
             .unwrap();
     assert!(renewed);
+    let session = set_cookie(&response, "op_session");
+    assert_eq!(cookie_value(session), session_before);
+    assert!(session.contains("Max-Age=1209600"), "{session}");
+    assert!(session.contains("HttpOnly"), "{session}");
+    let csrf = set_cookie(&response, "op_csrf");
+    assert_eq!(cookie_value(csrf), csrf_before);
+    assert!(csrf.contains("Max-Age=1209600"), "{csrf}");
+    assert!(!csrf.contains("HttpOnly"), "{csrf}");
+
+    let again = app.get("/api/v1/auth/me").await;
+    assert_eq!(again.status, StatusCode::OK);
+    assert!(again.headers.get(header::SET_COOKIE).is_none());
 }
 
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
@@ -550,6 +591,7 @@ async fn session_not_renewed_with_plenty_of_time_left(pool: PgPool) {
     let response = app.get("/api/v1/auth/me").await;
 
     assert_eq!(response.status, StatusCode::OK);
+    assert!(response.headers.get(header::SET_COOKIE).is_none());
     let untouched: bool =
         sqlx::query_scalar("SELECT expires_at < now() + interval '11 days' FROM sessions")
             .fetch_one(&pool)
@@ -683,13 +725,38 @@ async fn session_lookup_and_delete(pool: PgPool) {
         .unwrap();
     let token = session::create(&pool, user_id, None).await.unwrap();
 
-    assert_eq!(session::lookup(&pool, &token).await.unwrap(), Some(user_id));
-    assert_eq!(session::lookup(&pool, "not-a-token").await.unwrap(), None);
+    assert_eq!(session_user(&pool, &token).await, Some(user_id));
+    assert_eq!(session_user(&pool, "not-a-token").await, None);
 
     session::delete(&pool, &token).await.unwrap();
 
-    assert_eq!(session::lookup(&pool, &token).await.unwrap(), None);
+    assert_eq!(session_user(&pool, &token).await, None);
     session::delete(&pool, &token).await.unwrap();
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn session_lookup_reports_when_it_renewed(pool: PgPool) {
+    let mut app = TestApp::new(pool.clone());
+    setup_admin(&mut app).await;
+    let user_id: Uuid = sqlx::query_scalar("SELECT id FROM users")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let token = session::create(&pool, user_id, None).await.unwrap();
+
+    let fresh = session::lookup(&pool, &token).await.unwrap().unwrap();
+    assert!(!fresh.renewed);
+
+    sqlx::query("UPDATE sessions SET expires_at = now() + interval '6 days'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let near_expiry = session::lookup(&pool, &token).await.unwrap().unwrap();
+    assert!(near_expiry.renewed);
+    assert_eq!(near_expiry.user_id, user_id);
+
+    let after = session::lookup(&pool, &token).await.unwrap().unwrap();
+    assert!(!after.renewed);
 }
 
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
@@ -710,12 +777,9 @@ async fn delete_all_for_user_keeps_other_users_sessions(pool: PgPool) {
     session::delete_all_for_user(&pool, admin_id).await.unwrap();
 
     for token in &admin_tokens {
-        assert_eq!(session::lookup(&pool, token).await.unwrap(), None);
+        assert_eq!(session_user(&pool, token).await, None);
     }
-    assert_eq!(
-        session::lookup(&pool, &member_token).await.unwrap(),
-        Some(member_id)
-    );
+    assert_eq!(session_user(&pool, &member_token).await, Some(member_id));
     assert_eq!(session_count(&pool).await, 1);
 }
 
@@ -734,4 +798,127 @@ async fn openapi_documents_the_auth_routes(pool: PgPool) {
     assert!(paths["/api/v1/auth/me"]["get"].is_object());
     assert_eq!(paths["/api/v1/auth/me"]["get"]["tags"][0], "auth");
     assert!(response.json["components"]["schemas"]["CurrentUser"].is_object());
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn parallel_wrong_password_logins_share_one_failure_budget(pool: PgPool) {
+    let mut app = TestApp::new(pool);
+    setup_admin(&mut app).await;
+
+    let mut attempts = tokio::task::JoinSet::new();
+    for _ in 0..20 {
+        let mut client = app.fork();
+        attempts.spawn(async move { login(&mut client, EMAIL, "not the password").await.status });
+    }
+    let (mut unauthorized, mut limited) = (0, 0);
+    while let Some(status) = attempts.join_next().await {
+        match status.unwrap() {
+            StatusCode::UNAUTHORIZED => unauthorized += 1,
+            StatusCode::TOO_MANY_REQUESTS => limited += 1,
+            other => panic!("unexpected status {other}"),
+        }
+    }
+
+    assert_eq!((unauthorized, limited), (10, 10));
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn auth_responses_are_not_cacheable(pool: PgPool) {
+    let mut app = TestApp::new(pool);
+
+    assert_no_store(&app.get("/api/v1/setup/status").await);
+    assert_no_store(&setup_admin(&mut app).await);
+    assert_no_store(&login(&mut app, EMAIL, PASSWORD).await);
+    assert_no_store(&login(&mut app, EMAIL, "not the password").await);
+    assert_no_store(&app.get("/api/v1/auth/me").await);
+    assert_no_store(&app.post("/api/v1/auth/logout", None).await);
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn missing_json_field_is_a_validation_error(pool: PgPool) {
+    let mut app = TestApp::new(pool);
+
+    let login = app
+        .post("/api/v1/auth/login", Some(json!({ "email": EMAIL })))
+        .await;
+    assert_problem(&login, StatusCode::UNPROCESSABLE_ENTITY, "validation");
+    assert_eq!(login.json["errors"][0]["field"], "password");
+    assert_eq!(login.json["errors"][0]["message"], "Password is required.");
+
+    let mut body = setup_body();
+    body.as_object_mut().unwrap().remove("workspace_name");
+    let setup = app.post("/api/v1/setup", Some(body)).await;
+    assert_problem(&setup, StatusCode::UNPROCESSABLE_ENTITY, "validation");
+    assert_eq!(field_names(&setup), ["workspace_name"]);
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn ill_typed_json_field_is_a_validation_error(pool: PgPool) {
+    let mut app = TestApp::new(pool);
+
+    let response = app
+        .post(
+            "/api/v1/auth/login",
+            Some(json!({ "email": 5, "password": "x" })),
+        )
+        .await;
+
+    assert_problem(&response, StatusCode::UNPROCESSABLE_ENTITY, "validation");
+    assert_eq!(field_names(&response), ["email"]);
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn json_body_of_the_wrong_shape_is_reported_on_body(pool: PgPool) {
+    let mut app = TestApp::new(pool);
+
+    let response = app.post("/api/v1/auth/login", Some(json!([]))).await;
+
+    assert_problem(&response, StatusCode::UNPROCESSABLE_ENTITY, "validation");
+    assert_eq!(field_names(&response), ["body"]);
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn invalid_json_syntax_is_a_bad_request(pool: PgPool) {
+    let mut app = TestApp::new(pool);
+
+    for body in ["{not json", "", r#"{"email":"a","password":"b"} trailing"#] {
+        let response = app
+            .post_raw("/api/v1/auth/login", Some("application/json"), body)
+            .await;
+        assert_problem(&response, StatusCode::BAD_REQUEST, "bad_request");
+    }
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn json_without_a_json_content_type_is_unsupported(pool: PgPool) {
+    let mut app = TestApp::new(pool);
+    let body = r#"{"email":"a@b.co","password":"x"}"#;
+
+    for content_type in [None, Some("text/plain")] {
+        let response = app.post_raw("/api/v1/auth/login", content_type, body).await;
+        assert_problem(
+            &response,
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "unsupported_media_type",
+        );
+    }
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn oversized_json_body_is_payload_too_large(pool: PgPool) {
+    let mut app = TestApp::new(pool);
+    let body = format!(
+        r#"{{"email":"{}","password":"x"}}"#,
+        "a".repeat(3 * 1024 * 1024)
+    );
+
+    let response = app
+        .post_raw("/api/v1/auth/login", Some("application/json"), body)
+        .await;
+
+    assert_problem(
+        &response,
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "payload_too_large",
+    );
 }

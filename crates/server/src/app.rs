@@ -18,7 +18,7 @@ use utoipa_scalar::{Scalar, Servable};
 use uuid::Uuid;
 
 use crate::{
-    auth::{self, csrf, rate_limit::LoginLimiter},
+    auth::{self, csrf, rate_limit::LoginLimiter, renewal},
     config::Config,
     error::AppError,
     openapi::ApiDoc,
@@ -76,8 +76,9 @@ pub(crate) async fn health() -> Json<HealthResponse> {
 }
 
 pub fn build_router(state: AppState) -> Router {
-    let api_v1: Router<AppState> =
-        auth::routes::router().layer(middleware::from_fn(csrf::require_csrf));
+    let api_v1: Router<AppState> = auth::routes::router()
+        .layer(middleware::from_fn(csrf::require_csrf))
+        .layer(middleware::from_fn(renewal::reissue_cookies));
 
     Router::new()
         .route("/api/health", get(health))

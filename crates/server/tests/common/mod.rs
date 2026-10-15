@@ -23,6 +23,14 @@ pub struct TestApp {
     cookies: HashMap<String, String>,
 }
 
+enum Payload {
+    Json(Option<Value>),
+    Raw {
+        content_type: Option<String>,
+        body: String,
+    },
+}
+
 pub struct TestResponse {
     pub status: StatusCode,
     pub headers: HeaderMap,
@@ -47,6 +55,16 @@ impl TestApp {
         }
     }
 
+    /// Another client over the same router, and so the same `AppState`, with a
+    /// copy of the stored cookies. Lets a test send requests concurrently.
+    pub fn fork(&self) -> TestApp {
+        TestApp {
+            router: self.router.clone(),
+            db: self.db.clone(),
+            cookies: self.cookies.clone(),
+        }
+    }
+
     /// Sends a request with the stored cookies and, for non-GET requests,
     /// the CSRF header copied from the stored `op_csrf` cookie.
     pub async fn request(
@@ -60,7 +78,23 @@ impl TestApp {
         } else {
             self.cookies.get(CSRF_COOKIE).cloned()
         };
-        self.send(method, path, body, csrf).await
+        self.send(method, path, Payload::Json(body), csrf).await
+    }
+
+    /// POSTs `body` verbatim with the given `Content-Type` (or none), for
+    /// requests that are not valid JSON.
+    pub async fn post_raw(
+        &mut self,
+        path: &str,
+        content_type: Option<&str>,
+        body: impl Into<String>,
+    ) -> TestResponse {
+        let csrf = self.cookies.get(CSRF_COOKIE).cloned();
+        let payload = Payload::Raw {
+            content_type: content_type.map(str::to_string),
+            body: body.into(),
+        };
+        self.send(Method::POST, path, payload, csrf).await
     }
 
     /// Same as [`TestApp::request`] but omits the CSRF header.
@@ -70,7 +104,7 @@ impl TestApp {
         path: &str,
         body: Option<Value>,
     ) -> TestResponse {
-        self.send(method, path, body, None).await
+        self.send(method, path, Payload::Json(body), None).await
     }
 
     pub async fn get(&mut self, path: &str) -> TestResponse {
@@ -93,7 +127,7 @@ impl TestApp {
         &mut self,
         method: Method,
         path: &str,
-        body: Option<Value>,
+        payload: Payload,
         csrf: Option<String>,
     ) -> TestResponse {
         let mut builder = Request::builder().method(method).uri(path);
@@ -109,12 +143,18 @@ impl TestApp {
         if let Some(token) = csrf {
             builder = builder.header(CSRF_HEADER, token);
         }
-        let body = match body {
-            Some(json) => {
+        let body = match payload {
+            Payload::Json(Some(json)) => {
                 builder = builder.header(header::CONTENT_TYPE, "application/json");
                 Body::from(json.to_string())
             }
-            None => Body::empty(),
+            Payload::Json(None) => Body::empty(),
+            Payload::Raw { content_type, body } => {
+                if let Some(content_type) = content_type {
+                    builder = builder.header(header::CONTENT_TYPE, content_type);
+                }
+                Body::from(body)
+            }
         };
         let response = self
             .router

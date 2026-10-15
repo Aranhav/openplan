@@ -3,7 +3,9 @@ use std::net::SocketAddr;
 use axum::{
     Extension, Json, Router,
     extract::{ConnectInfo, State},
-    http::{HeaderMap, StatusCode, header},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
+    middleware,
+    response::Response,
     routing::{get, post},
 };
 use axum_extra::extract::CookieJar;
@@ -15,6 +17,7 @@ use uuid::Uuid;
 use crate::{
     app::AppState,
     error::{AppError, AppResult},
+    extract::ApiJson,
     validate,
 };
 
@@ -30,6 +33,14 @@ pub fn router() -> Router<AppState> {
         .route("/auth/login", post(login))
         .route("/auth/logout", post(logout))
         .route("/auth/me", get(me))
+        .layer(middleware::map_response(no_store))
+}
+
+async fn no_store(mut response: Response) -> Response {
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 #[derive(Serialize, ToSchema)]
@@ -133,7 +144,7 @@ pub(crate) async fn setup_status(State(state): State<AppState>) -> AppResult<Jso
 pub(crate) async fn setup(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(body): Json<SetupRequest>,
+    ApiJson(body): ApiJson<SetupRequest>,
 ) -> AppResult<(StatusCode, CookieJar, Json<SetupResponse>)> {
     let email = validate::email(&body.email);
     let name = validate::person_name(&body.name);
@@ -211,6 +222,7 @@ pub(crate) async fn setup(
     responses(
         (status = 200, description = "Signed in", body = LoginResponse),
         (status = 401, description = "Email or password is incorrect (auth.invalid_credentials)"),
+        (status = 422, description = "A field is missing or has the wrong type (validation)"),
         (status = 429, description = "Too many failed attempts (auth.rate_limited)"),
     )
 )]
@@ -218,7 +230,7 @@ pub(crate) async fn login(
     State(state): State<AppState>,
     connect_info: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
-    Json(body): Json<LoginRequest>,
+    ApiJson(body): ApiJson<LoginRequest>,
 ) -> AppResult<(CookieJar, Json<LoginResponse>)> {
     let Ok(email) = validate::email(&body.email) else {
         return Err(AppError::InvalidCredentials);
@@ -230,7 +242,7 @@ pub(crate) async fn login(
     let limiter_key = format!("{email}|{ip}");
     state
         .login_limiter
-        .check(&limiter_key)
+        .check_and_record(&limiter_key)
         .map_err(|retry_after_secs| AppError::RateLimited { retry_after_secs })?;
 
     let candidate = sqlx::query_as::<_, LoginCandidate>(
@@ -246,10 +258,7 @@ pub(crate) async fn login(
     let verified = password::verify_password_async(body.password, hash).await;
     let user = match candidate {
         Some(candidate) if verified => candidate.user,
-        _ => {
-            state.login_limiter.record_failure(&limiter_key);
-            return Err(AppError::InvalidCredentials);
-        }
+        _ => return Err(AppError::InvalidCredentials),
     };
     state.login_limiter.reset(&limiter_key);
 

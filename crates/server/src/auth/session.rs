@@ -15,6 +15,13 @@ struct SessionRow {
     near_expiry: bool,
 }
 
+/// An unexpired session found by [`lookup`].
+pub struct ActiveSession {
+    pub user_id: Uuid,
+    /// Whether this lookup extended the session to a full `SESSION_TTL_DAYS`.
+    pub renewed: bool,
+}
+
 fn hash_token(raw: &str) -> Vec<u8> {
     Sha256::digest(raw.as_bytes()).to_vec()
 }
@@ -36,10 +43,9 @@ pub async fn create(db: &PgPool, user_id: Uuid, user_agent: Option<&str>) -> App
     Ok(token)
 }
 
-/// Returns the user id of an unexpired session. A session with fewer than
-/// `SESSION_RENEW_BELOW_DAYS` days left is extended to a full
-/// `SESSION_TTL_DAYS`.
-pub async fn lookup(db: &PgPool, raw: &str) -> AppResult<Option<Uuid>> {
+/// Finds an unexpired session. One with fewer than `SESSION_RENEW_BELOW_DAYS`
+/// days left is extended to a full `SESSION_TTL_DAYS`.
+pub async fn lookup(db: &PgPool, raw: &str) -> AppResult<Option<ActiveSession>> {
     let id_hash = hash_token(raw);
     let row = sqlx::query_as::<_, SessionRow>(
         "SELECT user_id, expires_at < now() + make_interval(days => $2) AS near_expiry
@@ -63,7 +69,10 @@ pub async fn lookup(db: &PgPool, raw: &str) -> AppResult<Option<Uuid>> {
         .execute(db)
         .await?;
     }
-    Ok(Some(row.user_id))
+    Ok(Some(ActiveSession {
+        user_id: row.user_id,
+        renewed: row.near_expiry,
+    }))
 }
 
 pub async fn delete(db: &PgPool, raw: &str) -> AppResult<()> {

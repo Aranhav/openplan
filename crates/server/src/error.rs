@@ -28,6 +28,12 @@ pub enum AppError {
     NotFound,
     #[error("method not allowed")]
     MethodNotAllowed,
+    #[error("bad request: {0}")]
+    BadRequest(String),
+    #[error("unsupported media type")]
+    UnsupportedMediaType,
+    #[error("payload too large")]
+    PayloadTooLarge,
     #[error("conflict ({code}): {detail}")]
     Conflict { code: &'static str, detail: String },
     #[error("not found ({code}): {detail}")]
@@ -109,6 +115,17 @@ impl IntoResponse for AppError {
                 StatusCode::METHOD_NOT_ALLOWED,
                 "method_not_allowed",
                 "The HTTP method is not allowed for this resource.".to_string(),
+            ),
+            AppError::BadRequest(detail) => (StatusCode::BAD_REQUEST, "bad_request", detail),
+            AppError::UnsupportedMediaType => (
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "unsupported_media_type",
+                "Send the request body as application/json.".to_string(),
+            ),
+            AppError::PayloadTooLarge => (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "payload_too_large",
+                "The request body is too large.".to_string(),
             ),
             AppError::Conflict { code, detail } => (StatusCode::CONFLICT, code, detail),
             AppError::CodedNotFound { code, detail } => (StatusCode::NOT_FOUND, code, detail),
@@ -226,6 +243,24 @@ mod tests {
         .into_response();
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
         assert_eq!(body_json(missing).await["code"], "user.not_found");
+    }
+
+    #[tokio::test]
+    async fn request_body_errors_have_their_own_status_and_code() {
+        let bad_request = AppError::BadRequest("The request body is not valid JSON.".into());
+        let response = bad_request.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(response).await;
+        assert_eq!(json["code"], "bad_request");
+        assert_eq!(json["detail"], "The request body is not valid JSON.");
+
+        let response = AppError::UnsupportedMediaType.into_response();
+        assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        assert_eq!(body_json(response).await["code"], "unsupported_media_type");
+
+        let response = AppError::PayloadTooLarge.into_response();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(body_json(response).await["code"], "payload_too_large");
     }
 
     #[tokio::test]

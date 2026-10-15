@@ -14,7 +14,7 @@ fn field_error(field: &str, message: String) -> FieldError {
 }
 
 /// Capitalizes a snake_case field name for use at the start of a message.
-fn label(field: &str) -> String {
+pub(crate) fn label(field: &str) -> String {
     let spaced = field.replace('_', " ");
     let mut chars = spaced.chars();
     match chars.next() {

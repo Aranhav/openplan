@@ -10,9 +10,12 @@ use uuid::Uuid;
 
 use crate::{app::AppState, error::AppError};
 
+use renewal::SessionRenewal;
+
 pub mod csrf;
 pub mod password;
 pub mod rate_limit;
+pub mod renewal;
 pub mod routes;
 pub mod session;
 
@@ -40,17 +43,32 @@ impl FromRequestParts<AppState> for CurrentUser {
             .get(SESSION_COOKIE)
             .ok_or(AppError::Unauthenticated)?
             .value();
-        let user_id = session::lookup(&state.db, token)
+        let session = session::lookup(&state.db, token)
             .await?
             .ok_or(AppError::Unauthenticated)?;
-        sqlx::query_as::<_, CurrentUser>(
+        let user = sqlx::query_as::<_, CurrentUser>(
             "SELECT id, email, name, is_instance_admin FROM users
              WHERE id = $1 AND NOT disabled",
         )
-        .bind(user_id)
+        .bind(session.user_id)
         .fetch_optional(&state.db)
         .await?
-        .ok_or(AppError::Unauthenticated)
+        .ok_or(AppError::Unauthenticated)?;
+        if session.renewed
+            && let Some(renewal) = parts.extensions.get::<SessionRenewal>()
+        {
+            let csrf = jar
+                .get(CSRF_COOKIE)
+                .map(Cookie::value)
+                .filter(|value| !value.is_empty())
+                .map_or_else(random_token, str::to_string);
+            renewal.offer(session_cookies_with_csrf(
+                token,
+                csrf,
+                state.config.secure_cookies(),
+            ));
+        }
+        Ok(user)
     }
 }
 
@@ -71,11 +89,19 @@ fn cookie(name: &'static str, value: String, http_only: bool, secure: bool) -> C
         .build()
 }
 
-/// The `HttpOnly` session cookie and the script-readable CSRF cookie.
+/// The `HttpOnly` session cookie and a new script-readable CSRF cookie.
 pub fn session_cookies(token: &str, secure: bool) -> (Cookie<'static>, Cookie<'static>) {
+    session_cookies_with_csrf(token, random_token(), secure)
+}
+
+fn session_cookies_with_csrf(
+    token: &str,
+    csrf: String,
+    secure: bool,
+) -> (Cookie<'static>, Cookie<'static>) {
     (
         cookie(SESSION_COOKIE, token.to_string(), true, secure),
-        cookie(CSRF_COOKIE, random_token(), false, secure),
+        cookie(CSRF_COOKIE, csrf, false, secure),
     )
 }
 
@@ -132,6 +158,15 @@ mod tests {
         assert_eq!(first.same_site(), Some(SameSite::Lax));
         assert_eq!(first.path(), Some("/"));
         assert_eq!(first.max_age(), Some(Duration::days(14)));
+    }
+
+    #[test]
+    fn existing_csrf_value_can_be_kept() {
+        let (session, csrf) = session_cookies_with_csrf("token", "keep-me".into(), false);
+
+        assert_eq!(session.value(), "token");
+        assert_eq!(csrf.value(), "keep-me");
+        assert_eq!(csrf.max_age(), Some(Duration::days(14)));
     }
 
     #[test]
