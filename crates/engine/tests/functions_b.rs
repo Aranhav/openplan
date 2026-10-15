@@ -1920,6 +1920,21 @@ fn irr_over_a_long_timeline_never_uses_subnormal_weights() {
 }
 
 #[test]
+fn irr_over_a_long_timeline_never_reports_a_non_root() {
+    // The only root of these 240 flows is at growth 1e170^(1/100), about 50.1, which is above the
+    // highest growth the search scans for 240 flows. Above about 40 the weight of the late flow
+    // underflows, and the sign change that gave was no root (a rate of 40.5).
+    let mut book = Book::with_calendar(calendar(1, 2026, 20));
+    let mut flows = vec![0.0; 240];
+    flows[100] = -1.0;
+    flows[200] = 1e170;
+    book.series("Late", &flows);
+    let root = 10f64.powf(1.7) - 1.0;
+    let rate = book.numbers("IRR(Late)", 1)[0];
+    assert!(rate == 0.0 || (rate - root).abs() < 1e-6, "{rate}");
+}
+
+#[test]
 fn pmt_pv_fv_match_excel() {
     let mut book = Book::new();
 

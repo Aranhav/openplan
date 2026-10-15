@@ -93,14 +93,16 @@ pub(super) fn eval_irr(
 const IRR_STEPS: usize = 100;
 const IRR_TOLERANCE: f64 = 1e-10;
 /// The sign-change search scans the growth factors `1 + rate`, log-spaced from the lowest growth
-/// (see [`lowest_growth`]) to `IRR_HIGH`, in `IRR_GRID` points. The lowest growth is at most
-/// `IRR_LOW`, the rate of -99.999 %.
+/// (see [`lowest_growth`]) to the highest (see [`highest_growth`]), in `IRR_GRID` points. The
+/// lowest growth is at most `IRR_LOW`, the rate of -99.999 %, and the highest at most `IRR_HIGH`,
+/// the rate of 1000 %.
 const IRR_LOW: f64 = 1e-5;
 const IRR_HIGH: f64 = 1001.0;
 const IRR_GRID: usize = 1000;
-/// The least weight the search gives the first flow of a series, which is the growth to the power
-/// of the number of flows less one. Below the normal range of a double, from about 2.2e-308, a
-/// weight loses precision and can lose its sign.
+/// The least weight the search gives a flow. At the lowest growth the first flow's weight is the
+/// growth to the power of the number of flows less one, and at the highest growth the last flow's
+/// weight is the reciprocal of that power. Below the normal range of a double, from about 2.2e-308,
+/// a weight loses precision and can lose its sign.
 const IRR_LEAST_WEIGHT: f64 = 1e-300;
 
 /// The rate at which the values of `series` have a present value of 0: where Newton's method
@@ -147,10 +149,22 @@ fn lowest_growth(flows: usize) -> f64 {
     }
 }
 
-/// The rate where the present value of `series` first changes sign over the grid, found by
-/// bisection between the two grid points either side of the change. Grid points where it is 0
-/// are skipped. A series whose flows are not of both signs keeps one sign at every rate, so it
-/// has no such rate, and `None` comes without a scan.
+/// The highest growth the sign-change search scans for a series of `flows` flows: `IRR_HIGH`, or
+/// the growth whose power `flows - 1` is `1 / IRR_LEAST_WEIGHT`, if that is lower. A root above the
+/// highest growth is not found.
+fn highest_growth(flows: usize) -> f64 {
+    if flows <= 1 {
+        IRR_HIGH
+    } else {
+        IRR_HIGH.min((1.0 / IRR_LEAST_WEIGHT).powf(1.0 / (flows - 1) as f64))
+    }
+}
+
+/// The rate where the present value of `series` first changes sign over the grid, from the lowest
+/// growth to the highest for its number of flows, found by bisection between the two grid points
+/// either side of the change. Grid points where it is 0 are skipped. A series whose flows are not
+/// of both signs keeps one sign at every rate, so it has no such rate, and `None` comes without a
+/// scan.
 fn first_sign_change(series: &[f64]) -> Option<f64> {
     let positive = series.iter().any(|&flow| flow > 0.0);
     let negative = series.iter().any(|&flow| flow < 0.0);
@@ -158,7 +172,8 @@ fn first_sign_change(series: &[f64]) -> Option<f64> {
         return None;
     }
     let low = lowest_growth(series.len());
-    let ratio = (IRR_HIGH / low).powf(1.0 / (IRR_GRID - 1) as f64);
+    let high = highest_growth(series.len());
+    let ratio = (high / low).powf(1.0 / (IRR_GRID - 1) as f64);
     let mut previous: Option<(f64, f64)> = None;
     for step in 0..IRR_GRID {
         let rate = low * ratio.powi(step as i32) - 1.0;
