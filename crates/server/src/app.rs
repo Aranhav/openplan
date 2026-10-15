@@ -21,6 +21,7 @@ use utoipa_scalar::{Scalar, Servable};
 use uuid::Uuid;
 
 use crate::{
+    actor::ModelRegistry,
     auth::{self, csrf, rate_limit::LoginLimiter, renewal},
     config::Config,
     error::AppError,
@@ -43,11 +44,15 @@ pub struct AppState {
     pub login_limiter: Arc<LoginLimiter>,
     /// Per email, whatever the client address.
     pub login_email_limiter: Arc<LoginLimiter>,
+    /// The models held in memory, one actor each.
+    pub models: ModelRegistry,
 }
 
 impl AppState {
     pub fn new(db: PgPool, config: Config) -> AppState {
+        let model_idle = Duration::from_secs(u64::from(config.model_idle_minutes) * 60);
         AppState {
+            models: ModelRegistry::new(db.clone(), model_idle),
             db,
             config: Arc::new(config),
             login_limiter: Arc::new(LoginLimiter::new(LOGIN_MAX_FAILURES, LOGIN_FAILURE_WINDOW)),

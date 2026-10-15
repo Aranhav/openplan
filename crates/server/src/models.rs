@@ -343,6 +343,7 @@ pub(crate) async fn delete_model(
     if deleted.rows_affected() == 0 {
         return Err(AppError::NotFound);
     }
+    state.models.discard(id).await;
     Ok(StatusCode::NO_CONTENT)
 }
 

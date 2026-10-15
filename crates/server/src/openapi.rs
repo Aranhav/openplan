@@ -301,7 +301,15 @@ mod tests {
         properties.sort_unstable();
         assert_eq!(
             properties,
-            ["code", "detail", "errors", "status", "title", "type"]
+            [
+                "code",
+                "detail",
+                "errors",
+                "formula_errors",
+                "status",
+                "title",
+                "type"
+            ]
         );
         let mut required: Vec<&str> = problem["required"]
             .as_array()
@@ -312,6 +320,7 @@ mod tests {
         required.sort_unstable();
         assert_eq!(required, ["code", "detail", "status", "title", "type"]);
         assert!(document()["components"]["schemas"]["FieldError"].is_object());
+        assert!(document()["components"]["schemas"]["FormulaProblem"].is_object());
     }
 
     #[test]

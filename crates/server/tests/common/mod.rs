@@ -19,6 +19,8 @@ use tower::ServiceExt;
 
 pub struct TestApp {
     pub router: Router,
+    /// The state the router was built with, for tests that reach into it.
+    pub state: AppState,
     pub db: PgPool,
     cookies: HashMap<String, String>,
 }
@@ -56,8 +58,10 @@ impl TestApp {
             _ => None,
         })
         .expect("test config is valid");
+        let state = AppState::new(db.clone(), config);
         TestApp {
-            router: build_router(AppState::new(db.clone(), config)),
+            router: build_router(state.clone()),
+            state,
             db,
             cookies: HashMap::new(),
         }
@@ -68,6 +72,7 @@ impl TestApp {
     pub fn fork(&self) -> TestApp {
         TestApp {
             router: self.router.clone(),
+            state: self.state.clone(),
             db: self.db.clone(),
             cookies: self.cookies.clone(),
         }

@@ -6,6 +6,7 @@ const DEFAULT_PORT: u16 = 8080;
 const DEFAULT_LOG: &str = "info";
 const DEFAULT_TRUSTED_PROXY_HOPS: u8 = 0;
 const DEFAULT_DB_POOL_SIZE: u32 = 10;
+const DEFAULT_MODEL_IDLE_MINUTES: u32 = 30;
 
 #[derive(Clone)]
 pub struct Config {
@@ -18,6 +19,8 @@ pub struct Config {
     pub trusted_proxy_hops: u8,
     /// The most database connections the server holds open at once.
     pub db_pool_size: u32,
+    /// How many minutes a model may go unused before it is saved and unloaded.
+    pub model_idle_minutes: u32,
 }
 
 impl fmt::Debug for Config {
@@ -29,6 +32,7 @@ impl fmt::Debug for Config {
             .field("log", &self.log)
             .field("trusted_proxy_hops", &self.trusted_proxy_hops)
             .field("db_pool_size", &self.db_pool_size)
+            .field("model_idle_minutes", &self.model_idle_minutes)
             .finish_non_exhaustive()
     }
 }
@@ -76,6 +80,16 @@ impl Config {
                 })?,
             None => DEFAULT_DB_POOL_SIZE,
         };
+        let model_idle_minutes = match value("OPENPLAN_MODEL_IDLE_MINUTES") {
+            Some(minutes) => minutes
+                .parse::<u32>()
+                .ok()
+                .filter(|&minutes| minutes > 0)
+                .with_context(|| {
+                    format!("OPENPLAN_MODEL_IDLE_MINUTES is not a number greater than 0: {minutes}")
+                })?,
+            None => DEFAULT_MODEL_IDLE_MINUTES,
+        };
         Ok(Config {
             database_url: required("DATABASE_URL")?,
             public_url: required("OPENPLAN_PUBLIC_URL")?,
@@ -83,6 +97,7 @@ impl Config {
             log: value("OPENPLAN_LOG").unwrap_or_else(|| DEFAULT_LOG.to_string()),
             trusted_proxy_hops,
             db_pool_size,
+            model_idle_minutes,
         })
     }
 
@@ -281,6 +296,43 @@ mod tests {
             ])
             .unwrap_err();
             assert!(err.to_string().contains("OPENPLAN_DB_POOL_SIZE"), "{err}");
+        }
+    }
+
+    #[test]
+    fn model_idle_minutes_defaults_to_thirty() {
+        let config = config_from(&[
+            ("DATABASE_URL", "postgres://localhost/openplan"),
+            ("OPENPLAN_PUBLIC_URL", "http://localhost:8080"),
+        ])
+        .unwrap();
+        assert_eq!(config.model_idle_minutes, 30);
+    }
+
+    #[test]
+    fn model_idle_minutes_is_read_and_trimmed() {
+        let config = config_from(&[
+            ("DATABASE_URL", "postgres://localhost/openplan"),
+            ("OPENPLAN_PUBLIC_URL", "http://localhost:8080"),
+            ("OPENPLAN_MODEL_IDLE_MINUTES", " 5 "),
+        ])
+        .unwrap();
+        assert_eq!(config.model_idle_minutes, 5);
+    }
+
+    #[test]
+    fn invalid_model_idle_minutes_is_error() {
+        for minutes in ["0", "-1", "soon", "1.5"] {
+            let err = config_from(&[
+                ("DATABASE_URL", "postgres://localhost/openplan"),
+                ("OPENPLAN_PUBLIC_URL", "http://localhost:8080"),
+                ("OPENPLAN_MODEL_IDLE_MINUTES", minutes),
+            ])
+            .unwrap_err();
+            assert!(
+                err.to_string().contains("OPENPLAN_MODEL_IDLE_MINUTES"),
+                "{err}"
+            );
         }
     }
 

@@ -52,6 +52,7 @@ The browser only talks to the Vercel origin. Vercel rewrites `/api/*` to the Ren
 | `OPENPLAN_LOG` | `info` | Log filter. |
 | `OPENPLAN_TRUSTED_PROXY_HOPS` | `0` | Number of proxies in front of the server. See below. |
 | `OPENPLAN_DB_POOL_SIZE` | `10` | Most database connections the server holds open. A request that finds none free waits up to 10 seconds, then fails with a 500. Keep it below your database's connection limit. |
+| `OPENPLAN_MODEL_IDLE_MINUTES` | `30` | Minutes a model may go unused before it is saved as a checkpoint and unloaded from memory. Its next use loads it again. |
 
 ### Trusted proxy hops
 

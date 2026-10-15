@@ -292,6 +292,18 @@ export interface components {
             field: string;
             message: string;
         };
+        /** @description A problem found in a formula, located by the byte positions of the part it concerns. */
+        FormulaProblem: {
+            /** @description A stable code such as `formula.unknown_name`. */
+            code: string;
+            /** @description Where the problem ends, in bytes from the start of the formula. */
+            end: number;
+            message: string;
+            /** @description Where the problem starts, in bytes from the start of the formula. */
+            start: number;
+            /** @description What to write instead, such as the name that was probably meant. */
+            suggestion?: string | null;
+        };
         HealthResponse: {
             status: string;
             version: string;
@@ -343,6 +355,11 @@ export interface components {
             detail: string;
             /** @description What is wrong with each field; only on 422 responses. */
             errors?: components["schemas"]["FieldError"][];
+            /**
+             * @description What is wrong with a formula, with where; only on formula errors, which also list the
+             *     problems in `errors`.
+             */
+            formula_errors?: components["schemas"]["FormulaProblem"][];
             /** Format: int32 */
             status: number;
             /** @description The reason phrase of the HTTP status. */
