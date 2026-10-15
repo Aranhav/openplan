@@ -11,7 +11,7 @@ mod parser;
 mod resolve;
 
 pub use ast::{BinOp, Expr, Modifier, ModifierKind, Name, Span, UnOp};
-pub(crate) use eval::{ColumnSource, EvalCtx, evaluate_formula};
+pub(crate) use eval::{ColumnSource, EvalCtx, eval_all, eval_cells};
 pub use parser::parse;
 pub use resolve::{SelectTarget, TExpr, TModifier, resolve};
 

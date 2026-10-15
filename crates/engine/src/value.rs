@@ -215,6 +215,26 @@ impl Column {
         }
     }
 
+    /// Overwrites the cells at `at` with the cells of `values`, in order. Panics if an index is
+    /// out of range or `values` is not of the column's kind, which callers rule out by deriving
+    /// both from the same format.
+    pub(crate) fn scatter(&mut self, at: &[usize], values: &Column) {
+        fn put<T: Clone>(cells: &mut [T], at: &[usize], values: &[T]) {
+            for (&i, value) in at.iter().zip(values) {
+                cells[i] = value.clone();
+            }
+        }
+        match (self, values) {
+            (Column::Number(cells), Column::Number(values)) => put(cells, at, values),
+            (Column::Boolean(cells), Column::Boolean(values)) => put(cells, at, values),
+            (Column::Text(cells), Column::Text(values)) => put(cells, at, values),
+            (Column::Date(cells), Column::Date(values)) => put(cells, at, values),
+            (Column::Item(cells), Column::Item(values)) => put(cells, at, values),
+            (Column::Period(cells), Column::Period(values)) => put(cells, at, values),
+            _ => unreachable!("column kinds differ"),
+        }
+    }
+
     /// Lays the cells of a column over `old` out again over `new`. `maps[axis][old position]`
     /// is the position that coordinate takes on `new`, or `None` to drop its cells; cells of
     /// positions nothing maps to are blank.

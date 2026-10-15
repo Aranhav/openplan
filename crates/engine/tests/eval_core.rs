@@ -3,9 +3,9 @@ use std::time::Instant;
 
 use chrono::NaiveDate;
 use openplan_engine::{
-    Axis, AxisSpec, Calendar, CellEdit, Command, CoordToken, Format, FormulaError, ItemId,
-    ItemSpec, LevelSpec, LineItem, LineItemId, LineItemPatch, ListId, Model, ModuleId, SubsetId,
-    SummaryMethod, TimeLevel, TimeRangeId, TimeScale, Value, VersionsScope,
+    Axis, AxisSpec, Calendar, CellEdit, Command, CoordToken, EngineError, Format, FormulaError,
+    ItemId, ItemSpec, LevelSpec, LineItem, LineItemId, LineItemPatch, ListId, Model, ModuleId,
+    SubsetId, SummaryMethod, TimeLevel, TimeRangeId, TimeScale, Value, VersionsScope,
 };
 
 fn calendar(years: u8) -> Calendar {
@@ -113,6 +113,21 @@ impl Fx {
 
     fn calc_number(&mut self, module: ModuleId, name: &str, formula: &str) -> LineItemId {
         self.calc(module, name, Format::number(), formula)
+    }
+
+    /// What is wrong with a formula that the model refuses for a new line item.
+    fn rejected(
+        &mut self,
+        module: ModuleId,
+        name: &str,
+        format: Format,
+        formula: &str,
+    ) -> Vec<FormulaError> {
+        let line_item = line_item(module, name, format, Some(formula));
+        match self.model.apply(Command::CreateLineItem(line_item)) {
+            Err(EngineError::Formula(errors)) => errors,
+            other => panic!("{formula} should be rejected, found {other:?}"),
+        }
     }
 
     fn set(&mut self, line_item: LineItemId, coords: Vec<CoordToken>, value: Value) {
@@ -478,12 +493,10 @@ fn source_only_list_without_top_level_errors() {
     let detail = w.fx.module("Detail", vec![list_axis(w.countries)]);
     let revenue = w.fx.number(detail, "Revenue");
     let company = w.fx.module("Company", Vec::new());
-    let total = w.fx.calc_number(company, "Total", "Revenue");
     w.fx.set_number(revenue, vec![item(w.us)], 10.0);
 
-    let changes = w.fx.model.recalc_all().unwrap();
+    let errors = w.fx.rejected(company, "Total", Format::number(), "Revenue");
 
-    let errors = w.fx.errors(total);
     assert_eq!(errors.len(), 1);
     assert_eq!(errors[0].code, "formula.dimension");
     assert_eq!(
@@ -491,8 +504,6 @@ fn source_only_list_without_top_level_errors() {
         "Use SUM, LOOKUP or SELECT to map dimension 'Countries'."
     );
     assert_eq!((errors[0].start, errors[0].end), (0, 7));
-    assert_eq!(w.fx.number_at(total, Vec::new()), 0.0);
-    assert!(changes.changed_line_items.contains(&total));
 }
 
 #[test]
@@ -695,15 +706,12 @@ fn a_source_with_versions_needs_a_selection() {
     let fin = fx.module("Finance", vec![month_axis(), AxisSpec::Versions]);
     let amount = fx.number(fin, "Amount");
     let report = fx.module("Report", vec![month_axis()]);
-    let bad = fx.calc_number(report, "Unselected", "Amount");
     fx.set_number(amount, vec![period("Jan 26"), fx.version("Budget")], 5.0);
 
-    fx.recalc();
+    let errors = fx.rejected(report, "Unselected", Format::number(), "Amount");
 
-    let errors = fx.errors(bad);
     assert_eq!(errors[0].code, "formula.dimension");
     assert_eq!(errors[0].message, "Use SELECT to choose a version.");
-    assert_eq!(fx.number_at(bad, vec![period("Jan 26")]), 0.0);
 }
 
 #[test]
@@ -1242,35 +1250,12 @@ fn item_of_a_dimension_the_line_item_lacks_is_a_dimension_error() {
     w.fx.items(products, &[("Widget", None)]);
     let module = w.fx.module("Plain", vec![month_axis(), AxisSpec::Versions]);
     let detail = w.fx.module("Detail", vec![list_axis(w.countries)]);
-    let no_list = w.fx.calc(
+    let errors = w.fx.rejected(
         module,
         "No List",
         Format::Boolean,
         "ITEM(Products) = Products.Widget",
     );
-    let no_versions = w.fx.calc(
-        detail,
-        "No Versions",
-        Format::Boolean,
-        "ITEM(Versions) = Versions.Budget",
-    );
-    // A list in the same hierarchy as a dimension of the line item is not that dimension.
-    let no_regions = w.fx.calc(
-        detail,
-        "No Regions",
-        Format::Boolean,
-        "ITEM(Regions) = Regions.Europe",
-    );
-    let fine = w.fx.calc(
-        detail,
-        "Fine",
-        Format::Boolean,
-        "ITEM(Countries) = Countries.US",
-    );
-
-    w.fx.recalc();
-
-    let errors = w.fx.errors(no_list);
     assert_eq!(errors.len(), 1);
     assert_eq!(errors[0].code, "formula.dimension");
     assert_eq!(
@@ -1278,17 +1263,34 @@ fn item_of_a_dimension_the_line_item_lacks_is_a_dimension_error() {
         "This formula's line item has no 'Products' dimension."
     );
     assert_eq!((errors[0].start, errors[0].end), (5, 13));
-    let errors = w.fx.errors(no_versions);
+    let errors = w.fx.rejected(
+        detail,
+        "No Versions",
+        Format::Boolean,
+        "ITEM(Versions) = Versions.Budget",
+    );
     assert_eq!(errors[0].code, "formula.dimension");
     assert_eq!(
         errors[0].message,
         "This formula's line item has no 'Versions' dimension."
     );
     assert_eq!((errors[0].start, errors[0].end), (5, 13));
-    let errors = w.fx.errors(no_regions);
+    // A list in the same hierarchy as a dimension of the line item is not that dimension.
+    let errors = w.fx.rejected(
+        detail,
+        "No Regions",
+        Format::Boolean,
+        "ITEM(Regions) = Regions.Europe",
+    );
     assert_eq!(
         errors[0].message,
         "This formula's line item has no 'Regions' dimension."
+    );
+    let fine = w.fx.calc(
+        detail,
+        "Fine",
+        Format::Boolean,
+        "ITEM(Countries) = Countries.US",
     );
     assert!(w.fx.model.line_item_errors(fine).is_none());
     assert_eq!(w.fx.get(fine, vec![item(w.us)]), Value::Boolean(true));
@@ -1388,7 +1390,7 @@ fn concat_writes_numbers_and_dates_as_text() {
 }
 
 #[test]
-fn structural_changes_drop_stale_calculated_values_until_recalculation() {
+fn structural_changes_recalculate_what_no_longer_fits() {
     let mut fx = Fx::new(1);
     let products = fx.list("Products", None, None);
     let [widget] = fx.items(products, &[("Widget", None)])[..] else {
@@ -1398,36 +1400,43 @@ fn structural_changes_drop_stale_calculated_values_until_recalculation() {
     let units = fx.number(module, "Units");
     let doubled = fx.calc_number(module, "Doubled", "Units * 2");
     fx.set_number(units, vec![item(widget)], 4.0);
-    fx.recalc();
     assert_eq!(fx.number_at(doubled, vec![item(widget)]), 8.0);
 
+    // The calculated cells no longer fit the line item's cells, so they are calculated again.
     let gadget = fx.items(products, &[("Gadget", None)])[0];
 
-    // The calculated cells no longer fit the line item's cells, so they read as blank.
-    assert_eq!(fx.number_at(doubled, vec![item(widget)]), 0.0);
-    assert_eq!(fx.number_at(doubled, vec![item(gadget)]), 0.0);
-    fx.recalc();
     assert_eq!(fx.number_at(doubled, vec![item(widget)]), 8.0);
     assert_eq!(fx.number_at(doubled, vec![item(gadget)]), 0.0);
 
     fx.model
         .apply(Command::DeleteLineItem { id: units })
         .unwrap();
-    fx.recalc();
     let errors = fx.errors(doubled);
     assert_eq!(errors[0].code, "formula.unknown_name");
     assert_eq!(fx.number_at(doubled, vec![item(widget)]), 0.0);
 }
 
 #[test]
-fn a_formula_that_does_not_resolve_leaves_the_line_item_in_error() {
+fn a_formula_that_stops_resolving_leaves_the_line_item_in_error() {
     let mut fx = Fx::new(1);
     let module = fx.module("Sales", vec![month_axis()]);
     let units = fx.number(module, "Units");
-    let broken = fx.calc_number(module, "Broken", "Unitz + 1");
     fx.set_number(units, vec![period("Jan 26")], 4.0);
 
-    fx.recalc();
+    let errors = fx.rejected(module, "Broken", Format::number(), "Unitz + 1");
+    assert_eq!(errors[0].code, "formula.unknown_name");
+    let broken = fx.calc_number(module, "Broken", "Units + 1");
+    assert_eq!(fx.number_at(broken, vec![period("Jan 26")]), 5.0);
+
+    fx.model
+        .apply(Command::UpdateLineItem {
+            id: units,
+            patch: LineItemPatch {
+                name: Some("Volume".to_string()),
+                ..LineItemPatch::default()
+            },
+        })
+        .unwrap();
 
     let errors = fx.errors(broken);
     assert_eq!(errors[0].code, "formula.unknown_name");
@@ -1438,12 +1447,11 @@ fn a_formula_that_does_not_resolve_leaves_the_line_item_in_error() {
         .apply(Command::UpdateLineItem {
             id: broken,
             patch: LineItemPatch {
-                formula: Some(Some("Units + 1".to_string())),
+                formula: Some(Some("Volume + 1".to_string())),
                 ..LineItemPatch::default()
             },
         })
         .unwrap();
-    fx.recalc();
 
     assert!(fx.model.line_item_errors(broken).is_none());
     assert_eq!(fx.number_at(broken, vec![period("Jan 26")]), 5.0);
@@ -1454,17 +1462,14 @@ fn a_problem_of_a_call_is_located_at_the_call() {
     let mut fx = Fx::new(1);
     let module = fx.module("Sales", Vec::new());
     let units = fx.number(module, "Units");
-    let wrapped = fx.calc_number(module, "Wrapped", "1 + CUMULATE(Units)");
     fx.set_number(units, Vec::new(), -4.0);
 
-    fx.recalc();
-
     // The line item has no Time dimension, which is a formula problem at the call.
-    let errors = fx.errors(wrapped);
+    let errors = fx.rejected(module, "Wrapped", Format::number(), "1 + CUMULATE(Units)");
+
     assert_eq!(errors[0].code, "formula.dimension");
     assert_eq!(errors[0].message, "This function needs a Time dimension.");
     assert_eq!((errors[0].start, errors[0].end), (4, 19));
-    assert_eq!(fx.number_at(wrapped, Vec::new()), 0.0);
 }
 
 #[test]
@@ -1487,7 +1492,7 @@ fn recalculation_reports_the_line_items_it_computed() {
 }
 
 #[test]
-fn summaries_of_calculated_line_items_follow_recalculation() {
+fn summaries_of_calculated_line_items_follow_the_values_they_are_calculated_from() {
     let mut w = world();
     let detail = w.fx.module("Detail", vec![list_axis(w.countries)]);
     let revenue = w.fx.number(detail, "Revenue");
@@ -1504,11 +1509,8 @@ fn summaries_of_calculated_line_items_follow_recalculation() {
         other => panic!("expected a number, found {other:?}"),
     };
 
-    assert_eq!(read(&w.fx), 0.0);
-    w.fx.recalc();
     assert_eq!(read(&w.fx), 60.0);
     w.fx.set_number(revenue, vec![item(w.us)], 15.0);
-    w.fx.recalc();
     assert_eq!(read(&w.fx), 70.0);
 }
 
@@ -1915,7 +1917,6 @@ fn item_dimension_is_checked_even_when_a_branch_is_skipped() {
     let module = fx.module("Plain", vec![month_axis()]);
     let units = fx.number(module, "Units");
     let formula = "IF Units > 0 THEN 1 ELSE (IF ITEM(Products) = Products.Widget THEN 2 ELSE 3)";
-    let pick = fx.calc_number(module, "Pick", formula);
     let start = formula.find("ITEM(").unwrap() + "ITEM(".len();
     let months: Vec<String> = (0..12)
         .map(|month| calendar(1).label(TimeLevel::Month, month))
@@ -1932,8 +1933,7 @@ fn item_dimension_is_checked_even_when_a_branch_is_skipped() {
     // and yet the formula is wrong whatever the data.
     for value in [1.0, 0.0] {
         fill(&mut fx, value);
-        fx.recalc();
-        let errors = fx.errors(pick);
+        let errors = fx.rejected(module, "Pick", Format::number(), formula);
         assert_eq!(errors.len(), 1, "units {value}");
         assert_eq!(errors[0].code, "formula.dimension");
         assert_eq!(
@@ -1948,7 +1948,7 @@ fn item_dimension_is_checked_even_when_a_branch_is_skipped() {
 }
 
 #[test]
-fn a_changed_subset_drops_calculated_values_until_recalculation() {
+fn a_changed_subset_recalculates_calculated_values() {
     let mut fx = Fx::new(1);
     let products = fx.list("Products", None, None);
     let [a, b, c] = fx.items(products, &[("A", None), ("B", None), ("C", None)])[..] else {
@@ -1960,7 +1960,6 @@ fn a_changed_subset_drops_calculated_values_until_recalculation() {
     let doubled = fx.calc_number(module, "Doubled", "Value * 2");
     fx.set_number(value, vec![item(a)], 1.0);
     fx.set_number(value, vec![item(b)], 2.0);
-    fx.recalc();
     assert_eq!(fx.number_at(doubled, vec![item(b)]), 4.0);
 
     fx.model
@@ -1971,10 +1970,7 @@ fn a_changed_subset_drops_calculated_values_until_recalculation() {
         })
         .unwrap();
 
-    // C does not inherit B's value; nothing is shown until the next recalculation.
-    assert_eq!(fx.number_at(doubled, vec![item(c)]), 0.0);
-    assert_eq!(fx.number_at(doubled, vec![item(a)]), 0.0);
-    fx.recalc();
+    // C does not inherit B's value.
     assert_eq!(fx.number_at(doubled, vec![item(a)]), 2.0);
     assert_eq!(fx.number_at(doubled, vec![item(c)]), 0.0);
 }
@@ -2010,7 +2006,7 @@ fn deleting_an_item_blanks_calculated_values_that_name_it() {
 }
 
 #[test]
-fn a_changed_version_restriction_drops_calculated_values_until_recalculation() {
+fn a_changed_version_restriction_recalculates_calculated_values() {
     let mut fx = Fx::new(1);
     let module = fx.module("Finance", vec![month_axis(), AxisSpec::Versions]);
     let amount = fx.number(module, "Amount");
@@ -2022,7 +2018,6 @@ fn a_changed_version_restriction_drops_calculated_values_until_recalculation() {
     let (budget, forecast) = (fx.version("Budget"), fx.version("Forecast"));
     fx.set_number(amount, vec![period("Jan 26"), budget.clone()], 2.0);
     fx.set_number(amount, vec![period("Jan 26"), forecast.clone()], 3.0);
-    fx.recalc();
     assert_eq!(
         fx.number_at(narrow, vec![period("Jan 26"), budget.clone()]),
         2.0
@@ -2038,24 +2033,22 @@ fn a_changed_version_restriction_drops_calculated_values_until_recalculation() {
         })
         .unwrap();
 
-    // The versions swapped places, so the old cells would be read as each other's.
+    // The versions swapped places, and each keeps its own cells.
     assert_eq!(
         fx.number_at(narrow, vec![period("Jan 26"), budget.clone()]),
-        0.0
+        2.0
     );
-    fx.recalc();
     assert_eq!(fx.number_at(narrow, vec![period("Jan 26"), budget]), 2.0);
     assert_eq!(fx.number_at(narrow, vec![period("Jan 26"), forecast]), 3.0);
 }
 
 #[test]
-fn a_changed_fiscal_start_drops_calculated_time_values() {
+fn a_changed_fiscal_start_recalculates_calculated_time_values() {
     let mut fx = Fx::new(1);
     let module = fx.module("Sales", vec![month_axis()]);
     let units = fx.number(module, "Units");
     let doubled = fx.calc_number(module, "Doubled", "Units + 5");
     fx.set_number(units, vec![period("Jan 26")], 5.0);
-    fx.recalc();
     assert_eq!(fx.number_at(doubled, vec![period("Jan 26")]), 10.0);
 
     fx.model
@@ -2069,9 +2062,7 @@ fn a_changed_fiscal_start_drops_calculated_time_values() {
         })
         .unwrap();
 
-    // The first month is now April 2026, and nothing computed for January is shown there.
-    assert_eq!(fx.number_at(doubled, vec![period("Apr 26")]), 0.0);
-    fx.recalc();
+    // The first month is now April 2026, and what was typed in for January is gone.
     assert_eq!(fx.number_at(doubled, vec![period("Apr 26")]), 5.0);
 }
 
@@ -2175,26 +2166,27 @@ fn select_without_a_matching_dimension_is_a_dimension_error() {
     let rates = fx.module("Rates", vec![month_axis()]);
     let rate = fx.number(rates, "Rate");
     let report = fx.module("Report", vec![month_axis()]);
-    let no_version = fx.calc_number(report, "No Version", "Rate[SELECT: Versions.Budget]");
-    let no_list = fx.calc_number(report, "No List", "Rate[SELECT: Products.Widget]");
-    let no_time = fx.calc_number(report, "No Time", "Tax[SELECT: Time.'Jan 26']");
     fx.set_number(rate, vec![period("Jan 26")], 1.0);
     fx.set_number(tax, Vec::new(), 1.0);
 
-    fx.recalc();
-
-    for (line_item, message) in [
+    for (name, formula, message) in [
         (
-            no_version,
+            "No Version",
+            "Rate[SELECT: Versions.Budget]",
             "'Rate' has no Versions dimension for SELECT to fix.",
         ),
         (
-            no_list,
+            "No List",
+            "Rate[SELECT: Products.Widget]",
             "'Rate' has no dimension 'Products' for SELECT to fix.",
         ),
-        (no_time, "'Tax' has no Time dimension for SELECT to fix."),
+        (
+            "No Time",
+            "Tax[SELECT: Time.'Jan 26']",
+            "'Tax' has no Time dimension for SELECT to fix.",
+        ),
     ] {
-        let errors = fx.errors(line_item);
+        let errors = fx.rejected(report, name, Format::number(), formula);
         assert_eq!(errors[0].code, "formula.dimension");
         assert_eq!(errors[0].message, message);
     }

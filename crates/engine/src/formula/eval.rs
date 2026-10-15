@@ -9,6 +9,7 @@
 //! position of the version among all versions of the model, and a period its index at its
 //! level on the model calendar.
 
+use std::ops::Range;
 use std::sync::{Arc, PoisonError, RwLock};
 
 use rayon::prelude::*;
@@ -16,13 +17,13 @@ use rayon::prelude::*;
 use crate::error::{EngineError, FormulaError};
 use crate::ids::{ItemId, LineItemId, ListId, VersionId};
 use crate::shape::Shape;
-use crate::structure::{Layout, LineItem, Structure};
+use crate::structure::{Layout, Structure};
 use crate::summary::{LevelSpec, Summary};
 use crate::value::{BLANK_ITEM, Cell, Column, Value, ValueType};
 
 use super::align::{Reader, build_reader};
 use super::functions::{arg_target, check_fn, eval_fn, warm_fn};
-use super::{DIMENSION, Span, TExpr, TModifier, UnOp, parse, resolve};
+use super::{DIMENSION, Span, TExpr, TModifier, UnOp};
 
 pub(super) mod ops;
 
@@ -158,40 +159,37 @@ impl<'a> EvalCtx<'a> {
     }
 }
 
-/// Evaluates the formula of `line_item` for every cell of its `shape`, or says what is wrong
-/// with the formula.
-pub(crate) fn evaluate_formula(
-    structure: &Structure,
-    columns: &dyn ColumnSource,
-    line_item: &LineItem,
-    layout: &Layout,
-    shape: &Shape,
-) -> Result<Column, Vec<FormulaError>> {
-    let expr = parse(line_item.formula.as_deref().unwrap_or_default())?;
-    let typed = resolve(structure, line_item.id, &expr)?;
-    let ctx = EvalCtx::new(structure, columns, layout);
-    eval_all(&ctx, shape, &typed).map_err(|error| match error {
-        EngineError::Formula(errors) => errors,
-        other => vec![FormulaError {
-            code: other.code(),
-            message: other.to_string(),
-            start: 0,
-            end: 0,
-            suggestion: None,
-        }],
-    })
-}
-
 /// Evaluates `expr` for every cell of `target`, in chunks that run in parallel. Numbers that
 /// overflowed or have no value come out as 0, as does a negative zero.
 pub(crate) fn eval_all(ctx: &EvalCtx, target: &Shape, expr: &TExpr) -> Result<Column, EngineError> {
+    check(ctx, target, expr)?;
+    eval_whole(ctx, target, expr)
+}
+
+/// Evaluates `expr` for the target cells at the linear indices `cells` only, and returns one
+/// value per index, in that order. It is [`eval_all`] for the part of the target that changed.
+pub(crate) fn eval_cells(
+    ctx: &EvalCtx,
+    target: &Shape,
+    expr: &TExpr,
+    cells: &[usize],
+) -> Result<Column, EngineError> {
+    check(ctx, target, expr)?;
+    eval_chunks(ctx, target, expr, cells.len(), |range| {
+        cells[range].to_vec()
+    })
+}
+
+/// Everything wrong with `expr` as the formula for `target`, which can be told without
+/// evaluating a cell.
+fn check(ctx: &EvalCtx, target: &Shape, expr: &TExpr) -> Result<(), EngineError> {
     let mut problems = Vec::new();
     prepare(ctx, target, expr, &mut problems);
-    if !problems.is_empty() {
-        problems.sort_by_key(|problem| (problem.start, problem.end));
-        return Err(EngineError::Formula(problems));
+    if problems.is_empty() {
+        return Ok(());
     }
-    eval_whole(ctx, target, expr)
+    problems.sort_by_key(|problem| (problem.start, problem.end));
+    Err(EngineError::Formula(problems))
 }
 
 /// Evaluates `expr` for every cell of `target`, in chunks that run in parallel, without
@@ -201,14 +199,25 @@ pub(crate) fn eval_whole(
     target: &Shape,
     expr: &TExpr,
 ) -> Result<Column, EngineError> {
-    let size = target.size();
+    eval_chunks(ctx, target, expr, target.size(), |range| range.collect())
+}
+
+/// Evaluates `expr` for `count` target cells in chunks that run in parallel. `cells` gives the
+/// linear indices of the cells that a range of positions among the `count` stands for.
+fn eval_chunks(
+    ctx: &EvalCtx,
+    target: &Shape,
+    expr: &TExpr,
+    count: usize,
+    cells: impl Fn(Range<usize>) -> Vec<usize> + Sync,
+) -> Result<Column, EngineError> {
     let run = |start: usize| {
-        let idx: Vec<usize> = (start..(start + CHUNK).min(size)).collect();
+        let idx = cells(start..(start + CHUNK).min(count));
         let mut column = eval(ctx, target, expr, &idx)?;
         column.sanitize();
         Ok(column)
     };
-    let starts: Vec<usize> = (0..size).step_by(CHUNK).collect();
+    let starts: Vec<usize> = (0..count).step_by(CHUNK).collect();
     let chunks: Vec<Result<Column, EngineError>> = if starts.len() > 1 {
         starts.par_iter().map(|&start| run(start)).collect()
     } else {

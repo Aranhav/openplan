@@ -1,25 +1,39 @@
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 
 use chrono::{Datelike, NaiveDate};
 
 use crate::calendar::Calendar;
 use crate::command::{CellEdit, ChangeSet, Command, CoordToken};
 use crate::error::{CellIssue, EngineError, FormulaError};
-use crate::formula::{ColumnSource, evaluate_formula};
+use crate::formula::ColumnSource;
+use crate::graph::Graph;
 use crate::ids::{LineItemId, ListId, VersionId};
 use crate::shape::{Axis, Shape};
 use crate::structure::{Layout, LineItem, Structure, level_name};
-use crate::summary::{
-    LevelSpec, Summary, SummaryCache, ratio_parts, roll_up, with_actual_before_switchover,
-};
+use crate::summary::{LevelSpec, Summary, SummaryCache, ratio_parts, roll_up};
 use crate::value::{BLANK_DATE, BLANK_ITEM, BLANK_PERIOD, Cell, Column, Format, Value, ValueType};
+
+mod recalc;
+mod working;
+
+use recalc::Session;
+use working::{Working, summarised_by_formula};
 
 /// Days from 0001-01-01 (day 1 of the common era) to 1970-01-01.
 pub(crate) const EPOCH_DAYS_FROM_CE: i32 = 719_163;
 
 const SWITCHOVER_MESSAGE: &str = "Periods before the switchover show Actual values.";
+
+/// What the last command, batch or full recalculation calculated.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RecalcStats {
+    /// Cells of calculated line items that were evaluated.
+    pub evaluated_cells: usize,
+    /// Calculated line items that were evaluated, wholly or in part.
+    pub line_items: usize,
+}
 
 /// A planning model: its structure, the values typed into input line items and the values
 /// calculated for the others.
@@ -31,6 +45,9 @@ pub struct Model {
     computed: HashMap<LineItemId, Arc<Column>>,
     /// What is wrong with the formulas of the calculated line items that have no values.
     errors: HashMap<LineItemId, Vec<FormulaError>>,
+    /// The compiled formulas of the calculated line items, and what reads what.
+    graph: Arc<Graph>,
+    stats: RecalcStats,
     generation: u64,
     summaries: SummaryCache,
 }
@@ -45,6 +62,8 @@ impl Model {
             inputs: HashMap::new(),
             computed: HashMap::new(),
             errors: HashMap::new(),
+            graph: Arc::new(Graph::default()),
+            stats: RecalcStats::default(),
             generation: 0,
             summaries: SummaryCache::default(),
         }
@@ -59,68 +78,51 @@ impl Model {
         self.generation
     }
 
-    /// Applies one command. A rejected command leaves the model unchanged.
+    /// Applies one command and calculates what it changes. A rejected command leaves the model
+    /// unchanged.
+    ///
+    /// A command that sets a formula is rejected, with the problems found, if the formula does
+    /// not compile or makes a circular reference that is not allowed. A command that breaks a
+    /// formula already set, such as deleting a line item it reads, is not: the formula's line
+    /// item has blank cells and its problems in [`Model::line_item_errors`] until it compiles
+    /// again.
     pub fn apply(&mut self, cmd: Command) -> Result<ChangeSet, EngineError> {
-        let mut changes = self.empty_change_set();
-        self.apply_command(cmd, &mut changes)?;
-        self.generation += 1;
-        changes.generation = self.generation;
-        self.summaries.record(&self.structure, &changes);
-        Ok(changes)
+        self.apply_batch(vec![cmd])
     }
 
-    /// Applies the commands in order as one change, all or nothing.
+    /// Applies the commands in order as one change, all or nothing, and calculates what they
+    /// change once at the end.
     pub fn apply_batch(&mut self, cmds: Vec<Command>) -> Result<ChangeSet, EngineError> {
-        let mut changes = self.empty_change_set();
         if cmds.is_empty() {
-            return Ok(changes);
+            return Ok(self.empty_change_set());
+        }
+        if cmds.iter().all(|cmd| cell_edits(cmd).is_some()) {
+            return self.run_cells(&cmds);
         }
         let mut work = self.clone();
-        for cmd in cmds {
-            work.apply_command(cmd, &mut changes)?;
-        }
-        work.generation += 1;
-        changes.generation = work.generation;
-        work.summaries.record(&work.structure, &changes);
+        let changes = work.run(cmds)?;
         *self = work;
         Ok(changes)
     }
 
-    /// Calculates every line item that has a formula, each from the values of the line items
-    /// computed before it in the order they were created, and returns the line items it
-    /// computed.
+    /// Calculates every line item that has a formula again, each from the cells typed in, and
+    /// returns the line items it calculated.
     ///
-    /// A line item whose formula does not resolve, or cannot be aligned with the line items it
-    /// reads, gets blank values and the problems in [`Model::line_item_errors`].
+    /// Commands calculate what they change, so this is only needed to start over. A line item
+    /// whose formula does not resolve, or cannot be aligned with the line items it reads, gets
+    /// blank values and the problems in [`Model::line_item_errors`].
     pub fn recalc_all(&mut self) -> Result<ChangeSet, EngineError> {
-        let structure = Arc::clone(&self.structure);
-        let mut working = Working {
-            structure: &structure,
-            inputs: &self.inputs,
-            computed: HashMap::new(),
-            rolled_up: Mutex::default(),
-            switched: Mutex::default(),
-        };
-        let mut errors = HashMap::new();
         let mut changes = self.empty_change_set();
-        for line_item in structure.line_items().filter(|li| li.formula.is_some()) {
-            let layout = structure.layout(line_item)?;
-            let shape = structure.shape_of(&layout)?;
-            let column = evaluate_formula(&structure, &working, line_item, &layout, &shape)
-                .unwrap_or_else(|problems| {
-                    errors.insert(line_item.id, problems);
-                    Column::new_blank(&line_item.format.value_type(), shape.size())
-                });
-            working.insert(line_item.id, column);
-            changes.note(line_item.id);
-        }
-        let Working { computed, .. } = working;
-        self.computed = computed;
-        self.errors = errors;
+        self.recalc_everything(&mut changes)?;
         self.generation += 1;
         changes.generation = self.generation;
         self.summaries.record(&self.structure, &changes);
         Ok(changes)
+    }
+
+    /// What the last command, batch or full recalculation calculated.
+    pub fn last_recalc_stats(&self) -> RecalcStats {
+        self.stats
     }
 
     /// What is wrong with the formula of a calculated line item that has no values because of
@@ -131,8 +133,8 @@ impl Model {
 
     /// Reads leaf cells of a line item, each addressed by one token per axis.
     ///
-    /// A calculated line item reads as blank until [`Model::recalc_all`] has computed it, and
-    /// shows the values of the last recalculation, not of the edits made since.
+    /// A calculated line item shows the values calculated by the last command; one whose
+    /// formula has errors reads as blank.
     pub fn read_cells(
         &self,
         li: LineItemId,
@@ -219,27 +221,30 @@ impl Model {
             return Ok(cached);
         }
         let shape = self.structure.shape_of(layout)?;
-        let src = self.stored_column(line_item, &shape);
-        let part_columns = parts
-            .map(|(numerator, denominator)| {
-                Ok::<_, EngineError>((
-                    self.part_column(numerator, &shape)?,
-                    self.part_column(denominator, &shape)?,
-                ))
-            })
-            .transpose()?;
-        let rolled_up = roll_up(
-            &self.structure,
-            line_item,
-            &shape,
-            layout.restriction.as_deref(),
-            &src,
-            part_columns
-                .as_ref()
-                .map(|(numerator, denominator)| (&**numerator, &**denominator)),
-            levels,
-        )?;
-        let summary = Arc::new(rolled_up);
+        let summary = if summarised_by_formula(line_item, &shape, levels) {
+            self.working().aggregated(line_item.id, levels)?
+        } else {
+            let src = self.stored_column(line_item, &shape);
+            let part_columns = parts
+                .map(|(numerator, denominator)| {
+                    Ok::<_, EngineError>((
+                        self.part_column(numerator, &shape)?,
+                        self.part_column(denominator, &shape)?,
+                    ))
+                })
+                .transpose()?;
+            Arc::new(roll_up(
+                &self.structure,
+                line_item,
+                &shape,
+                layout.restriction.as_deref(),
+                &src,
+                part_columns
+                    .as_ref()
+                    .map(|(numerator, denominator)| (&**numerator, &**denominator)),
+                levels,
+            )?)
+        };
         self.summaries
             .insert(line_item.id, levels, fingerprint, Arc::clone(&summary));
         Ok(summary)
@@ -269,6 +274,16 @@ impl Model {
         Ok(self.stored_column(part, shape))
     }
 
+    /// The values of the line items as formulas read them.
+    fn working(&self) -> Working<'_> {
+        Working::new(
+            &self.structure,
+            &self.graph,
+            &self.inputs,
+            self.computed.clone(),
+        )
+    }
+
     fn empty_change_set(&self) -> ChangeSet {
         ChangeSet {
             generation: self.generation,
@@ -277,29 +292,75 @@ impl Model {
         }
     }
 
-    fn apply_command(
+    /// Applies the commands in order to the model itself and calculates what they change.
+    /// Commands applied before one that fails stay applied.
+    fn run(&mut self, commands: Vec<Command>) -> Result<ChangeSet, EngineError> {
+        let before = Arc::clone(&self.structure);
+        let graph_before = Arc::clone(&self.graph);
+        let mut session = Session::new(self.empty_change_set());
+        for command in commands {
+            self.stage(command, &mut session)?;
+        }
+        self.finish(session, &before, &graph_before)
+    }
+
+    /// Writes the cells that commands of `SetCells` set, if all of them are valid, and
+    /// calculates what they change, without copying the columns they write.
+    fn run_cells(&mut self, commands: &[Command]) -> Result<ChangeSet, EngineError> {
+        let writes = commands
+            .iter()
+            .filter_map(cell_edits)
+            .map(|(line_item, edits)| self.check_cells(line_item, edits))
+            .collect::<Result<Vec<_>, _>>()?;
+        let before = Arc::clone(&self.structure);
+        let graph_before = Arc::clone(&self.graph);
+        let mut session = Session::new(self.empty_change_set());
+        for write in writes {
+            self.write_cells(write, &mut session);
+        }
+        self.finish(session, &before, &graph_before)
+    }
+
+    /// Calculates what a session has changed and counts it as one change of the model.
+    fn finish(
         &mut self,
-        command: Command,
-        changes: &mut ChangeSet,
-    ) -> Result<(), EngineError> {
-        if let Command::SetCells { line_item, edits } = command {
-            return self.set_cells(line_item, &edits, changes);
+        session: Session,
+        before: &Structure,
+        graph_before: &Graph,
+    ) -> Result<ChangeSet, EngineError> {
+        let mut changes = self.settle(session, before, graph_before)?;
+        self.generation += 1;
+        changes.generation = self.generation;
+        self.summaries.record(&self.structure, &changes);
+        Ok(changes)
+    }
+
+    /// Puts the structure and cells a command changes in place, leaving the calculated cells
+    /// that depend on them for the end of the batch.
+    fn stage(&mut self, command: Command, session: &mut Session) -> Result<(), EngineError> {
+        match &command {
+            Command::SetCells { line_item, edits } => {
+                let write = self.check_cells(*line_item, edits)?;
+                self.write_cells(write, session);
+                return Ok(());
+            }
+            Command::CreateLineItem(line_item) if line_item.formula.is_some() => {
+                session.touched(line_item.id);
+            }
+            Command::UpdateLineItem { id, patch } if matches!(patch.formula, Some(Some(_))) => {
+                session.touched(*id);
+            }
+            _ => {}
         }
         let old = Arc::clone(&self.structure);
-        let old_inputs = self.inputs.clone();
-        let result = self.apply_structural(command, &old, changes);
-        if result.is_err() {
-            self.structure = old;
-            self.inputs = old_inputs;
-        }
-        result
+        self.apply_structural(command, &old, session)
     }
 
     fn apply_structural(
         &mut self,
         command: Command,
         old: &Structure,
-        changes: &mut ChangeSet,
+        session: &mut Session,
     ) -> Result<(), EngineError> {
         let deleted_items = match &command {
             Command::DeleteListItems { list, ids } => old.list(*list).map(|source| {
@@ -309,10 +370,10 @@ impl Model {
             _ => None,
         };
         Arc::make_mut(&mut self.structure).apply(command)?;
-        changes.structure_changed = true;
-        self.reconcile_inputs(old, changes)?;
+        session.changes.structure_changed = true;
+        self.reconcile_inputs(old, session)?;
         if let Some((list, indices)) = deleted_items {
-            self.blank_item_cells(list, &indices, changes);
+            self.blank_item_cells(list, &indices, session);
         }
         Ok(())
     }
@@ -328,7 +389,7 @@ impl Model {
     fn reconcile_inputs(
         &mut self,
         old: &Structure,
-        changes: &mut ChangeSet,
+        session: &mut Session,
     ) -> Result<(), EngineError> {
         let new = Arc::clone(&self.structure);
         let time_changed = old.calendar.years != new.calendar.years
@@ -342,15 +403,15 @@ impl Model {
         }
         for id in stale {
             self.computed.remove(&id);
-            changes.note(id);
+            session.replaced(id);
         }
         self.errors
             .retain(|id, _| new.line_item(*id).is_some_and(|li| li.formula.is_some()));
         for line_item in old.line_items().filter(|li| new.line_item(li.id).is_none()) {
-            changes.note(line_item.id);
+            session.replaced(line_item.id);
         }
         for line_item in new.line_items().filter(|li| old.line_item(li.id).is_none()) {
-            changes.note(line_item.id);
+            session.replaced(line_item.id);
         }
         let dropped: Vec<LineItemId> = self
             .inputs
@@ -360,7 +421,7 @@ impl Model {
             .collect();
         for id in dropped {
             self.inputs.remove(&id);
-            changes.note(id);
+            session.replaced(id);
         }
 
         for line_item in new.line_items().filter(|li| li.formula.is_none()) {
@@ -398,13 +459,13 @@ impl Model {
                 }
             };
             self.inputs.insert(line_item.id, Arc::new(column));
-            changes.note(line_item.id);
+            session.replaced(line_item.id);
         }
         Ok(())
     }
 
     /// Blanks list-formatted cells, typed in or calculated, that point at deleted items of `list`.
-    fn blank_item_cells(&mut self, list: ListId, doomed: &HashSet<u32>, changes: &mut ChangeSet) {
+    fn blank_item_cells(&mut self, list: ListId, doomed: &HashSet<u32>, session: &mut Session) {
         let structure = Arc::clone(&self.structure);
         let formatted = structure
             .line_items()
@@ -427,17 +488,12 @@ impl Model {
                     *cell = BLANK_ITEM;
                 }
             }
-            changes.note(line_item.id);
+            session.replaced(line_item.id);
         }
     }
 
-    /// Validates every edit and, only if all are valid, writes them.
-    fn set_cells(
-        &mut self,
-        id: LineItemId,
-        edits: &[CellEdit],
-        changes: &mut ChangeSet,
-    ) -> Result<(), EngineError> {
+    /// Validates every edit of a `SetCells` command and works out the cells to write.
+    fn check_cells(&self, id: LineItemId, edits: &[CellEdit]) -> Result<CellWrite, EngineError> {
         let structure = Arc::clone(&self.structure);
         let line_item = structure
             .line_item(id)
@@ -474,19 +530,50 @@ impl Model {
         if !issues.is_empty() {
             return Err(EngineError::InvalidValue { cells: issues });
         }
-        if writes.is_empty() {
-            return Ok(());
+        Ok(CellWrite {
+            line_item: id,
+            cells: writes,
+            ty,
+            size: shape.size(),
+        })
+    }
+
+    fn write_cells(&mut self, write: CellWrite, session: &mut Session) {
+        let CellWrite {
+            line_item,
+            cells,
+            ty,
+            size,
+        } = write;
+        if cells.is_empty() {
+            return;
         }
+        session.wrote(line_item, cells.iter().map(|(position, _)| *position));
         let column = self
             .inputs
-            .entry(id)
-            .or_insert_with(|| Arc::new(Column::new_blank(&ty, shape.size())));
+            .entry(line_item)
+            .or_insert_with(|| Arc::new(Column::new_blank(&ty, size)));
         let column = Arc::make_mut(column);
-        for (position, cell) in writes {
+        for (position, cell) in cells {
             column.set(position, cell);
         }
-        changes.note(id);
-        Ok(())
+    }
+}
+
+/// The cells a `SetCells` command writes, checked: their positions in the column of the line
+/// item and their values.
+struct CellWrite {
+    line_item: LineItemId,
+    cells: Vec<(usize, Cell)>,
+    ty: ValueType,
+    size: usize,
+}
+
+/// The line item and the edits of a command of `SetCells`.
+fn cell_edits(command: &Command) -> Option<(LineItemId, &[CellEdit])> {
+    match command {
+        Command::SetCells { line_item, edits } => Some((*line_item, edits)),
+        _ => None,
     }
 }
 
@@ -552,128 +639,6 @@ fn ratio_part<'a>(
         });
     }
     Ok(part)
-}
-
-/// The values a recalculation reads: the cells typed into input line items and the calculated
-/// ones computed so far. Calculated line items are read straight from here, never through the
-/// summary cache, which holds the values of the last recalculation.
-struct Working<'a> {
-    structure: &'a Structure,
-    inputs: &'a HashMap<LineItemId, Arc<Column>>,
-    computed: HashMap<LineItemId, Arc<Column>>,
-    /// Line items rolled up to the levels that formulas have asked for.
-    rolled_up: Mutex<HashMap<(LineItemId, LevelSpec), Arc<Summary>>>,
-    /// Calculated or typed-in cells as formulas read them, where that differs from the cells.
-    switched: Mutex<HashMap<LineItemId, Arc<Column>>>,
-}
-
-impl Working<'_> {
-    /// Records the values of a calculated line item and forgets the roll-ups that used its
-    /// earlier values.
-    fn insert(&mut self, id: LineItemId, column: Column) {
-        self.computed.insert(id, Arc::new(column));
-        let structure = self.structure;
-        let uses = |rolled: &LineItemId| {
-            structure
-                .line_item(*rolled)
-                .and_then(|li| ratio_parts(li).ok().flatten())
-                .is_some_and(|(numerator, denominator)| numerator == id || denominator == id)
-        };
-        self.rolled_up
-            .get_mut()
-            .unwrap_or_else(PoisonError::into_inner)
-            .retain(|(rolled, _), _| *rolled != id && !uses(rolled));
-        self.switched
-            .get_mut()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&id);
-    }
-
-    /// The cells of a line item over its own shape: typed in, calculated so far or blank.
-    fn cells(&self, id: LineItemId) -> Result<Arc<Column>, EngineError> {
-        if let Some(column) = self.inputs.get(&id).or_else(|| self.computed.get(&id)) {
-            return Ok(Arc::clone(column));
-        }
-        let line_item = self
-            .structure
-            .line_item(id)
-            .ok_or_else(|| missing_line_item(id))?;
-        let shape = self.structure.line_item_shape(id)?;
-        Ok(Arc::new(Column::new_blank(
-            &line_item.format.value_type(),
-            shape.size(),
-        )))
-    }
-}
-
-impl ColumnSource for Working<'_> {
-    fn column(&self, id: LineItemId) -> Result<Arc<Column>, EngineError> {
-        let lock = || self.switched.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(found) = lock().get(&id) {
-            return Ok(Arc::clone(found));
-        }
-        let cells = self.cells(id)?;
-        let line_item = self
-            .structure
-            .line_item(id)
-            .ok_or_else(|| missing_line_item(id))?;
-        let layout = self.structure.layout(line_item)?;
-        let shape = self.structure.shape_of(&layout)?;
-        let switched = with_actual_before_switchover(
-            self.structure,
-            &shape,
-            layout.restriction.as_deref(),
-            &cells,
-        )?;
-        Ok(switched.map_or(cells, |switched| {
-            let switched = Arc::new(switched);
-            lock().insert(id, Arc::clone(&switched));
-            switched
-        }))
-    }
-
-    fn aggregated(&self, id: LineItemId, levels: &LevelSpec) -> Result<Arc<Summary>, EngineError> {
-        let key = (id, levels.clone());
-        let cached = |rolled_up: &HashMap<_, Arc<Summary>>| rolled_up.get(&key).map(Arc::clone);
-        if let Some(found) = cached(
-            &self
-                .rolled_up
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner),
-        ) {
-            return Ok(found);
-        }
-        let line_item = self
-            .structure
-            .line_item(id)
-            .ok_or_else(|| missing_line_item(id))?;
-        let layout = self.structure.layout(line_item)?;
-        let shape = self.structure.shape_of(&layout)?;
-        let src = self.cells(id)?;
-        let parts = ratio_parts(line_item)?
-            .map(|(numerator, denominator)| {
-                ratio_part(self.structure, numerator, &shape)?;
-                ratio_part(self.structure, denominator, &shape)?;
-                Ok::<_, EngineError>((self.cells(numerator)?, self.cells(denominator)?))
-            })
-            .transpose()?;
-        let rolled = Arc::new(roll_up(
-            self.structure,
-            line_item,
-            &shape,
-            layout.restriction.as_deref(),
-            &src,
-            parts
-                .as_ref()
-                .map(|(numerator, denominator)| (&**numerator, &**denominator)),
-            levels,
-        )?);
-        self.rolled_up
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(key, Arc::clone(&rolled));
-        Ok(rolled)
-    }
 }
 
 /// For one axis: where each position of the old layout lands in the new one.

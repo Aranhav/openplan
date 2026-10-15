@@ -4,14 +4,34 @@ use std::sync::Arc;
 
 use chrono::NaiveDate;
 use openplan_engine::{
-    AxisSpec, Calendar, CellEdit, Command, CoordToken, Format, FormulaError, ItemId, ItemSpec,
-    LineItem, LineItemId, ListId, Model, ModuleId, SubsetId, SummaryMethod, TimeLevel, TimeScale,
-    Value, VersionsScope,
+    AxisSpec, Calendar, CellEdit, Command, CoordToken, EngineError, Format, FormulaError, ItemId,
+    ItemSpec, LineItem, LineItemId, ListId, Model, ModuleId, SubsetId, SummaryMethod, TimeLevel,
+    TimeScale, Value, VersionsScope,
 };
 
 const MONTHS: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
+
+fn new_line_item(module: ModuleId, name: &str, format: Format, formula: Option<&str>) -> LineItem {
+    LineItem {
+        id: LineItemId::new(),
+        module,
+        name: name.to_string(),
+        ordinal: 0,
+        format,
+        formula: formula.map(str::to_string),
+        summary: SummaryMethod::Sum,
+        time_summary: None,
+        applies_to: None,
+        time_scale: TimeScale::Module,
+        versions: VersionsScope::Module,
+        notes: String::new(),
+        code: None,
+        read_access_driver: None,
+        write_access_driver: None,
+    }
+}
 
 /// The coordinate of the `i`th month of the two-year calendar.
 fn month(i: usize) -> CoordToken {
@@ -169,27 +189,27 @@ impl Book {
         format: Format,
         formula: Option<&str>,
     ) -> LineItemId {
-        let id = LineItemId::new();
+        let line_item = new_line_item(module, name, format, formula);
+        let id = line_item.id;
         self.model
-            .apply(Command::CreateLineItem(LineItem {
-                id,
-                module,
-                name: name.to_string(),
-                ordinal: 0,
-                format,
-                formula: formula.map(str::to_string),
-                summary: SummaryMethod::Sum,
-                time_summary: None,
-                applies_to: None,
-                time_scale: TimeScale::Module,
-                versions: VersionsScope::Module,
-                notes: String::new(),
-                code: None,
-                read_access_driver: None,
-                write_access_driver: None,
-            }))
+            .apply(Command::CreateLineItem(line_item))
             .unwrap();
         id
+    }
+
+    /// What is wrong with a formula, which the model refuses for a new line item.
+    fn rejected(
+        &mut self,
+        module: ModuleId,
+        name: &str,
+        format: Format,
+        formula: &str,
+    ) -> Vec<FormulaError> {
+        let line_item = new_line_item(module, name, format, Some(formula));
+        match self.model.apply(Command::CreateLineItem(line_item)) {
+            Err(EngineError::Formula(errors)) => errors,
+            other => panic!("{formula} should be rejected, found {other:?}"),
+        }
     }
 
     fn set_all(&mut self, line_item: LineItemId, cells: Vec<(Vec<CoordToken>, Value)>) {
@@ -208,13 +228,6 @@ impl Book {
             .unwrap()
             .pop()
             .unwrap()
-    }
-
-    fn errors(&self, line_item: LineItemId) -> Vec<FormulaError> {
-        self.model
-            .line_item_errors(line_item)
-            .expect("the line item should be in error")
-            .to_vec()
     }
 
     /// An input of `Sheet` holding `values` in its first months.
@@ -1144,15 +1157,10 @@ fn isfirstoccurrence_needs_the_list_as_a_dimension_of_the_line_item() {
     );
     let plain = "ISFIRSTOCCURRENCE(ITEM(Countries), Customers)";
     let guarded = "IF TRUE THEN TRUE ELSE ISFIRSTOCCURRENCE(ITEM(Countries), Customers)";
-    let formulas = [plain, guarded];
-    let line_items = formulas.map(|formula| {
-        let name = format!("Check {}", formula.len());
-        book.line_item(grid, &name, Format::Boolean, Some(formula))
-    });
-    book.model.recalc_all().unwrap();
     // The problem is the same whichever branch the cells take.
-    for (line_item, formula) in line_items.into_iter().zip(formulas) {
-        let errors = book.errors(line_item);
+    for formula in [plain, guarded] {
+        let name = format!("Check {}", formula.len());
+        let errors = book.rejected(grid, &name, Format::Boolean, formula);
         assert_eq!(errors.len(), 1, "{errors:?}");
         assert_eq!(errors[0].code, "formula.dimension");
         assert_eq!(

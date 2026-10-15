@@ -15,7 +15,7 @@ use super::{
 ///
 /// Items keep a dense index for their whole life: deleting one leaves a tombstone so the
 /// indices of the others, and therefore every stored cell, stay valid.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct List {
     pub id: ListId,
     pub name: String,

@@ -962,7 +962,7 @@ fn set_cells_on_formula_line_item_rejected() {
 
     let result = set_cell(&mut model, id, Vec::new(), num(2.0));
     assert_eq!(error_code(result), "cells.not_input");
-    assert_eq!(read_one(&model, id, Vec::new()), num(0.0));
+    assert_eq!(read_one(&model, id, Vec::new()), num(1.0));
 
     let input = new_number(&mut model, module, "Input");
     set_cell(&mut model, input, Vec::new(), num(7.0)).unwrap();
@@ -1985,7 +1985,7 @@ fn update_line_item_patch() {
         error_code(set_cell(&mut model, units, cell.clone(), text("y"))),
         "cells.not_input"
     );
-    assert_eq!(read_one(&model, units, cell.clone()), text(""));
+    assert_eq!(read_one(&model, units, cell.clone()), text("x"));
 
     model
         .apply(Command::UpdateLineItem {

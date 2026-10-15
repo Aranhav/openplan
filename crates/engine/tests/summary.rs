@@ -1612,7 +1612,7 @@ fn identity_levels_return_the_stored_values() {
 }
 
 #[test]
-fn calculated_line_items_summarize_to_blank() {
+fn calculated_line_items_summarize_their_calculated_values() {
     let mut world = world();
     let module = countries_module(&mut world, "Sales");
     let mut calculated = line_item(module, "Calc", Format::number(), SummaryMethod::Sum);
@@ -1622,7 +1622,7 @@ fn calculated_line_items_summarize_to_blank() {
     let by_region = levels(vec![Axis::List(world.regions)]);
     assert_eq!(
         read(&world.model, calculated, vec![item(world.na)], &by_region),
-        num(0.0)
+        num(2.0)
     );
 }
 

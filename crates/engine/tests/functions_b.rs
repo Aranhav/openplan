@@ -5,9 +5,9 @@ use std::sync::Arc;
 
 use chrono::NaiveDate;
 use openplan_engine::{
-    AxisSpec, Calendar, CellEdit, Command, CoordToken, Format, FormulaError, ItemId, ItemSpec,
-    LineItem, LineItemId, ListId, Model, ModuleId, SubsetId, SummaryMethod, TimeLevel, TimeRangeId,
-    TimeScale, Value, VersionsScope, functions,
+    AxisSpec, Calendar, CellEdit, Command, CoordToken, EngineError, Format, FormulaError, ItemId,
+    ItemSpec, LineItem, LineItemId, ListId, Model, ModuleId, SubsetId, SummaryMethod, TimeLevel,
+    TimeRangeId, TimeScale, Value, VersionsScope, functions,
 };
 
 fn calendar(fiscal_year_start_month: u8, first_year: i32, years: u8) -> Calendar {
@@ -226,13 +226,15 @@ impl Book {
         id
     }
 
-    /// What is wrong with a formula, which must be invalid.
+    /// What is wrong with a formula, which the model refuses for a new line item.
     fn errors_in(&mut self, module: ModuleId, format: Format, formula: &str) -> Vec<FormulaError> {
-        let id = self.errors_in_id(module, format, formula);
-        self.model
-            .line_item_errors(id)
-            .unwrap_or_else(|| panic!("{formula} should be in error"))
-            .to_vec()
+        self.outputs += 1;
+        let name = format!("Out {}", self.outputs);
+        let line_item = line_item(module, &name, format, Some(formula));
+        match self.model.apply(Command::CreateLineItem(line_item)) {
+            Err(EngineError::Formula(errors)) => errors,
+            other => panic!("{formula} should be rejected, found {other:?}"),
+        }
     }
 
     fn read(&self, line_item: LineItemId, coords: Vec<Vec<CoordToken>>) -> Vec<Value> {
@@ -2059,10 +2061,12 @@ fn a_time_function_needs_the_time_dimension_of_the_line_item_not_the_module() {
         Some("PREVIOUS(Rev)"),
     );
     yearless.time_scale = TimeScale::None;
-    let yearless = book.add(yearless);
-    book.recalc();
 
-    let errors = book.model.line_item_errors(yearless).unwrap();
+    let errors = match book.model.apply(Command::CreateLineItem(yearless)) {
+        Err(EngineError::Formula(errors)) => errors,
+        other => panic!("the formula should be rejected, found {other:?}"),
+    };
+
     assert_eq!(errors[0].code, "formula.dimension");
     assert_eq!(errors[0].message, "This function needs a Time dimension.");
     assert!(book.model.line_item_errors(rev).is_none());

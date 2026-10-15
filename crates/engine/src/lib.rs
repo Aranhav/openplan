@@ -2,6 +2,7 @@ mod calendar;
 mod command;
 mod error;
 mod formula;
+mod graph;
 mod ids;
 mod model;
 mod shape;
@@ -17,7 +18,7 @@ pub use formula::{
     functions, parse, resolve,
 };
 pub use ids::{ItemId, LineItemId, ListId, ModuleId, SubsetId, TimeRangeId, VersionId};
-pub use model::Model;
+pub use model::{Model, RecalcStats};
 pub use shape::{Axis, Shape};
 pub use structure::{
     AxisSpec, Item, LineItem, List, Module, Structure, Subset, SummaryMethod, TimeScale, Version,

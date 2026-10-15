@@ -209,8 +209,8 @@ pub enum CoordToken {
 pub struct ChangeSet {
     /// The model generation after the change.
     pub generation: u64,
-    /// Line items that were created or deleted, or whose stored cells were written, cleared,
-    /// re-laid out or dropped.
+    /// Line items that were created or deleted, whose stored cells were written, cleared,
+    /// re-laid out or dropped, or that were calculated again, whole or in part.
     pub changed_line_items: Vec<LineItemId>,
     /// Whether lists, time, versions, modules or line items changed.
     pub structure_changed: bool,
