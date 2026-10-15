@@ -422,6 +422,36 @@ mod tests {
     }
 
     #[test]
+    fn every_fiscal_start_month_roundtrips_dates_and_labels() {
+        for start_month in 1..=12 {
+            let cal = calendar(start_month, 2026, 2);
+            let start_year = if start_month == 1 { 2026 } else { 2025 };
+            assert_eq!(
+                cal.month_start_date(0),
+                NaiveDate::from_ymd_opt(start_year, u32::from(start_month), 1).unwrap(),
+                "start month {start_month}"
+            );
+            for month in 0..cal.months() {
+                assert_eq!(
+                    cal.month_of_date(cal.month_start_date(month)),
+                    Some(month),
+                    "start month {start_month}, month {month}"
+                );
+            }
+            for level in LEVELS {
+                for period in 0..cal.periods(level) {
+                    let label = cal.label(level, period);
+                    assert_eq!(
+                        cal.parse_label(&label),
+                        Some((level, period)),
+                        "start month {start_month}, label {label}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn levels_order_finest_to_coarsest() {
         assert!(LEVELS.windows(2).all(|pair| pair[0] < pair[1]));
     }

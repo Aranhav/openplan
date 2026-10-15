@@ -1,0 +1,461 @@
+use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
+use std::sync::Arc;
+
+use chrono::{Datelike, NaiveDate};
+
+use crate::calendar::Calendar;
+use crate::command::{CellEdit, ChangeSet, Command, CoordToken};
+use crate::error::{CellIssue, EngineError};
+use crate::ids::{LineItemId, ListId, VersionId};
+use crate::shape::Axis;
+use crate::structure::{Structure, level_name};
+use crate::value::{BLANK_DATE, BLANK_ITEM, BLANK_PERIOD, Cell, Column, Format, Value, ValueType};
+
+/// Days from 0001-01-01 (day 1 of the common era) to 1970-01-01.
+const EPOCH_DAYS_FROM_CE: i32 = 719_163;
+
+const SWITCHOVER_MESSAGE: &str = "Periods before the switchover show Actual values.";
+
+/// A planning model: its structure and the values typed into input line items.
+#[derive(Clone, Debug)]
+pub struct Model {
+    structure: Arc<Structure>,
+    inputs: HashMap<LineItemId, Arc<Column>>,
+    generation: u64,
+}
+
+impl Model {
+    /// An empty model over `calendar`, with the default versions.
+    ///
+    /// The calendar is assumed valid; `Command::SetCalendar` validates one.
+    pub fn new(calendar: Calendar) -> Model {
+        Model {
+            structure: Arc::new(Structure::new(calendar)),
+            inputs: HashMap::new(),
+            generation: 0,
+        }
+    }
+
+    pub fn structure(&self) -> &Structure {
+        &self.structure
+    }
+
+    /// Counts the applied commands and batches.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Applies one command. A rejected command leaves the model unchanged.
+    pub fn apply(&mut self, cmd: Command) -> Result<ChangeSet, EngineError> {
+        let mut changes = self.empty_change_set();
+        self.apply_command(cmd, &mut changes)?;
+        self.generation += 1;
+        changes.generation = self.generation;
+        Ok(changes)
+    }
+
+    /// Applies the commands in order as one change, all or nothing.
+    pub fn apply_batch(&mut self, cmds: Vec<Command>) -> Result<ChangeSet, EngineError> {
+        let mut changes = self.empty_change_set();
+        if cmds.is_empty() {
+            return Ok(changes);
+        }
+        let mut work = self.clone();
+        for cmd in cmds {
+            work.apply_command(cmd, &mut changes)?;
+        }
+        work.generation += 1;
+        changes.generation = work.generation;
+        *self = work;
+        Ok(changes)
+    }
+
+    /// Reads leaf cells of a line item, each addressed by one token per axis.
+    ///
+    /// A calculated line item has no stored values yet and reads as blank.
+    pub fn read_cells(
+        &self,
+        li: LineItemId,
+        coords: &[Vec<CoordToken>],
+    ) -> Result<Vec<Value>, EngineError> {
+        let line_item = self
+            .structure
+            .line_item(li)
+            .ok_or_else(|| missing_line_item(li))?;
+        let layout = self.structure.layout(line_item)?;
+        let shape = self.structure.shape_of(&layout)?;
+        let ty = line_item.format.value_type();
+        let column = self.inputs.get(&li);
+        coords
+            .iter()
+            .enumerate()
+            .map(|(index, tokens)| {
+                let position = self
+                    .structure
+                    .resolve_cell(&layout, tokens)
+                    .map_err(|message| EngineError::InvalidCoordinate {
+                        message: format!("Cell {index}: {message}"),
+                    })?;
+                Ok(match column {
+                    Some(column) => {
+                        decode(&self.structure, &ty, column.get(shape.index(&position)))
+                    }
+                    None => blank_value(&ty),
+                })
+            })
+            .collect()
+    }
+
+    fn empty_change_set(&self) -> ChangeSet {
+        ChangeSet {
+            generation: self.generation,
+            changed_line_items: Vec::new(),
+            structure_changed: false,
+        }
+    }
+
+    fn apply_command(
+        &mut self,
+        command: Command,
+        changes: &mut ChangeSet,
+    ) -> Result<(), EngineError> {
+        if let Command::SetCells { line_item, edits } = command {
+            return self.set_cells(line_item, &edits, changes);
+        }
+        let old = Arc::clone(&self.structure);
+        let old_inputs = self.inputs.clone();
+        let result = self.apply_structural(command, &old, changes);
+        if result.is_err() {
+            self.structure = old;
+            self.inputs = old_inputs;
+        }
+        result
+    }
+
+    fn apply_structural(
+        &mut self,
+        command: Command,
+        old: &Structure,
+        changes: &mut ChangeSet,
+    ) -> Result<(), EngineError> {
+        let deleted_items = match &command {
+            Command::DeleteListItems { list, ids } => old.list(*list).map(|source| {
+                let indices: HashSet<u32> = ids.iter().filter_map(|id| source.idx(*id)).collect();
+                (*list, indices)
+            }),
+            _ => None,
+        };
+        Arc::make_mut(&mut self.structure).apply(command)?;
+        changes.structure_changed = true;
+        self.reconcile_inputs(old, changes)?;
+        if let Some((list, indices)) = deleted_items {
+            self.blank_item_cells(list, &indices, changes);
+        }
+        Ok(())
+    }
+
+    /// Brings the stored input columns in line with the structure after a change from `old`:
+    /// creates columns for new input line items, drops those of deleted or calculated ones,
+    /// clears columns whose axes, type or time scale changed, and lays the rest out again
+    /// by coordinate when items, subset members or versions came or went.
+    fn reconcile_inputs(
+        &mut self,
+        old: &Structure,
+        changes: &mut ChangeSet,
+    ) -> Result<(), EngineError> {
+        let new = Arc::clone(&self.structure);
+        let time_changed = old.calendar.years != new.calendar.years
+            || old.calendar.fiscal_year_start_month != new.calendar.fiscal_year_start_month;
+        for line_item in old.line_items().filter(|li| new.line_item(li.id).is_none()) {
+            changes.note(line_item.id);
+        }
+        for line_item in new.line_items().filter(|li| old.line_item(li.id).is_none()) {
+            changes.note(line_item.id);
+        }
+        let dropped: Vec<LineItemId> = self
+            .inputs
+            .keys()
+            .filter(|id| !new.line_item(**id).is_some_and(|li| li.formula.is_none()))
+            .copied()
+            .collect();
+        for id in dropped {
+            self.inputs.remove(&id);
+            changes.note(id);
+        }
+
+        let mut axis_maps = AxisMaps::new(old, &new);
+        for line_item in new.line_items().filter(|li| li.formula.is_none()) {
+            let layout = new.layout(line_item)?;
+            let shape = new.shape_of(&layout)?;
+            let ty = line_item.format.value_type();
+            let previous = self
+                .inputs
+                .get(&line_item.id)
+                .zip(old.line_item(line_item.id));
+            let column = match previous {
+                None => Column::new_blank(&ty, shape.size()),
+                Some((column, old_line_item)) => {
+                    let old_layout = old.layout(old_line_item)?;
+                    let cleared = old_line_item.format.value_type() != ty
+                        || old_layout != layout
+                        || (time_changed && shape.time_pos().is_some());
+                    if cleared {
+                        Column::new_blank(&ty, shape.size())
+                    } else {
+                        let maps = layout
+                            .axes
+                            .iter()
+                            .map(|axis| axis_maps.get(axis, layout.restriction.as_deref()))
+                            .collect::<Result<Vec<_>, _>>()?;
+                        if maps.iter().all(|map| map.identity) {
+                            continue;
+                        }
+                        let slices: Vec<&[Option<u32>]> =
+                            maps.iter().map(|map| map.positions.as_slice()).collect();
+                        column.remap(&old.shape_of(&old_layout)?, &shape, &slices)
+                    }
+                }
+            };
+            self.inputs.insert(line_item.id, Arc::new(column));
+            changes.note(line_item.id);
+        }
+        Ok(())
+    }
+
+    /// Blanks list-formatted cells that point at deleted items of `list`.
+    fn blank_item_cells(&mut self, list: ListId, doomed: &HashSet<u32>, changes: &mut ChangeSet) {
+        let structure = Arc::clone(&self.structure);
+        let formatted = structure
+            .line_items()
+            .filter(|li| li.formula.is_none() && li.format == Format::List { list });
+        for line_item in formatted {
+            let Some(column) = self.inputs.get_mut(&line_item.id) else {
+                continue;
+            };
+            let points_at_doomed = matches!(&**column, Column::Item(cells) if cells.iter().any(|cell| doomed.contains(cell)));
+            if !points_at_doomed {
+                continue;
+            }
+            if let Column::Item(cells) = Arc::make_mut(column) {
+                for cell in cells.iter_mut().filter(|cell| doomed.contains(cell)) {
+                    *cell = BLANK_ITEM;
+                }
+            }
+            changes.note(line_item.id);
+        }
+    }
+
+    /// Validates every edit and, only if all are valid, writes them.
+    fn set_cells(
+        &mut self,
+        id: LineItemId,
+        edits: &[CellEdit],
+        changes: &mut ChangeSet,
+    ) -> Result<(), EngineError> {
+        let structure = Arc::clone(&self.structure);
+        let line_item = structure
+            .line_item(id)
+            .ok_or_else(|| missing_line_item(id))?;
+        if line_item.formula.is_some() {
+            return Err(EngineError::NotInput {
+                line_item: line_item.name.clone(),
+            });
+        }
+        let layout = structure.layout(line_item)?;
+        let shape = structure.shape_of(&layout)?;
+        let ty = line_item.format.value_type();
+
+        let mut writes = Vec::with_capacity(edits.len());
+        let mut issues = Vec::new();
+        for (index, edit) in edits.iter().enumerate() {
+            let position = structure
+                .resolve_cell(&layout, &edit.coords)
+                .map_err(|message| EngineError::InvalidCoordinate {
+                    message: format!("Edit {index}: {message}"),
+                })?;
+            if structure.is_before_switchover(&layout, &position) {
+                issues.push(CellIssue {
+                    index,
+                    message: SWITCHOVER_MESSAGE.to_string(),
+                });
+                continue;
+            }
+            match encode(&structure, &ty, &edit.value) {
+                Ok(cell) => writes.push((shape.index(&position), cell)),
+                Err(message) => issues.push(CellIssue { index, message }),
+            }
+        }
+        if !issues.is_empty() {
+            return Err(EngineError::InvalidValue { cells: issues });
+        }
+        if writes.is_empty() {
+            return Ok(());
+        }
+        let column = self
+            .inputs
+            .entry(id)
+            .or_insert_with(|| Arc::new(Column::new_blank(&ty, shape.size())));
+        let column = Arc::make_mut(column);
+        for (position, cell) in writes {
+            column.set(position, cell);
+        }
+        changes.note(id);
+        Ok(())
+    }
+}
+
+fn missing_line_item(id: LineItemId) -> EngineError {
+    EngineError::NotFound {
+        what: "line item",
+        id: id.0.to_string(),
+    }
+}
+
+/// For one axis: where each position of the old layout lands in the new one.
+struct AxisMap {
+    positions: Vec<Option<u32>>,
+    /// Every position stays where it is and none is added.
+    identity: bool,
+}
+
+/// Maps axis positions from an old structure to a new one by item, version or period
+/// identity, remembering the maps because many line items share axes.
+struct AxisMaps<'a> {
+    old: &'a Structure,
+    new: &'a Structure,
+    cache: HashMap<(Axis, Option<Vec<VersionId>>), Rc<AxisMap>>,
+}
+
+impl<'a> AxisMaps<'a> {
+    fn new(old: &'a Structure, new: &'a Structure) -> Self {
+        AxisMaps {
+            old,
+            new,
+            cache: HashMap::new(),
+        }
+    }
+
+    fn get(
+        &mut self,
+        axis: &Axis,
+        restriction: Option<&[VersionId]>,
+    ) -> Result<Rc<AxisMap>, EngineError> {
+        let key = (axis.clone(), restriction.map(<[VersionId]>::to_vec));
+        if let Some(map) = self.cache.get(&key) {
+            return Ok(Rc::clone(map));
+        }
+        let old_keys = self.old.axis_keys(axis, restriction)?;
+        let new_keys = self.new.axis_keys(axis, restriction)?;
+        let new_positions: HashMap<u128, u32> = new_keys
+            .iter()
+            .enumerate()
+            .filter_map(|(position, key)| key.map(|key| (key, position as u32)))
+            .collect();
+        let positions: Vec<Option<u32>> = old_keys
+            .iter()
+            .map(|key| key.and_then(|key| new_positions.get(&key).copied()))
+            .collect();
+        let identity = old_keys.len() == new_keys.len()
+            && positions
+                .iter()
+                .enumerate()
+                .all(|(position, mapped)| *mapped == Some(position as u32));
+        let map = Rc::new(AxisMap {
+            positions,
+            identity,
+        });
+        self.cache.insert(key, Rc::clone(&map));
+        Ok(map)
+    }
+}
+
+/// Converts a submitted value into the storage form of a cell of type `ty`.
+fn encode(structure: &Structure, ty: &ValueType, value: &Value) -> Result<Cell, String> {
+    match (ty, value) {
+        (ValueType::Number, Value::Number(number)) if number.is_finite() => {
+            Ok(Cell::Number(*number))
+        }
+        (ValueType::Number, Value::Number(_)) => Err("Numbers must be finite.".to_string()),
+        (ValueType::Boolean, Value::Boolean(flag)) => Ok(Cell::Boolean(*flag)),
+        (ValueType::Text, Value::Text(text)) => Ok(Cell::Text(Arc::clone(text))),
+        (ValueType::Date, Value::Date(date)) => Ok(Cell::Date(date.map_or(BLANK_DATE, |date| {
+            date.num_days_from_ce() - EPOCH_DAYS_FROM_CE
+        }))),
+        (ValueType::Item(_), Value::Item(None)) => Ok(Cell::Item(BLANK_ITEM)),
+        (ValueType::Item(list), Value::Item(Some(id))) => {
+            let source = structure.list(*list);
+            source
+                .and_then(|source| source.idx(*id))
+                .map(Cell::Item)
+                .ok_or_else(|| {
+                    format!(
+                        "{} is not an item of list '{}'.",
+                        id.0,
+                        source.map_or("?", |source| source.name.as_str())
+                    )
+                })
+        }
+        (ValueType::Period(_), Value::Period(None)) => Ok(Cell::Period(BLANK_PERIOD)),
+        (ValueType::Period(level), Value::Period(Some((found, index))))
+            if found == level && *index < structure.calendar.periods(*level) =>
+        {
+            Ok(Cell::Period(*index))
+        }
+        (ValueType::Period(level), Value::Period(Some(_))) => Err(format!(
+            "Expected a {} period of the calendar.",
+            level_name(*level)
+        )),
+        _ => Err(format!("Expected {}.", expected(structure, ty))),
+    }
+}
+
+fn expected(structure: &Structure, ty: &ValueType) -> String {
+    match ty {
+        ValueType::Number => "a number".to_string(),
+        ValueType::Boolean => "a boolean".to_string(),
+        ValueType::Text => "text".to_string(),
+        ValueType::Date => "a date".to_string(),
+        ValueType::Item(list) => format!(
+            "an item of list '{}'",
+            structure.list(*list).map_or("?", |list| list.name.as_str())
+        ),
+        ValueType::Period(level) => format!("a {} period", level_name(*level)),
+    }
+}
+
+/// Converts a stored cell of type `ty` into a value. A cell that does not fit its type, which
+/// the model never stores, reads as blank.
+fn decode(structure: &Structure, ty: &ValueType, cell: Cell) -> Value {
+    match (ty, cell) {
+        (ValueType::Number, Cell::Number(number)) => Value::Number(number),
+        (ValueType::Boolean, Cell::Boolean(flag)) => Value::Boolean(flag),
+        (ValueType::Text, Cell::Text(text)) => Value::Text(text),
+        (ValueType::Date, Cell::Date(days)) => Value::Date(
+            (days != BLANK_DATE)
+                .then(|| NaiveDate::from_num_days_from_ce_opt(days + EPOCH_DAYS_FROM_CE))
+                .flatten(),
+        ),
+        (ValueType::Item(list), Cell::Item(idx)) => Value::Item(
+            structure
+                .list(*list)
+                .filter(|source| idx < source.len_dense())
+                .map(|source| source.item(idx).id),
+        ),
+        (ValueType::Period(level), Cell::Period(index)) => {
+            Value::Period((index != BLANK_PERIOD).then_some((*level, index)))
+        }
+        (ty, _) => blank_value(ty),
+    }
+}
+
+fn blank_value(ty: &ValueType) -> Value {
+    match ty {
+        ValueType::Number => Value::Number(0.0),
+        ValueType::Boolean => Value::Boolean(false),
+        ValueType::Text => Value::Text(Arc::from("")),
+        ValueType::Date => Value::Date(None),
+        ValueType::Item(_) => Value::Item(None),
+        ValueType::Period(_) => Value::Period(None),
+    }
+}

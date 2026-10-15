@@ -5,10 +5,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::calendar::TimeLevel;
 use crate::ids::{ItemId, ListId};
+use crate::shape::Shape;
 
-const BLANK_DATE: i32 = i32::MIN;
-const BLANK_ITEM: u32 = u32::MAX;
-const BLANK_PERIOD: u32 = u32::MAX;
+pub(crate) const BLANK_DATE: i32 = i32::MIN;
+pub(crate) const BLANK_ITEM: u32 = u32::MAX;
+pub(crate) const BLANK_PERIOD: u32 = u32::MAX;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -107,6 +108,17 @@ pub enum Column {
     Period(Vec<u32>),
 }
 
+/// One cell in the storage form of its [`Column`].
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Cell {
+    Number(f64),
+    Boolean(bool),
+    Text(Arc<str>),
+    Date(i32),
+    Item(u32),
+    Period(u32),
+}
+
 impl Column {
     /// A column of `len` blank cells of type `ty`.
     pub fn new_blank(ty: &ValueType, len: usize) -> Column {
@@ -143,12 +155,78 @@ impl Column {
             Column::Period(cells) => cells[i] == BLANK_PERIOD,
         }
     }
+
+    /// The cell at `i`. Panics if `i` is out of range.
+    pub(crate) fn get(&self, i: usize) -> Cell {
+        match self {
+            Column::Number(cells) => Cell::Number(cells[i]),
+            Column::Boolean(cells) => Cell::Boolean(cells[i]),
+            Column::Text(cells) => Cell::Text(Arc::clone(&cells[i])),
+            Column::Date(cells) => Cell::Date(cells[i]),
+            Column::Item(cells) => Cell::Item(cells[i]),
+            Column::Period(cells) => Cell::Period(cells[i]),
+        }
+    }
+
+    /// Overwrites the cell at `i`. Panics if `i` is out of range or `cell` is not of the
+    /// column's kind, which callers rule out by deriving both from the same format.
+    pub(crate) fn set(&mut self, i: usize, cell: Cell) {
+        match (self, cell) {
+            (Column::Number(cells), Cell::Number(value)) => cells[i] = value,
+            (Column::Boolean(cells), Cell::Boolean(value)) => cells[i] = value,
+            (Column::Text(cells), Cell::Text(value)) => cells[i] = value,
+            (Column::Date(cells), Cell::Date(value)) => cells[i] = value,
+            (Column::Item(cells), Cell::Item(value)) => cells[i] = value,
+            (Column::Period(cells), Cell::Period(value)) => cells[i] = value,
+            _ => unreachable!("cell kind does not match column kind"),
+        }
+    }
+
+    /// Lays the cells of a column over `old` out again over `new`. `maps[axis][old position]`
+    /// is the position that coordinate takes on `new`, or `None` to drop its cells; cells of
+    /// positions nothing maps to are blank.
+    pub(crate) fn remap(&self, old: &Shape, new: &Shape, maps: &[&[Option<u32>]]) -> Column {
+        match self {
+            Column::Number(cells) => Column::Number(remap_cells(cells, 0.0, old, new, maps)),
+            Column::Boolean(cells) => Column::Boolean(remap_cells(cells, false, old, new, maps)),
+            Column::Text(cells) => Column::Text(remap_cells(cells, Arc::from(""), old, new, maps)),
+            Column::Date(cells) => Column::Date(remap_cells(cells, BLANK_DATE, old, new, maps)),
+            Column::Item(cells) => Column::Item(remap_cells(cells, BLANK_ITEM, old, new, maps)),
+            Column::Period(cells) => {
+                Column::Period(remap_cells(cells, BLANK_PERIOD, old, new, maps))
+            }
+        }
+    }
+}
+
+fn remap_cells<T: Clone>(
+    cells: &[T],
+    blank: T,
+    old: &Shape,
+    new: &Shape,
+    maps: &[&[Option<u32>]],
+) -> Vec<T> {
+    let mut out = vec![blank; new.size()];
+    let mut coords = vec![0; old.lens.len()];
+    'cells: for (index, cell) in cells.iter().enumerate() {
+        old.coords(index, &mut coords);
+        let mut target = 0;
+        for ((&coord, map), &stride) in coords.iter().zip(maps).zip(&new.strides) {
+            match map[coord as usize] {
+                Some(position) => target += position as usize * stride,
+                None => continue 'cells,
+            }
+        }
+        out[target] = cell.clone();
+    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ids::ItemId;
+    use crate::shape::Axis;
     use serde_json::json;
 
     #[test]
@@ -207,6 +285,82 @@ mod tests {
         assert_eq!(Column::Date(vec![0; 5]).len(), 5);
         assert_eq!(Column::Item(vec![0; 6]).len(), 6);
         assert_eq!(Column::Period(vec![0; 7]).len(), 7);
+    }
+
+    #[test]
+    fn cells_roundtrip_through_columns() {
+        let cases = [
+            (Column::Number(vec![0.0, 0.0]), Cell::Number(2.5)),
+            (Column::Boolean(vec![false, false]), Cell::Boolean(true)),
+            (
+                Column::Text(vec![Arc::from(""), Arc::from("")]),
+                Cell::Text(Arc::from("x")),
+            ),
+            (
+                Column::Date(vec![BLANK_DATE, BLANK_DATE]),
+                Cell::Date(19_000),
+            ),
+            (Column::Item(vec![BLANK_ITEM, BLANK_ITEM]), Cell::Item(4)),
+            (
+                Column::Period(vec![BLANK_PERIOD, BLANK_PERIOD]),
+                Cell::Period(3),
+            ),
+        ];
+        for (mut column, cell) in cases {
+            column.set(1, cell.clone());
+            assert_eq!(column.get(1), cell);
+            assert!(column.is_blank_at(0));
+            assert!(!column.is_blank_at(1));
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "does not match column kind")]
+    fn setting_a_cell_of_another_kind_panics() {
+        Column::Number(vec![0.0]).set(0, Cell::Boolean(true));
+    }
+
+    #[test]
+    fn remap_moves_cells_and_drops_unmapped_positions() {
+        let old = Shape::new(vec![Axis::Versions, Axis::Versions], vec![2, 2]);
+        let new = Shape::new(vec![Axis::Versions, Axis::Versions], vec![3, 2]);
+        let rows: &[Option<u32>] = &[Some(2), None];
+        let columns: &[Option<u32>] = &[Some(0), Some(1)];
+
+        let numbers = Column::Number(vec![1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(
+            numbers.remap(&old, &new, &[rows, columns]),
+            Column::Number(vec![0.0, 0.0, 0.0, 0.0, 1.0, 2.0])
+        );
+        let texts = Column::Text(["a", "b", "c", "d"].map(Arc::from).to_vec());
+        assert_eq!(
+            texts.remap(&old, &new, &[rows, columns]),
+            Column::Text(["", "", "", "", "a", "b"].map(Arc::from).to_vec())
+        );
+        let items = Column::Item(vec![0, 1, 2, 3]);
+        assert_eq!(
+            items.remap(&old, &new, &[rows, columns]),
+            Column::Item(vec![BLANK_ITEM, BLANK_ITEM, BLANK_ITEM, BLANK_ITEM, 0, 1])
+        );
+        let dates = Column::Date(vec![0, 1, 2, 3]);
+        assert_eq!(
+            dates.remap(&old, &new, &[rows, columns]),
+            Column::Date(vec![BLANK_DATE, BLANK_DATE, BLANK_DATE, BLANK_DATE, 0, 1])
+        );
+
+        let swapped: &[Option<u32>] = &[Some(1), Some(0)];
+        let booleans = Column::Boolean(vec![true, false, false, false]);
+        let square = Shape::new(vec![Axis::Versions, Axis::Versions], vec![2, 2]);
+        assert_eq!(
+            booleans.remap(&square, &square, &[columns, swapped]),
+            Column::Boolean(vec![false, true, false, false])
+        );
+        let periods = Column::Period(vec![7]);
+        let scalar = Shape::new(Vec::new(), Vec::new());
+        assert_eq!(
+            periods.remap(&scalar, &scalar, &[]),
+            Column::Period(vec![7])
+        );
     }
 
     #[test]
