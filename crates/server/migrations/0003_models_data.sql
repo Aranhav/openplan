@@ -15,13 +15,16 @@ CREATE TABLE line_item_data (
 ALTER TABLE line_item_data ENABLE ROW LEVEL SECURITY;
 
 -- A batch of commands is one row of kind 'cells' or 'structure'; each edited cell also gets a row
--- of kind 'cell' that only records its old and new value.
+-- of kind 'cell' that only records its old and new value. Loading a model replays the batches
+-- after its checkpoint and never reads the cell rows, which are far more numerous, so they are
+-- left out of the replay index; the history of a cell reads only them.
 CREATE TABLE change_log (
   seq bigserial PRIMARY KEY,
   model_id uuid NOT NULL REFERENCES models(id) ON DELETE CASCADE,
   user_id uuid REFERENCES users(id) ON DELETE SET NULL,
   at timestamptz NOT NULL DEFAULT now(),
   kind text NOT NULL, payload jsonb NOT NULL, line_item_id uuid, cell_key text);
-CREATE INDEX change_log_model_seq_idx ON change_log (model_id, seq);
-CREATE INDEX change_log_cell_idx ON change_log (model_id, line_item_id, cell_key);
+CREATE INDEX change_log_replay_idx ON change_log (model_id, seq) WHERE kind <> 'cell';
+CREATE INDEX change_log_cell_idx ON change_log (model_id, line_item_id, cell_key)
+  WHERE kind = 'cell';
 ALTER TABLE change_log ENABLE ROW LEVEL SECURITY;

@@ -6,6 +6,8 @@
 //! replaces the first two and moves `models.checkpoint_seq` up to the last change they include;
 //! loading reads the checkpoint and applies the changes after it.
 
+use std::collections::HashMap;
+
 use anyhow::{Context, anyhow};
 use openplan_engine::{
     Calendar, CellEdit, Command, CoordToken, InputChunk, LineItemId, Model, StructureDoc, Value,
@@ -19,6 +21,12 @@ use crate::{
     models::Calendar as ApiCalendar,
 };
 
+/// The batches of a model after its checkpoint, in order: every row that is not the audit row
+/// of one cell. Its filter is the predicate of `change_log_replay_idx`.
+const BATCHES_SQL: &str = "SELECT seq, payload FROM change_log
+     WHERE model_id = $1 AND seq > $2 AND kind <> 'cell'
+     ORDER BY seq";
+
 /// What `load` reads of a model, in one consistent snapshot of the database.
 struct Stored {
     checkpoint_seq: i64,
@@ -30,6 +38,9 @@ struct Stored {
 
 /// The key of a cell in the change log: its coordinates, an item id or a period label for
 /// each axis of its line item, joined by `|`.
+///
+/// Period labels are used as given. The engine reads them without regard to case, so callers
+/// pass the canonical label (`Jan 26`, not `jan 26`), or one cell would have several histories.
 pub fn cell_key(tokens: &[CoordToken]) -> String {
     tokens
         .iter()
@@ -106,15 +117,11 @@ async fn read_stored(db: &PgPool, model_id: Uuid) -> AppResult<Stored> {
     .bind(model_id)
     .fetch_all(&mut *tx)
     .await?;
-    let batches = sqlx::query_as::<_, (i64, Json<Vec<Command>>)>(
-        "SELECT seq, payload FROM change_log
-         WHERE model_id = $1 AND seq > $2 AND kind IN ('cells', 'structure')
-         ORDER BY seq",
-    )
-    .bind(model_id)
-    .bind(checkpoint_seq)
-    .fetch_all(&mut *tx)
-    .await?;
+    let batches = sqlx::query_as::<_, (i64, Json<Vec<Command>>)>(BATCHES_SQL)
+        .bind(model_id)
+        .bind(checkpoint_seq)
+        .fetch_all(&mut *tx)
+        .await?;
     tx.commit().await?;
 
     let chunks = rows
@@ -169,10 +176,11 @@ pub async fn load(db: &PgPool, model_id: Uuid) -> AppResult<(Model, i64)> {
             AppError::Internal(err.context(format!("failed to load model {model_id}")))
         })?;
     if model.load_warnings() > 0 {
-        tracing::warn!(
+        tracing::error!(
             %model_id,
             left_out = model.load_warnings(),
-            "stored cells that lie outside the model's structure were left out"
+            "stored cells that lie outside the model's structure were left out; \
+             the next checkpoint drops them"
         );
     }
     Ok((model, last_seq))
@@ -201,7 +209,9 @@ struct CellChange<'a> {
 /// with the old and the new value, for the history of the cell.
 ///
 /// `previous` holds the value each edited cell had before the batch, one for every `CellEdit`
-/// of the `SetCells` commands, in the order they appear.
+/// of the `SetCells` commands, in the order they appear. The old value of a cell that the batch
+/// edits again is the value its last edit in the batch gave it, so a cell set to b and then to
+/// c is logged as a to b, then b to c. An edit that leaves a cell as it is gets no `cell` row.
 ///
 /// The model's row is locked until the transaction ends, so the sequence numbers of one
 /// model's batches follow the order they commit in.
@@ -245,18 +255,25 @@ pub async fn append(
     .fetch_one(&mut **tx)
     .await?;
 
-    if !edited.is_empty() {
-        let mut line_items = Vec::with_capacity(edited.len());
-        let mut keys = Vec::with_capacity(edited.len());
-        let mut changes = Vec::with_capacity(edited.len());
-        for (&(line_item, edit), old) in edited.iter().zip(previous) {
+    let mut line_items = Vec::new();
+    let mut keys = Vec::new();
+    let mut changes = Vec::new();
+    let mut latest: HashMap<(LineItemId, String), &Value> = HashMap::new();
+    for (&(line_item, edit), before) in edited.iter().zip(previous) {
+        let key = cell_key(&edit.coords);
+        let old = latest
+            .insert((line_item, key.clone()), &edit.value)
+            .unwrap_or(before);
+        if *old != edit.value {
             line_items.push(line_item.0);
-            keys.push(cell_key(&edit.coords));
+            keys.push(key);
             changes.push(Json(CellChange {
                 old,
                 new: &edit.value,
             }));
         }
+    }
+    if !changes.is_empty() {
         sqlx::query(
             "INSERT INTO change_log (model_id, user_id, kind, payload, line_item_id, cell_key)
              SELECT $1, $2, 'cell', c.payload, c.line_item_id, c.cell_key
@@ -362,4 +379,60 @@ pub async fn checkpoint(
     }
     tx.commit().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A model's batches are a small part of a change log that is mostly audit rows of cells:
+    /// the replay reads them through the index that leaves those rows out.
+    #[sqlx::test(migrator = "crate::db::MIGRATOR")]
+    async fn replay_reads_the_batches_through_the_partial_index(pool: PgPool) {
+        let workspace = Uuid::now_v7();
+        sqlx::query("INSERT INTO workspaces (id, name) VALUES ($1, 'Acme')")
+            .bind(workspace)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO models (id, workspace_id, name, calendar)
+             SELECT gen_random_uuid(), $1, 'Model ' || n, '{}' FROM generate_series(1, 20) n",
+        )
+        .bind(workspace)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO change_log (model_id, kind, payload)
+             SELECT m.id, CASE WHEN n % 50 = 0 THEN 'cells' ELSE 'cell' END, '[]'
+             FROM models m, generate_series(1, 500) n",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("ANALYZE change_log")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let model_id: Uuid = sqlx::query_scalar("SELECT id FROM models LIMIT 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::query("SET LOCAL enable_seqscan = off")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        let plan: Vec<String> = sqlx::query_scalar(&format!("EXPLAIN {BATCHES_SQL}"))
+            .bind(model_id)
+            .bind(0_i64)
+            .fetch_all(&mut *tx)
+            .await
+            .unwrap();
+
+        let plan = plan.join("\n");
+        assert!(plan.contains("change_log_replay_idx"), "{plan}");
+    }
 }

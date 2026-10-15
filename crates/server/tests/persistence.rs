@@ -1,6 +1,10 @@
 mod common;
 
-use std::time::Duration;
+use std::{
+    io,
+    sync::{Arc, Mutex, PoisonError},
+    time::Duration,
+};
 
 use axum::http::StatusCode;
 use common::TestApp;
@@ -15,6 +19,7 @@ use openplan_server::{
 };
 use serde_json::json;
 use sqlx::{PgPool, types::Json};
+use tracing_subscriber::fmt::MakeWriter;
 use uuid::Uuid;
 
 const MONTHS: [&str; 12] = [
@@ -595,6 +600,58 @@ async fn audit_rows_have_old_and_new(pool: PgPool) {
     }
 }
 
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn audit_old_values_follow_the_edits_of_a_batch(pool: PgPool) {
+    let (stored, mut model) = stored_model(&pool).await;
+    let (plan, structure) = plan_structure();
+    commit(&pool, &stored, &mut model, structure).await;
+    let (x, z) = (cell(&model, &plan, 0, 0, 1), cell(&model, &plan, 1, 2, 1));
+    // X is set to 5 and then 7, Y to the value it already has, Z to 3 and then to 3 again.
+    let edits = number_cells(
+        &model,
+        &plan,
+        plan.units,
+        &[
+            (0, 0, 1, 5.0),
+            (0, 0, 1, 7.0),
+            (0, 1, 1, 0.0),
+            (1, 2, 1, 3.0),
+            (1, 2, 1, 3.0),
+        ],
+    );
+    commit(&pool, &stored, &mut model, vec![edits]).await;
+
+    let audit = log_rows(&pool, stored.id, true).await;
+
+    let number = |value: Value| match value {
+        Value::Number(number) => number,
+        other => panic!("expected a number, found {other:?}"),
+    };
+    let changes: Vec<(&str, f64, f64)> = audit
+        .iter()
+        .map(|row| {
+            (
+                row.cell_key.as_deref().unwrap(),
+                number(value_of(&row.payload, "old")),
+                number(value_of(&row.payload, "new")),
+            )
+        })
+        .collect();
+    assert_eq!(
+        changes,
+        [
+            (cell_key(&x).as_str(), 0.0, 5.0),
+            (cell_key(&x).as_str(), 5.0, 7.0),
+            (cell_key(&z).as_str(), 0.0, 3.0),
+        ]
+    );
+    assert_eq!(
+        log_rows(&pool, stored.id, false).await.len(),
+        2,
+        "the batch itself is logged whatever it changes"
+    );
+}
+
 async fn chunk_rows(pool: &PgPool, model_id: Uuid) -> Vec<(Uuid, i32)> {
     sqlx::query_as(
         "SELECT line_item_id, chunk FROM line_item_data WHERE model_id = $1
@@ -876,6 +933,118 @@ async fn deleting_a_model_deletes_its_stored_state(pool: PgPool) {
     for table in ["model_structure", "line_item_data", "change_log"] {
         assert_eq!(count(&pool, table, stored.id).await, 0, "{table}");
     }
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn a_model_is_not_created_when_its_state_cannot_be_stored(pool: PgPool) {
+    let mut app = TestApp::new(pool.clone());
+    let workspace_id = setup_admin(&mut app).await;
+    let path = format!("/api/v1/workspaces/{workspace_id}/models");
+    sqlx::query("ALTER TABLE model_structure ADD CONSTRAINT refuse_every_state CHECK (false)")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let refused = app.post(&path, Some(json!({ "name": "Plan" }))).await;
+
+    assert_eq!(refused.status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(refused.json["code"], "internal");
+    let models: i64 = sqlx::query_scalar("SELECT count(*) FROM models")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(models, 0);
+    sqlx::query("ALTER TABLE model_structure DROP CONSTRAINT refuse_every_state")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let created = app.post(&path, Some(json!({ "name": "Plan" }))).await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text);
+}
+
+/// A log writer that keeps what it is given.
+#[derive(Clone, Default)]
+struct LogBuffer(Arc<Mutex<Vec<u8>>>);
+
+impl LogBuffer {
+    fn contents(&self) -> String {
+        let bytes = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+}
+
+impl io::Write for LogBuffer {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl MakeWriter<'_> for LogBuffer {
+    type Writer = LogBuffer;
+
+    fn make_writer(&self) -> LogBuffer {
+        self.clone()
+    }
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn stored_cells_the_structure_cannot_hold_are_logged_and_left_out(pool: PgPool) {
+    let (stored, mut model) = stored_model(&pool).await;
+    let (plan, structure) = plan_structure();
+    commit(&pool, &stored, &mut model, structure).await;
+    let cells = vec![number_cells(&model, &plan, plan.units, &[(0, 0, 1, 10.0)])];
+    commit(&pool, &stored, &mut model, cells).await;
+    let orphans = model.export_inputs();
+    let last = commit(
+        &pool,
+        &stored,
+        &mut model,
+        vec![Command::DeleteLineItem { id: plan.units }],
+    )
+    .await;
+    engine_store::checkpoint(&pool, stored.id, &model, last)
+        .await
+        .unwrap();
+    for chunk in orphans.iter().filter(|chunk| chunk.line_item == plan.units) {
+        sqlx::query(
+            "INSERT INTO line_item_data (model_id, line_item_id, chunk, data)
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind(stored.id)
+        .bind(chunk.line_item.0)
+        .bind(chunk.chunk as i32)
+        .bind(&chunk.data)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let logs = LogBuffer::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(logs.clone())
+        .with_ansi(false)
+        .finish();
+    let _logging = tracing::subscriber::set_default(subscriber);
+
+    let (loaded, seq) = engine_store::load(&pool, stored.id).await.unwrap();
+
+    assert_eq!(seq, last);
+    assert_eq!(loaded.load_warnings(), 1);
+    assert_eq!(loaded.export_structure(), model.export_structure());
+    let id = stored.id.to_string();
+    assert!(
+        logs.contents()
+            .lines()
+            .any(|line| line.contains("ERROR") && line.contains(&id)),
+        "the left out cells are logged at error level for the model"
+    );
 }
 
 #[test]
