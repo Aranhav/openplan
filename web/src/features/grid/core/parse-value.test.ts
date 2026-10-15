@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
+import { copyText, editText } from "./format-value"
 import { parseInput, type ParseContext } from "./parse-value"
-import type { Format, NumberUnit } from "./types"
+import type { Format, NumberUnit, Value } from "./types"
 
 const NORTH = "0198f0aa-0000-7000-8000-00000000000a"
 const SOUTH = "0198f0aa-0000-7000-8000-00000000000b"
@@ -100,8 +101,40 @@ describe("parseInput numbers", () => {
       expect(numberOf("7%")).toEqual({ t: "number", v: 0.07 })
     })
 
-    it("takes a number without a percent sign as typed, even in a percent format", () => {
-      expect(numberOf("25", percent)).toEqual({ t: "number", v: 25 })
+    it("takes a bare number as typed in a format that is not a percentage", () => {
+      expect(numberOf("25", plain)).toEqual({ t: "number", v: 25 })
+      expect(numberOf("25", eur)).toEqual({ t: "number", v: 25 })
+    })
+  })
+
+  describe("in a percent format, where numbers are percent points", () => {
+    it("reads a bare number as percent points", () => {
+      expect(numberOf("25", percent)).toEqual({ t: "number", v: 0.25 })
+      expect(numberOf("12.5", percent)).toEqual({ t: "number", v: 0.125 })
+      expect(numberOf("1,250", percent)).toEqual({ t: "number", v: 12.5 })
+      expect(numberOf("33.3", percent)).toEqual({ t: "number", v: 0.333 })
+      expect(numberOf("7", percent)).toEqual({ t: "number", v: 0.07 })
+    })
+
+    it("reads negative percent points", () => {
+      expect(numberOf("-25", percent)).toEqual({ t: "number", v: -0.25 })
+      expect(numberOf("(25)", percent)).toEqual({ t: "number", v: -0.25 })
+    })
+
+    it("reads a number with a percent sign the same way, dividing only once", () => {
+      expect(numberOf("25%", percent)).toEqual({ t: "number", v: 0.25 })
+      expect(numberOf("25 %", percent)).toEqual({ t: "number", v: 0.25 })
+      expect(numberOf("-25%", percent)).toEqual({ t: "number", v: -0.25 })
+      expect(numberOf("(25%)", percent)).toEqual({ t: "number", v: -0.25 })
+    })
+
+    it("reads zero and an empty entry as zero", () => {
+      expect(numberOf("0", percent)).toEqual({ t: "number", v: 0 })
+      expect(numberOf("", percent)).toEqual({ t: "number", v: 0 })
+    })
+
+    it("refuses a percent sign given twice", () => {
+      expect(messageOf("25%%", percent)).toBe("'25%%' isn't a number.")
     })
   })
 
@@ -361,5 +394,80 @@ describe("parseInput time periods", () => {
 
   it("refuses typed periods, which the client cannot resolve", () => {
     expect(messageOf("Jan 26", format)).toBe("Time period values can't be typed in.")
+  })
+})
+
+describe("copying a cell and pasting the text back", () => {
+  const percentWithParens = numberFormat({ type: "percent" })
+  if (percentWithParens.type === "number") {
+    percentWithParens.negative = "parens"
+  }
+  const numberFormats: [string, Format][] = [
+    ["a plain number", plain],
+    ["a currency", eur],
+    ["a percentage", percent],
+    ["a percentage with parentheses", percentWithParens],
+  ]
+  const numbers = [
+    0, 1, -1, 25, 0.25, -0.25, 0.07, 0.29, 0.075, 1 / 3, 0.1 + 0.2, 1234.5, -1234.5, 1e-7, -1e-7,
+    1e21, 123456789.12345679, 99.99999999999999,
+  ]
+
+  describe.each(numberFormats)("%s", (_name, format) => {
+    it.each(numbers)("gives back %s", (v) => {
+      const value: Value = { t: "number", v }
+      expect(parseInput(copyText(value, format), format, ctx)).toEqual({ ok: true, value })
+    })
+
+    it("gives back arbitrary numbers of every size", () => {
+      let seed = 20261015
+      const random = () => {
+        seed = (seed + 0x6d2b79f5) | 0
+        let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+      }
+      for (let index = 0; index < 500; index++) {
+        const v = (random() - 0.5) * 10 ** (random() * 24 - 12)
+        const value: Value = { t: "number", v }
+        expect(parseInput(copyText(value, format), format, ctx)).toEqual({ ok: true, value })
+      }
+    })
+  })
+
+  it("keeps a percentage's value when it is pasted into a cell that is not a percentage", () => {
+    const value: Value = { t: "number", v: 0.07 }
+    expect(parseInput(copyText(value, percent), plain, ctx)).toEqual({ ok: true, value })
+    expect(parseInput(copyText(value, percent), eur, ctx)).toEqual({ ok: true, value })
+  })
+
+  it("reads a pasted plain number as percent points in a percentage cell", () => {
+    expect(parseInput(copyText({ t: "number", v: 0.07 }, plain), percent, ctx)).toEqual({
+      ok: true,
+      value: { t: "number", v: 0.0007 },
+    })
+  })
+
+  it("gives back what an editor opened with", () => {
+    for (const [, format] of numberFormats) {
+      for (const v of numbers) {
+        const value: Value = { t: "number", v }
+        expect(parseInput(editText(value, format), format, ctx)).toEqual({ ok: true, value })
+      }
+    }
+  })
+
+  it.each([
+    [{ t: "boolean", v: true }, { type: "boolean" }, undefined],
+    [{ t: "boolean", v: false }, { type: "boolean" }, undefined],
+    [{ t: "text", v: "plain" }, { type: "text" }, undefined],
+    [{ t: "text", v: "a\ttab, a \"quote\" and\na line" }, { type: "text" }, undefined],
+    [{ t: "date", v: "2026-10-15" }, { type: "date" }, undefined],
+    [{ t: "date", v: null }, { type: "date" }, undefined],
+    [{ t: "item", v: NORTH }, { type: "list", list: "list-id" }, "North America"],
+    [{ t: "item", v: SOUTH }, { type: "list", list: "list-id" }, "South America"],
+    [{ t: "item", v: null }, { type: "list", list: "list-id" }, undefined],
+  ] as [Value, Format, string | undefined][])("gives back %j", (value, format, text) => {
+    expect(parseInput(copyText(value, format, text), format, ctx)).toEqual({ ok: true, value })
   })
 })

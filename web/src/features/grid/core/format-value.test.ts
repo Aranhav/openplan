@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { formatValue } from "./format-value"
+import { copyText, editText, formatValue } from "./format-value"
 import type { Format, NumberUnit, Value } from "./types"
 
 function numberFormat(
@@ -191,5 +191,117 @@ describe("formatValue other types", () => {
     expect(formatValue(num(1), { type: "text" })).toBe("")
     expect(formatValue(num(1), { type: "date" })).toBe("")
     expect(formatValue(num(1), { type: "boolean" })).toBe("")
+  })
+})
+
+describe("editText", () => {
+  const usd = numberFormat({ unit: { type: "currency", code: "USD" }, negative: "parens" })
+  const percent = (options?: Parameters<typeof numberFormat>[0]) =>
+    numberFormat({ unit: { type: "percent" }, decimals: 0, ...options })
+
+  describe("numbers", () => {
+    it("writes the number in full, with no separators, symbol or rounding", () => {
+      expect(editText(num(1234.5), numberFormat({ decimals: 0 }))).toBe("1234.5")
+      expect(editText(num(1234567.891), numberFormat())).toBe("1234567.891")
+      expect(editText(num(1.23456789), numberFormat({ decimals: 2 }))).toBe("1.23456789")
+      expect(editText(num(1234.5), usd)).toBe("1234.5")
+    })
+
+    it("writes a negative number with a minus sign even when the cell shows parentheses", () => {
+      expect(editText(num(-1234.5), numberFormat({ negative: "parens" }))).toBe("-1234.5")
+      expect(editText(num(-1234.5), usd)).toBe("-1234.5")
+    })
+
+    it("writes zero as 0, never as negative zero", () => {
+      expect(editText(num(0), numberFormat())).toBe("0")
+      expect(editText(num(-0), numberFormat())).toBe("0")
+    })
+
+    it("never writes an exponent", () => {
+      expect(editText(num(1e21), numberFormat())).toBe("1000000000000000000000")
+      expect(editText(num(1e-7), numberFormat())).toBe("0.0000001")
+      expect(editText(num(0.1 + 0.2), numberFormat())).toBe("0.30000000000000004")
+    })
+  })
+
+  describe("percentages", () => {
+    it("writes percent points without the sign", () => {
+      expect(editText(num(0.25), percent())).toBe("25")
+      expect(editText(num(1.5), percent())).toBe("150")
+      expect(editText(num(-0.25), percent())).toBe("-25")
+      expect(editText(num(0), percent())).toBe("0")
+    })
+
+    it("does not show floating point noise from multiplying by one hundred", () => {
+      expect(editText(num(0.07), percent())).toBe("7")
+      expect(editText(num(0.29), percent())).toBe("29")
+      expect(editText(num(0.075), percent())).toBe("7.5")
+    })
+
+    it("keeps every digit of the value", () => {
+      expect(editText(num(1 / 3), percent())).toBe("33.33333333333333")
+      expect(editText(num(0.1 + 0.2), percent())).toBe("30.000000000000004")
+      expect(editText(num(1e-7), percent())).toBe("0.00001")
+      expect(editText(num(1e21), percent())).toBe("100000000000000000000000")
+    })
+
+    it("ignores the decimals the cell displays", () => {
+      expect(editText(num(0.123456), percent({ decimals: 1 }))).toBe("12.3456")
+    })
+  })
+
+  describe("other types", () => {
+    it("writes a boolean as TRUE or FALSE", () => {
+      expect(editText({ t: "boolean", v: true }, { type: "boolean" })).toBe("TRUE")
+      expect(editText({ t: "boolean", v: false }, { type: "boolean" })).toBe("FALSE")
+    })
+
+    it("writes text as it is", () => {
+      expect(editText({ t: "text", v: " Hello, world " }, { type: "text" })).toBe(" Hello, world ")
+    })
+
+    it("writes a date as yyyy-mm-dd, whatever the locale", () => {
+      expect(editText({ t: "date", v: "2026-10-15" }, { type: "date" })).toBe("2026-10-15")
+      expect(editText({ t: "date", v: null }, { type: "date" })).toBe("")
+    })
+
+    it("writes the item name or period label the server sent", () => {
+      const list: Format = { type: "list", list: "list-id" }
+      const period: Format = { type: "time_period", level: "month" }
+      expect(editText({ t: "item", v: "item-id" }, list, "North")).toBe("North")
+      expect(editText({ t: "item", v: null }, list)).toBe("")
+      expect(editText({ t: "period", v: ["month", 3] }, period, "Apr 26")).toBe("Apr 26")
+    })
+
+    it("writes nothing for a value that does not fit the format", () => {
+      expect(editText({ t: "text", v: "x" }, numberFormat())).toBe("")
+      expect(editText(num(1), { type: "boolean" })).toBe("")
+      expect(editText(num(1), { type: "date" })).toBe("")
+    })
+  })
+})
+
+describe("copyText", () => {
+  it("writes the same text as an editor opens with", () => {
+    expect(copyText(num(-1234.5), numberFormat({ negative: "parens" }))).toBe("-1234.5")
+    expect(copyText({ t: "boolean", v: true }, { type: "boolean" })).toBe("TRUE")
+    expect(copyText({ t: "date", v: "2026-10-15" }, { type: "date" })).toBe("2026-10-15")
+    expect(copyText({ t: "item", v: "item-id" }, { type: "list", list: "list-id" }, "North")).toBe(
+      "North",
+    )
+  })
+
+  it("keeps the percent sign on a percentage, as percent points times one hundred", () => {
+    const percent = numberFormat({ unit: { type: "percent" }, decimals: 1 })
+    expect(copyText(num(0.25), percent)).toBe("25%")
+    expect(copyText(num(0.07), percent)).toBe("7%")
+    expect(copyText(num(-0.075), percent)).toBe("-7.5%")
+    expect(copyText(num(1 / 3), percent)).toBe("33.33333333333333%")
+    expect(copyText(num(0), percent)).toBe("0%")
+  })
+
+  it("writes nothing for a value that does not fit a percentage", () => {
+    const percent = numberFormat({ unit: { type: "percent" } })
+    expect(copyText({ t: "text", v: "x" }, percent)).toBe("")
   })
 })

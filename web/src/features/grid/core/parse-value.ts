@@ -1,3 +1,7 @@
+/**
+ * Reads what was typed or pasted into a cell. Numbers use the English notation that
+ * `formatValue` writes (1,234.50, (1,234.50), 25%), whatever the browser's locale.
+ */
 import type { Format, Value } from "./types"
 
 /** Item ids by lower-cased name and by lower-cased code, for a list format's list. */
@@ -22,9 +26,10 @@ const MAX_QUOTED_LENGTH = 40
 const currencyTokens = new Map<string, string[]>()
 
 /**
- * Reads what was typed or pasted into a cell. An empty entry gives the format's blank value.
- * Numbers use the English notation that `formatValue` writes: 1,234.50, (1,234.50), 25%, and
- * for a currency format its symbol in front or its code behind (€12, 12 EUR).
+ * Reads one entry as a value of `format`. An empty entry gives the format's blank value. A
+ * currency format also accepts its symbol in front or its code behind (€12, 12 EUR). In a
+ * percent format a number is in percent points: 25 and 25% are both 0.25. Anywhere else a
+ * percent sign divides by 100 and a bare number is taken as it is.
  */
 export function parseInput(raw: string, format: Format, ctx: ParseContext): ParseResult {
   switch (format.type) {
@@ -66,7 +71,7 @@ function parseNumber(raw: string, format: NumberFormat): ParseResult {
     return ok({ t: "number", v: 0 })
   }
   const tokens = format.unit.type === "currency" ? tokensOfCurrency(format.unit.code) : []
-  const value = readNumber(entry, tokens)
+  const value = readNumber(entry, tokens, format.unit.type === "percent")
   if (value === undefined) {
     return refuse(`${quoted(entry)} isn't a number.`)
   }
@@ -74,7 +79,11 @@ function parseNumber(raw: string, format: NumberFormat): ParseResult {
 }
 
 /** The number in `entry`, or undefined when the entry is not one. */
-function readNumber(entry: string, currencies: string[]): number | undefined {
+function readNumber(
+  entry: string,
+  currencies: string[],
+  percentPoints: boolean,
+): number | undefined {
   let text = entry
   let negative = false
   let signed = false
@@ -122,7 +131,7 @@ function readNumber(entry: string, currencies: string[]): number | undefined {
   }
   const digits = text.replaceAll(",", "")
   // Shifting the decimal point in the text keeps 33.3% exactly 0.333; dividing by 100 would not.
-  const magnitude = Number(percent ? `${digits}e-2` : digits)
+  const magnitude = Number(percent || percentPoints ? `${digits}e-2` : digits)
   if (!Number.isFinite(magnitude)) {
     return undefined
   }
