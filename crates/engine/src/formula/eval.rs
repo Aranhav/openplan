@@ -422,3 +422,65 @@ fn version_index(structure: &Structure, version: VersionId) -> u32 {
         .position(|candidate| candidate.id == version)
         .map_or(BLANK_ITEM, |position| position as u32)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use super::*;
+    use crate::calendar::Calendar;
+    use crate::shape::Axis;
+
+    /// A context over no line items, which the memo test does not read.
+    struct NoValues;
+
+    impl ColumnSource for NoValues {
+        fn column(&self, _: LineItemId) -> Result<Arc<Column>, EngineError> {
+            Err(EngineError::Invalid {
+                message: "no line item values".to_string(),
+            })
+        }
+
+        fn aggregated(&self, _: LineItemId, _: &LevelSpec) -> Result<Arc<Summary>, EngineError> {
+            Err(EngineError::Invalid {
+                message: "no line item values".to_string(),
+            })
+        }
+    }
+
+    #[test]
+    fn memoized_works_out_a_call_once_for_each_key_and_target() {
+        let structure = Structure::new(Calendar {
+            fiscal_year_start_month: 1,
+            first_year: 2026,
+            years: 1,
+            current_month: None,
+        });
+        let layout = Layout {
+            axes: Vec::new(),
+            restriction: None,
+        };
+        let ctx = EvalCtx::new(&structure, &NoValues, &layout);
+        let target = Shape::new(vec![Axis::Versions], vec![2]);
+        let other = Shape::new(vec![Axis::Versions], vec![3]);
+        let worked = Cell::new(0);
+        let work = |len: usize| {
+            worked.set(worked.get() + 1);
+            Ok(Column::Number(vec![0.0; len]))
+        };
+
+        let first = ctx.memoized(1, &target, || work(2)).unwrap();
+        let again = ctx.memoized(1, &target, || work(2)).unwrap();
+        assert_eq!(worked.get(), 1);
+        assert!(Arc::ptr_eq(&first, &again));
+
+        ctx.memoized(1, &other, || work(3)).unwrap();
+        assert_eq!(worked.get(), 2);
+
+        ctx.memoized(2, &target, || work(2)).unwrap();
+        assert_eq!(worked.get(), 3);
+
+        ctx.memoized(1, &target, || work(2)).unwrap();
+        assert_eq!(worked.get(), 3);
+    }
+}

@@ -9,14 +9,16 @@ use crate::value::{BLANK_DATE, Column};
 
 use super::mismatch;
 
-fn to_date(days: i32) -> Option<NaiveDate> {
+/// The date of a stored day count, or `None` for a blank date.
+pub(super) fn to_date(days: i32) -> Option<NaiveDate> {
     if days == BLANK_DATE {
         return None;
     }
     NaiveDate::from_num_days_from_ce_opt(days + EPOCH_DAYS_FROM_CE)
 }
 
-fn to_days(date: NaiveDate) -> i32 {
+/// The stored day count of a date.
+pub(super) fn to_days(date: NaiveDate) -> i32 {
     date.num_days_from_ce() - EPOCH_DAYS_FROM_CE
 }
 

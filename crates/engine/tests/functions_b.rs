@@ -2,7 +2,6 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
-use std::time::Instant;
 
 use chrono::NaiveDate;
 use openplan_engine::{
@@ -1094,6 +1093,68 @@ fn time_functions_follow_a_time_range() {
 }
 
 #[test]
+fn time_range_of_a_fiscal_year_that_starts_in_april() {
+    // FY26 is Apr 25 to Mar 26, so FY27, the range, is Apr 26 to Mar 27: months 12 to 23 of the
+    // model calendar.
+    let mut book = Book::with_calendar(calendar(4, 2026, 3));
+    assert_eq!(book.cal.label(TimeLevel::Month, 12), "Apr 26");
+    let range = TimeRangeId::new();
+    book.model
+        .apply(Command::CreateTimeRange {
+            id: range,
+            name: "FY27".to_string(),
+            first_year: 2027,
+            years: 1,
+        })
+        .unwrap();
+    let plan = book.module(
+        "Plan",
+        vec![AxisSpec::Time {
+            level: TimeLevel::Month,
+            range: Some(range),
+        }],
+    );
+    let rev = book.input(plan, "Rev", Format::number());
+    let months: Vec<Vec<CoordToken>> = (0..12).map(|i| vec![book.month(12 + i)]).collect();
+    let cells = months
+        .iter()
+        .enumerate()
+        .map(|(i, month)| (month.clone(), Value::Number((i + 1) as f64)))
+        .collect();
+    book.set_all(rev, cells);
+
+    // The dates of the range run from Apr 26 to Mar 27.
+    let starts = book.calc_in(plan, Format::Date, "START()");
+    let starts = book.read(starts, months.clone());
+    assert_eq!(starts[0], Value::Date(date(2026, 4, 1)));
+    assert_eq!(starts[11], Value::Date(date(2027, 3, 1)));
+    let ends = book.calc_in(plan, Format::Date, "END()");
+    let ends = book.read(ends, months.clone());
+    assert_eq!(ends[0], Value::Date(date(2026, 4, 30)));
+    assert_eq!(ends[11], Value::Date(date(2027, 3, 31)));
+
+    // YEARVALUE is the total of FY27, 1 + ... + 12, in every month.
+    let year = book.calc_in(plan, Format::number(), "YEARVALUE(Rev)");
+    assert_eq!(book.numbers_at(year, months.clone()), [78.0; 12]);
+    // YEARTODATE starts again at the first month of FY27, which is the first month of the range.
+    let to_date = book.calc_in(plan, Format::number(), "YEARTODATE(Rev)");
+    assert_eq!(
+        book.numbers_at(to_date, months.clone()),
+        [
+            1.0, 3.0, 6.0, 10.0, 15.0, 21.0, 28.0, 36.0, 45.0, 55.0, 66.0, 78.0
+        ]
+    );
+    // Jul 26 to Sep 26 are months 15 to 17 of the model calendar, which are months 3 to 5 of the
+    // range: 4 + 5 + 6.
+    let between = book.calc_in(
+        plan,
+        Format::number(),
+        "TIMESUM(Rev, Time.'Jul 26', Time.'Sep 26')",
+    );
+    assert_eq!(book.numbers_at(between, months.clone()), [15.0; 12]);
+}
+
+#[test]
 fn inperiod_and_period() {
     let mut book = Book::new();
     book.input_series(
@@ -1809,6 +1870,43 @@ fn npv_and_irr_are_per_line_of_the_other_axes() {
 }
 
 #[test]
+fn irr_brackets_a_root_that_newton_steps_past() {
+    let mut book = Book::new();
+    // Newton's method from 10 % steps past -100 %, and the root is at -80 %.
+    book.series("Two Flows", &[-500.0, 100.0]);
+    let rate = book.numbers("IRR(Two Flows)", 1)[0];
+    assert!((rate + 0.8).abs() < 1e-9, "{rate}");
+
+    // The root is at (1 + rate)^5 = 0.05.
+    book.series("Five Years", &[-1000.0, 0.0, 0.0, 0.0, 0.0, 50.0]);
+    let rate = book.numbers("IRR(Five Years)", 1)[0];
+    let expected = 0.05_f64.powf(0.2) - 1.0;
+    assert!((rate - expected).abs() < 1e-9, "{rate}");
+    assert!((rate + 0.4507).abs() < 1e-4, "{rate}");
+    let nothing = book.numbers("NPV(IRR(Five Years), Five Years)", 1)[0];
+    assert!(nothing.abs() < 1e-6, "{nothing}");
+}
+
+#[test]
+fn irr_is_zero_when_the_values_never_change_sign() {
+    let mut book = Book::new();
+    book.series("Gains", &[100.0, 200.0]);
+    book.series("Losses", &[-100.0, -200.0]);
+    assert_eq!(book.numbers("IRR(Gains)", 1), [0.0]);
+    assert_eq!(book.numbers("IRR(Losses)", 1), [0.0]);
+}
+
+#[test]
+fn irr_over_a_long_timeline_ignores_flows_too_small_to_see() {
+    // Over 240 months the present value at the lowest rates of the search is too small to tell
+    // from 0, and must not make a rate of its own out of that.
+    let mut book = Book::with_calendar(calendar(1, 2026, 20));
+    book.series("Two Flows", &[-500.0, 100.0]);
+    let rate = book.numbers("IRR(Two Flows)", 1)[0];
+    assert!((rate + 0.8).abs() < 1e-9, "{rate}");
+}
+
+#[test]
 fn pmt_pv_fv_match_excel() {
     let mut book = Book::new();
 
@@ -2250,9 +2348,7 @@ fn cumulate_and_rank_over_a_large_target() {
         Format::number(),
         Some("Seed * 10 + MOD(Seed, 7) + MONTH(START()) * 3"),
     ));
-    let started = Instant::now();
     book.recalc();
-    println!("Sales alone:    {:?}", started.elapsed());
 
     let mut add = |name: &str, format: Format, formula: &str| {
         book.add(line_item(sales_module, name, format, Some(formula)))
@@ -2268,9 +2364,7 @@ fn cumulate_and_rank_over_a_large_target() {
         Format::Boolean,
         "ISFIRSTOCCURRENCE(MOD(Sales, 100), Products)",
     );
-    let started = Instant::now();
     book.recalc();
-    println!("Sales and six more line items: {:?}", started.elapsed());
     for line_item in [sales, cumulative, rank, previous, year, ytd, first] {
         assert!(book.model.line_item_errors(line_item).is_none());
     }

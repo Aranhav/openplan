@@ -672,34 +672,43 @@ pub(crate) fn arg_target(func: FuncId, ctx: &EvalCtx, target: &Shape) -> Option<
     time::arg_target(func, ctx, target)
 }
 
-/// Works out ahead of the chunks what a call shares between them, for the calls that have
-/// something to share (see [`EvalCtx::memoized`]): those that evaluate through [`shared`] or
-/// keep a column of their own for the whole target. A call missing here still gives the right
-/// values, but the chunks, which run in parallel, then each work it out.
+/// Whether a call of `func` shares a column over the whole target between its chunks (see
+/// [`EvalCtx::memoized`]): the calls whose result at a cell depends on cells in other chunks,
+/// which evaluate through [`shared`] or keep a column of their own. Keep this in step with those
+/// calls. A call missing here still gives the right values, but each chunk works it out.
+pub(crate) fn shares(func: FuncId) -> bool {
+    matches!(
+        func,
+        FuncId::IsFirstOccurrence
+            | FuncId::FindItem
+            | FuncId::Cumulate
+            | FuncId::MovingSum
+            | FuncId::YearValue
+            | FuncId::QuarterValue
+            | FuncId::HalfYearValue
+            | FuncId::MonthValue
+            | FuncId::TimeSum
+            | FuncId::YearToDate
+            | FuncId::QuarterToDate
+            | FuncId::HalfYearToDate
+            | FuncId::Rank
+            | FuncId::Npv
+            | FuncId::Irr
+    )
+}
+
+/// Works out ahead of the chunks what a call that [`shares`] shares between them, so that the
+/// chunks, which run in parallel, each take their cells from it.
 pub(crate) fn warm_fn(
     func: FuncId,
     ctx: &EvalCtx,
     target: &Shape,
     args: &[TExpr],
 ) -> Result<(), EngineError> {
-    match func {
-        FuncId::IsFirstOccurrence
-        | FuncId::FindItem
-        | FuncId::Cumulate
-        | FuncId::MovingSum
-        | FuncId::YearValue
-        | FuncId::QuarterValue
-        | FuncId::HalfYearValue
-        | FuncId::MonthValue
-        | FuncId::TimeSum
-        | FuncId::YearToDate
-        | FuncId::QuarterToDate
-        | FuncId::HalfYearToDate
-        | FuncId::Rank
-        | FuncId::Npv
-        | FuncId::Irr => eval_fn(func, ctx, target, args, &[]).map(|_| ()),
-        _ => Ok(()),
+    if !shares(func) {
+        return Ok(());
     }
+    eval_fn(func, ctx, target, args, &[]).map(|_| ())
 }
 
 /// Evaluates a call of `func` with the argument expressions `args` for the target cells at the

@@ -88,13 +88,28 @@ pub(super) fn eval_irr(
     })
 }
 
-/// The most steps of Newton's method `IRR` takes, and how close two steps must be.
+/// The most steps of Newton's method `IRR` takes, and how close two steps, or two rates in the
+/// bisection, must be.
 const IRR_STEPS: usize = 100;
 const IRR_TOLERANCE: f64 = 1e-10;
+/// The sign-change search scans the growth factors `1 + rate`, log-spaced from `IRR_LOW` to
+/// `IRR_HIGH`: the rates from -99.999 % to 1000 %, in `IRR_GRID` points.
+const IRR_LOW: f64 = 1e-5;
+const IRR_HIGH: f64 = 1001.0;
+const IRR_GRID: usize = 1000;
 
-/// The rate found by Newton's method from a guess of 10 %, or 0 if the steps do not settle on
-/// a rate above -100 % within [`IRR_STEPS`].
+/// The rate at which the values of `series` have a present value of 0: where Newton's method
+/// from a guess of 10 % settles, or else the first sign change of the present value over the
+/// grid of rates, bisected. 0 when there is no such rate.
 fn irr(series: &[f64]) -> f64 {
+    newton(series)
+        .or_else(|| first_sign_change(series))
+        .unwrap_or(0.0)
+}
+
+/// The rate Newton's method settles on from a guess of 10 %, or `None` if the steps do not
+/// settle on a rate above -100 % within [`IRR_STEPS`].
+fn newton(series: &[f64]) -> Option<f64> {
     let mut rate = 0.1;
     for _ in 0..IRR_STEPS {
         let discount = 1.0 / (1.0 + rate);
@@ -106,14 +121,85 @@ fn irr(series: &[f64]) -> f64 {
         }
         let next = rate - value / slope;
         if !next.is_finite() || next <= -1.0 {
-            return 0.0;
+            return None;
         }
         if (next - rate).abs() < IRR_TOLERANCE {
-            return next;
+            return Some(next);
         }
         rate = next;
     }
-    0.0
+    None
+}
+
+/// The rate where the present value of `series` first changes sign over the grid, found by
+/// bisection between the two grid points either side of the change. Grid points where it is 0
+/// are skipped. A series whose flows are not of both signs keeps one sign at every rate, so it
+/// has no such rate, and `None` comes without a scan.
+fn first_sign_change(series: &[f64]) -> Option<f64> {
+    let positive = series.iter().any(|&flow| flow > 0.0);
+    let negative = series.iter().any(|&flow| flow < 0.0);
+    if !positive || !negative {
+        return None;
+    }
+    let ratio = (IRR_HIGH / IRR_LOW).powf(1.0 / (IRR_GRID - 1) as f64);
+    let mut previous: Option<(f64, f64)> = None;
+    for step in 0..IRR_GRID {
+        let rate = IRR_LOW * ratio.powi(step as i32) - 1.0;
+        let value = scaled_value(series, rate);
+        if value == 0.0 {
+            continue;
+        }
+        if let Some((low, at_low)) = previous
+            && (at_low < 0.0) != (value < 0.0)
+        {
+            return Some(bisect(series, low, rate, at_low < 0.0));
+        }
+        previous = Some((rate, value));
+    }
+    None
+}
+
+/// The rate between `low` and `high`, where the present value of `series` changes sign, to
+/// within [`IRR_TOLERANCE`]. The present value is negative at `low` when `negative_low` is set,
+/// and positive at `high`, or the other way round.
+fn bisect(series: &[f64], mut low: f64, mut high: f64, negative_low: bool) -> f64 {
+    while high - low > IRR_TOLERANCE {
+        let middle = (low + high) / 2.0;
+        let value = scaled_value(series, middle);
+        if value == 0.0 {
+            return middle;
+        }
+        if (value < 0.0) == negative_low {
+            low = middle;
+        } else {
+            high = middle;
+        }
+    }
+    (low + high) / 2.0
+}
+
+/// The present value of `series` at `rate`, with its first flow not discounted, multiplied by a
+/// positive factor so that it does not overflow at the lowest rates of the search. It has the
+/// sign of the present value, and is 0 where that is too small to tell from 0.
+fn scaled_value(series: &[f64], rate: f64) -> f64 {
+    let growth = 1.0 + rate;
+    let mut factor = 1.0;
+    let mut total = 0.0;
+    if growth < 1.0 {
+        // The present value times growth^(n - 1) is the sum of flow * growth^(n - 1 - at), with
+        // no power of growth above 1.
+        for &flow in series.iter().rev() {
+            total += flow * factor;
+            factor *= growth;
+        }
+    } else {
+        let discount = 1.0 / growth;
+        for &flow in series {
+            total += flow * factor;
+            factor *= discount;
+        }
+    }
+    total
 }
 
 fn map3(args: &[Column], f: impl Fn(f64, f64, f64) -> f64) -> Result<Column, EngineError> {

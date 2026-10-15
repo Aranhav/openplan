@@ -3,11 +3,10 @@
 
 use std::ops::Range;
 
-use chrono::{Datelike, Months, NaiveDate};
+use chrono::{Months, NaiveDate};
 
 use crate::calendar::{Calendar, TimeLevel};
 use crate::error::EngineError;
-use crate::model::EPOCH_DAYS_FROM_CE;
 use crate::shape::{Axis, Shape};
 use crate::value::{BLANK_DATE, BLANK_PERIOD, Column, ValueType};
 
@@ -15,19 +14,9 @@ use crate::formula::eval::eval;
 use crate::formula::{EvalCtx, TExpr};
 
 use super::axis::position;
+use super::date::{to_date, to_days};
 use super::mismatch;
 use super::time::time_axis;
-
-fn to_date(days: i32) -> Option<NaiveDate> {
-    if days == BLANK_DATE {
-        return None;
-    }
-    NaiveDate::from_num_days_from_ce_opt(days + EPOCH_DAYS_FROM_CE)
-}
-
-fn to_days(date: NaiveDate) -> i32 {
-    date.num_days_from_ce() - EPOCH_DAYS_FROM_CE
-}
 
 /// The last day of the month that starts on `first`.
 fn last_day(first: NaiveDate) -> Option<NaiveDate> {
