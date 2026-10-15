@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { type RefObject, useEffect, useEffectEvent, useState } from "react"
 import { toast } from "sonner"
 import { errorDetail } from "@/lib/api/client"
 import { type CellReader, type CellTarget, cellKey, cellTarget } from "./cell-targets"
@@ -50,6 +50,8 @@ type Options = {
   peek: (range: CellRange) => CellReader | undefined
   /** Moves the selection one cell, as after an edit. */
   moveSelection: (direction: Direction) => void
+  /** The grid, which has the focus: copy, cut and paste are taken from the document while it does. */
+  gridRef: RefObject<HTMLElement | null>
   /** Puts the keyboard back on the grid when an editor closes. */
   focusGrid: () => void
 }
@@ -112,6 +114,7 @@ export function useGridEditing({
   load,
   peek,
   moveSelection,
+  gridRef,
   focusGrid,
 }: Options) {
   const edits = useCellEdits(modelId, moduleId)
@@ -396,6 +399,46 @@ export function useGridEditing({
     return toTsv(rows)
   }
 
+  // Copy, cut and paste arrive as the browser's own events, which hand over the clipboard without
+  // a permission prompt. They are taken from the document while the grid itself has the focus (so
+  // an editor, a menu or any other control keeps its own), since a browser sends them to wherever
+  // the page's text selection is, which is somewhere else once an editor has closed.
+  const copyEvent = useEffectEvent((event: ClipboardEvent) => {
+    event.preventDefault()
+    const text = selectionText()
+    if (text !== undefined) {
+      event.clipboardData?.setData("text/plain", text)
+    }
+  })
+  const cutEvent = useEffectEvent((event: ClipboardEvent) => {
+    if (readOnly) {
+      return
+    }
+    event.preventDefault()
+    const text = selectionText()
+    if (text !== undefined) {
+      event.clipboardData?.setData("text/plain", text)
+      void clear()
+    }
+  })
+  const pasteEvent = useEffectEvent((event: ClipboardEvent) => {
+    event.preventDefault()
+    void pasteText(event.clipboardData?.getData("text/plain") ?? "")
+  })
+  useEffect(() => {
+    const handlers = { copy: copyEvent, cut: cutEvent, paste: pasteEvent }
+    const removers = (["copy", "cut", "paste"] as const).map((type) => {
+      const listener = (event: ClipboardEvent) => {
+        if (gridRef.current && document.activeElement === gridRef.current) {
+          handlers[type](event)
+        }
+      }
+      document.addEventListener(type, listener)
+      return () => document.removeEventListener(type, listener)
+    })
+    return () => removers.forEach((remove) => remove())
+  }, [gridRef])
+
   return {
     ...editing,
     /** What a cell holds now, counting an edit that is still being written. */
@@ -457,32 +500,6 @@ export function useGridEditing({
         default:
           return false
       }
-    },
-    // Copy, cut and paste arrive as the browser's own events, which hand over the clipboard
-    // without a permission prompt. The grid listens for them on the document while it has the
-    // focus, since a browser sends them to wherever the page's text selection is, which is
-    // somewhere else once an editor has closed.
-    onCopy(event: ClipboardEvent) {
-      event.preventDefault()
-      const text = selectionText()
-      if (text !== undefined) {
-        event.clipboardData?.setData("text/plain", text)
-      }
-    },
-    onCut(event: ClipboardEvent) {
-      if (readOnly) {
-        return
-      }
-      event.preventDefault()
-      const text = selectionText()
-      if (text !== undefined) {
-        event.clipboardData?.setData("text/plain", text)
-        void clear()
-      }
-    },
-    onPaste(event: ClipboardEvent) {
-      event.preventDefault()
-      void pasteText(event.clipboardData?.getData("text/plain") ?? "")
     },
     /** For the menu: Copy where the keys cannot be used. */
     async copyToClipboard() {

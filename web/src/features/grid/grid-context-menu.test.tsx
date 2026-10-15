@@ -36,6 +36,7 @@ import {
 import type { ViewFixture } from "@/test/view-query"
 import { mockViewport } from "@/test/viewport"
 import { Grid } from "./grid"
+import { collapsibleMembers } from "./grid-layout"
 import type { GridQuery, MemberRef, ViewDim } from "./view-types"
 
 vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }))
@@ -44,6 +45,12 @@ vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }))
 vi.mock("./measure-text", () => ({
   measureTextWidth: vi.fn((text: string) => text.length * 8),
 }))
+
+// The members that hold a cell are looked up for the menu's items, which is counted.
+vi.mock("./grid-layout", async (importOriginal) => {
+  const layout = await importOriginal<typeof import("./grid-layout")>()
+  return { ...layout, collapsibleMembers: vi.fn(layout.collapsibleMembers) }
+})
 
 vi.setConfig({ testTimeout: 20_000 })
 
@@ -154,6 +161,57 @@ describe("opening the menu", () => {
 
     await userEvent.keyboard("{Shift>}{F10}{/Shift}")
 
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument()
+  })
+})
+
+describe("the native menu", () => {
+  it("is left alone inside an open text editor: no cell menu, no save, no prevented default", async () => {
+    const { grid, bodies } = await setup()
+    await select(grid, 1, BUDGET)
+    await userEvent.keyboard("42")
+    const input = screen.getByRole("textbox")
+
+    const notPrevented = fireEvent.contextMenu(input)
+
+    expect(notPrevented).toBe(true)
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument()
+    expect(screen.getByRole("textbox")).toHaveValue("42")
+    expect(bodies).toEqual([])
+  })
+
+  it("is left alone inside the dropdown of a list editor", async () => {
+    const { grid } = await setup()
+    await select(grid, 1, REGION)
+    await userEvent.keyboard("{Enter}")
+    const option = screen.getByRole("option", { name: /North America/ })
+
+    const notPrevented = fireEvent.contextMenu(option)
+
+    expect(notPrevented).toBe(true)
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument()
+    expect(screen.getByRole("combobox")).toBeInTheDocument()
+  })
+
+  it("is left alone on anything of the grid that is neither a cell nor a header", async () => {
+    const { grid } = await setup()
+    await select(grid, 1, BUDGET)
+    const row = grid.querySelector<HTMLElement>('[role="row"][data-row-index="2"]')!
+
+    const notPrevented = fireEvent.contextMenu(row)
+
+    expect(notPrevented).toBe(true)
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument()
+    expectActive(grid, 1, BUDGET)
+  })
+
+  it("is left alone on the corner above the row headers", async () => {
+    const { grid } = await setup()
+    const corner = grid.querySelector<HTMLElement>("[data-corner]")!
+
+    const notPrevented = fireEvent.contextMenu(corner)
+
+    expect(notPrevented).toBe(true)
     expect(screen.queryByRole("menu")).not.toBeInTheDocument()
   })
 })
@@ -309,7 +367,14 @@ describe("collapsing from a cell", () => {
       [onToggle],
     )
     const current = useMemo(() => ({ ...hierarchyQuery, collapsed }), [collapsed])
-    return <Grid modelId={MODEL_ID} query={current} onToggleCollapse={toggle} />
+    return (
+      <Grid
+        modelId={MODEL_ID}
+        query={current}
+        onToggleCollapse={toggle}
+        onColumnWidthsChange={() => undefined}
+      />
+    )
   }
 
   async function renderHierarchy(onToggle = vi.fn()) {
@@ -323,6 +388,18 @@ describe("collapsing from a cell", () => {
     await waitFor(() => expect(cellAt(grid, 0, 0).textContent).not.toBe(""))
     return { grid, onToggle }
   }
+
+  it("looks the members up when the menu opens, not as the grid renders", async () => {
+    const { grid } = await renderHierarchy()
+    await select(grid, 0, 0)
+    await userEvent.keyboard("{ArrowDown}{ArrowDown}{ArrowRight}")
+    expectActive(grid, 2, 1)
+    expect(collapsibleMembers).not.toHaveBeenCalled()
+
+    await openMenu(cellAt(grid, 2, 0))
+
+    expect(collapsibleMembers).toHaveBeenCalled()
+  })
 
   it("offers to collapse every member with children that holds the row, nearest first", async () => {
     const { grid } = await renderHierarchy()
@@ -402,6 +479,70 @@ describe("collapsing from a cell", () => {
     expect(item(/^Collapse EMEA/)).toHaveTextContent("Alt+Shift+←")
   })
 
+  describe("from a header", () => {
+    const headerOf = (grid: HTMLElement, role: "rowheader" | "columnheader", name: string) =>
+      within(grid).getByRole(role, { name })
+
+    it("opens a menu of that member, not the menu of the active cell", async () => {
+      const { grid, onToggle } = await renderHierarchy()
+      await select(grid, 2, 1)
+
+      await openMenu(headerOf(grid, "rowheader", "EMEA"))
+
+      const names = screen.getAllByRole("menuitem").map((entry) => entry.textContent)
+      expect(names).toEqual(["Collapse EMEA"])
+      expectActive(grid, 2, 1)
+      await userEvent.click(item("Collapse EMEA"))
+      expect(onToggle).toHaveBeenCalledExactlyOnceWith({ dim: regionsList, key: "emea" })
+    })
+
+    it("offers to expand a member that is collapsed", async () => {
+      const { grid, onToggle } = await renderHierarchy()
+      await userEvent.click(within(grid).getByRole("button", { name: "Collapse EMEA" }))
+      await waitFor(() =>
+        expect(
+          within(grid).queryByRole("rowheader", { name: "United Kingdom" }),
+        ).not.toBeInTheDocument(),
+      )
+
+      await openMenu(headerOf(grid, "rowheader", "EMEA"))
+      await userEvent.click(item("Expand EMEA"))
+
+      expect(onToggle).toHaveBeenLastCalledWith({ dim: regionsList, key: "emea" })
+    })
+
+    it("opens a menu of a column header with its member and the width of its column", async () => {
+      const { grid, onToggle } = await renderHierarchy()
+
+      await openMenu(headerOf(grid, "columnheader", "Q1 FY26"))
+
+      const names = screen.getAllByRole("menuitem").map((entry) => entry.textContent)
+      expect(names).toEqual(["Collapse Q1 FY26", "Set column width…", "Reset column width"])
+      await userEvent.click(item("Collapse Q1 FY26"))
+      expect(onToggle).toHaveBeenCalledExactlyOnceWith({ dim: timeDim, key: "Q1 FY26" })
+    })
+
+    it("offers nothing to collapse for a member without children, only the width", async () => {
+      const { grid } = await renderHierarchy()
+
+      await openMenu(headerOf(grid, "columnheader", "Jan 26"))
+
+      expect(screen.getAllByRole("menuitem").map((entry) => entry.textContent)).toEqual([
+        "Set column width…",
+        "Reset column width",
+      ])
+    })
+
+    it("leaves a header with nothing to offer, such as a row header without children, to the browser", async () => {
+      const { grid } = await renderHierarchy()
+
+      const notPrevented = fireEvent.contextMenu(headerOf(grid, "rowheader", "United Kingdom"))
+
+      expect(notPrevented).toBe(true)
+      expect(screen.queryByRole("menu")).not.toBeInTheDocument()
+    })
+  })
+
   it("offers nothing to collapse for a grid that cannot collapse", async () => {
     const { grid } = await setup()
 
@@ -447,7 +588,7 @@ describe("column width", () => {
     const { grid, onChange } = await renderWidths()
     await openMenu(cellAt(grid, 1, BUDGET))
 
-    await userEvent.click(item("Column width…"))
+    await userEvent.click(item("Set column width…"))
     const input = await screen.findByRole("spinbutton", { name: "Column width (px)" })
     expect(input).toHaveValue(200)
     expect(input).toHaveFocus()
@@ -460,11 +601,35 @@ describe("column width", () => {
     expect(grid).toHaveFocus()
   })
 
+  it("sets the width of the column of a header that is right clicked, not the active column", async () => {
+    const { grid, onChange } = await renderWidths()
+    await select(grid, 1, BUDGET)
+
+    await openMenu(within(grid).getByRole("columnheader", { name: "Notes" }))
+    await userEvent.click(item("Set column width…"))
+    const input = await screen.findByRole("spinbutton")
+    expect(input).toHaveValue(120)
+    await userEvent.clear(input)
+    await userEvent.type(input, "333{Enter}")
+
+    expect(onChange).toHaveBeenCalledExactlyOnceWith({ "li-budget": 200, "li-notes": 333 })
+  })
+
+  it("resets the width of the column of a header that is right clicked", async () => {
+    const { grid, onChange } = await renderWidths()
+    await select(grid, 1, NOTES)
+
+    await openMenu(within(grid).getByRole("columnheader", { name: "Budget" }))
+    await userEvent.click(item("Reset column width"))
+
+    expect(onChange).toHaveBeenCalledExactlyOnceWith({})
+  })
+
   it("starts from the default width for a column that has none", async () => {
     const { grid } = await renderWidths()
     await openMenu(cellAt(grid, 1, NOTES))
 
-    await userEvent.click(item("Column width…"))
+    await userEvent.click(item("Set column width…"))
 
     expect(await screen.findByRole("spinbutton")).toHaveValue(120)
   })
@@ -472,7 +637,7 @@ describe("column width", () => {
   it("sets the width with Enter", async () => {
     const { grid, onChange } = await renderWidths()
     await openMenu(cellAt(grid, 1, NOTES))
-    await userEvent.click(item("Column width…"))
+    await userEvent.click(item("Set column width…"))
     const input = await screen.findByRole("spinbutton")
 
     await userEvent.clear(input)
@@ -486,7 +651,7 @@ describe("column width", () => {
     async (typed) => {
       const { grid, onChange } = await renderWidths()
       await openMenu(cellAt(grid, 1, BUDGET))
-      await userEvent.click(item("Column width…"))
+      await userEvent.click(item("Set column width…"))
       const input = await screen.findByRole("spinbutton")
 
       await userEvent.clear(input)
@@ -503,7 +668,7 @@ describe("column width", () => {
   it.each(["48", "640"])("accepts a width of %s", async (typed) => {
     const { grid, onChange } = await renderWidths()
     await openMenu(cellAt(grid, 1, BUDGET))
-    await userEvent.click(item("Column width…"))
+    await userEvent.click(item("Set column width…"))
     const input = await screen.findByRole("spinbutton")
 
     await userEvent.clear(input)
@@ -515,7 +680,7 @@ describe("column width", () => {
   it("closes with Escape and gives the focus back to the grid", async () => {
     const { grid, onChange } = await renderWidths()
     await openMenu(cellAt(grid, 1, BUDGET))
-    await userEvent.click(item("Column width…"))
+    await userEvent.click(item("Set column width…"))
     await screen.findByRole("spinbutton")
 
     await userEvent.keyboard("{Escape}")
@@ -540,7 +705,7 @@ describe("column width", () => {
     await openMenu(cellAt(grid, 1, NOTES))
 
     expect(item("Reset column width")).toHaveAttribute("aria-disabled", "true")
-    expect(item("Column width…")).not.toHaveAttribute("aria-disabled")
+    expect(item("Set column width…")).not.toHaveAttribute("aria-disabled")
   })
 
   it("offers no column width when the grid cannot keep one", async () => {
@@ -548,7 +713,7 @@ describe("column width", () => {
 
     await openMenu(cellAt(grid, 1, BUDGET))
 
-    expect(screen.queryByRole("menuitem", { name: "Column width…" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("menuitem", { name: "Set column width…" })).not.toBeInTheDocument()
     expect(screen.queryByRole("menuitem", { name: "Reset column width" })).not.toBeInTheDocument()
   })
 })

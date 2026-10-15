@@ -1,5 +1,5 @@
 import { ChevronDown, ChevronRight, CircleAlert } from "lucide-react"
-import { Fragment, memo, useEffect, useRef } from "react"
+import { Fragment, type MouseEvent, memo, useEffect, useRef } from "react"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
@@ -30,6 +30,10 @@ function repeatedColor(member: Member, repeated: boolean): string {
   }
   return member.is_summary ? "text-foreground/70" : "text-muted-foreground"
 }
+
+// Something that is not a cell or a header with data, such as a corner or a header that has not
+// loaded, has no menu of ours, and its right click is left to the browser.
+const stopMenu = (event: MouseEvent) => event.stopPropagation()
 
 export type HeaderCallbacks = {
   /** Absent when the grid cannot collapse members; then no chevron is drawn. */
@@ -234,6 +238,7 @@ export const RowHeaders = memo(function RowHeaders({
               aria-busy="true"
               className={`${CELL} bg-background px-2`}
               style={{ width }}
+              onContextMenu={stopMenu}
             >
               <Skeleton className="h-3 w-3/5" />
             </div>
@@ -246,6 +251,8 @@ export const RowHeaders = memo(function RowHeaders({
           <div
             key={level}
             role="rowheader"
+            data-header-axis="row"
+            data-header-level={level}
             aria-colindex={level + 1}
             aria-label={member.label}
             aria-expanded={member.has_children ? !member.collapsed : undefined}
@@ -314,8 +321,10 @@ export function ColumnHeaders({
           style={{ width: contentWidth, height: HEADER_ROW_HEIGHT }}
         >
           <div
+            data-corner
             className="sticky left-0 z-10 flex h-full bg-background"
             style={{ width: rowHeaderWidth }}
+            onContextMenu={stopMenu}
           >
             {rowHeaderWidths.map((width, rowLevel) => (
               <div key={rowLevel} className={`${CELL} relative bg-background`} style={{ width }}>
@@ -343,6 +352,9 @@ export function ColumnHeaders({
               <Fragment key={span.start}>
                 <div
                   role="columnheader"
+                  data-header-axis={member ? "column" : undefined}
+                  data-header-level={member ? level : undefined}
+                  data-header-index={member ? span.start : undefined}
                   aria-colindex={rowHeaderWidths.length + span.start + 1}
                   aria-colspan={span.end > span.start ? span.end - span.start + 1 : undefined}
                   aria-label={member?.label}
@@ -353,6 +365,7 @@ export function ColumnHeaders({
                     member?.is_summary ? "text-foreground" : "text-muted-foreground"
                   }`}
                   style={{ left, width }}
+                  onContextMenu={member ? undefined : stopMenu}
                 >
                   {member ? (
                     <div

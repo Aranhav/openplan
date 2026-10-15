@@ -6,37 +6,8 @@ import {
 } from "@/components/ui/context-menu"
 import { type CollapsibleMember, collapsibleMembers } from "./grid-layout"
 import { collapseShortcut, shortcut } from "./shortcuts"
-import type { Header, Member, ViewDim } from "./view-types"
-
-type Axis = "row" | "column"
-
-type AxisView = {
-  dims: readonly ViewDim[]
-  count: number
-  index: number
-  headerAt: (index: number) => Header | undefined
-}
-
-export type CellMenuProps = {
-  rows: AxisView
-  columns: AxisView
-  canPaste: boolean
-  canFill: boolean
-  /** Without it, the menu has no Collapse or Expand. */
-  onCollapse?: (axis: Axis, level: number, member: Member) => void
-  /** Without it, the menu has no column width. */
-  width?: {
-    /** The column has a width of its own to go back from. */
-    custom: boolean
-    onChange: () => void
-    onReset: () => void
-  }
-  onCopy: () => void
-  onPaste: () => void
-  onFillDown: () => void
-  /** The menu closes and the keyboard does not return to the grid, as something else takes it. */
-  onCloseAutoFocus: (event: Event) => void
-}
+import type { Axis, AxisView, CellMenuProps, ColumnWidthItems } from "./cell-menu-model"
+import type { Member } from "./view-types"
 
 function collapseItems(
   axis: Axis,
@@ -45,7 +16,7 @@ function collapseItems(
 ) {
   const found: CollapsibleMember[] = collapsibleMembers(
     view.dims,
-    view.index,
+    view.active,
     view.count,
     view.headerAt,
   )
@@ -64,28 +35,36 @@ function collapseItems(
   ))
 }
 
-/**
- * What the menu of a cell offers: copy, paste and fill down with their keys, collapse or expand
- * for every member that holds the cell's row or column, and the width of the column. It is
- * mounted only while the menu is open, so what it looks up is looked up when it is needed.
- */
-export function CellMenuContent({
+function widthItems(items: ColumnWidthItems) {
+  return (
+    <>
+      <ContextMenuItem onSelect={items.onChange}>Set column width…</ContextMenuItem>
+      <ContextMenuItem disabled={!items.custom} onSelect={items.onReset}>
+        Reset column width
+      </ContextMenuItem>
+    </>
+  )
+}
+
+function CellItems({
   rows,
   columns,
-  canPaste,
-  canFill,
-  onCollapse,
+  state,
+  onCollapseAbove,
   width,
   onCopy,
   onPaste,
   onFillDown,
-  onCloseAutoFocus,
 }: CellMenuProps) {
-  const collapsing = onCollapse
-    ? [...collapseItems("row", rows, onCollapse), ...collapseItems("column", columns, onCollapse)]
+  const { canPaste, canFill } = state()
+  const collapsing = onCollapseAbove
+    ? [
+        ...collapseItems("row", rows, onCollapseAbove),
+        ...collapseItems("column", columns, onCollapseAbove),
+      ]
     : []
   return (
-    <ContextMenuContent className="w-64" onCloseAutoFocus={onCloseAutoFocus}>
+    <>
       <ContextMenuItem onSelect={onCopy}>
         Copy
         <ContextMenuShortcut>{shortcut("C")}</ContextMenuShortcut>
@@ -107,11 +86,50 @@ export function CellMenuContent({
       {width && (
         <>
           <ContextMenuSeparator />
-          <ContextMenuItem onSelect={width.onChange}>Column width…</ContextMenuItem>
-          <ContextMenuItem disabled={!width.custom} onSelect={width.onReset}>
-            Reset column width
-          </ContextMenuItem>
+          {widthItems(width(columns.active))}
         </>
+      )}
+    </>
+  )
+}
+
+function HeaderItems({
+  target,
+  rows,
+  columns,
+  onToggleHeader,
+  width,
+}: CellMenuProps & { target: { kind: "header"; axis: Axis; level: number; index: number } }) {
+  const { axis, level, index } = target
+  const view = axis === "row" ? rows : columns
+  const member = view.headerAt(index)?.members[level]
+  const resizes = axis === "column" && level === view.dims.length - 1 && width
+  return (
+    <>
+      {onToggleHeader && member?.has_children && (
+        <ContextMenuItem onSelect={() => onToggleHeader(axis, level, member)}>
+          {member.collapsed ? "Expand" : "Collapse"} {member.label}
+        </ContextMenuItem>
+      )}
+      {resizes && onToggleHeader && member?.has_children && <ContextMenuSeparator />}
+      {resizes && widthItems(width(index))}
+    </>
+  )
+}
+
+/**
+ * What the menu of a cell or of a header offers. The menu's items are built by a child that only
+ * exists while the menu is open, so what they look up (the members that hold a cell, what it
+ * allows) is looked up when it is asked for and not on every render of the grid.
+ */
+export function CellMenuContent(props: CellMenuProps) {
+  const { target, onCloseAutoFocus } = props
+  return (
+    <ContextMenuContent className="w-64" onCloseAutoFocus={onCloseAutoFocus}>
+      {target.kind === "cell" ? (
+        <CellItems {...props} />
+      ) : (
+        <HeaderItems {...props} target={target} />
       )}
     </ContextMenuContent>
   )
