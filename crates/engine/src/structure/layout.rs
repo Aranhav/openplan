@@ -1,6 +1,7 @@
+use crate::calendar::TimeLevel;
 use crate::command::CoordToken;
 use crate::error::EngineError;
-use crate::ids::{LineItemId, VersionId};
+use crate::ids::{LineItemId, TimeRangeId, VersionId};
 use crate::shape::{Axis, Shape};
 
 use super::module::time_axis;
@@ -225,23 +226,30 @@ impl Structure {
             Some(only) => only.get(version_idx).copied(),
             None => self.versions.get(version_idx).map(|version| version.id),
         };
-        let Some(switchover) = version_id
-            .and_then(|id| self.version(id))
-            .and_then(|version| version.switchover)
+        let (Some(version_id), Axis::Time { level, range }) = (version_id, &layout.axes[time_pos])
         else {
             return false;
         };
-        let Axis::Time { level, range } = &layout.axes[time_pos] else {
+        self.before_switchover(version_id, *level, *range, coords[time_pos])
+    }
+
+    /// Whether a version shows the actual version's cells for a period of `level` in the
+    /// calendar of `range`: the period ends at or before the version's switchover month.
+    pub(crate) fn before_switchover(
+        &self,
+        version: VersionId,
+        level: TimeLevel,
+        range: Option<TimeRangeId>,
+        period: u32,
+    ) -> bool {
+        let Some(switchover) = self.version(version).and_then(|version| version.switchover) else {
             return false;
         };
-        let Ok(calendar) = self.time_calendar(*range) else {
+        let Ok(calendar) = self.time_calendar(range) else {
             return false;
         };
-        let offset = range
-            .and_then(|id| self.time_ranges.get(&id))
-            .map_or(0, |range| self.calendar.range_month_offset(range));
         let last_month =
-            offset + i64::from(calendar.months_in_period(*level, coords[time_pos]).end);
+            self.time_offset(range) + i64::from(calendar.months_in_period(level, period).end);
         last_month <= i64::from(switchover)
     }
 }

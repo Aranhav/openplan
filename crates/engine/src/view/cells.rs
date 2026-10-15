@@ -3,7 +3,7 @@ use super::{Cell, CellFlag, Cx, LineItemInfo, ViewDim, not_found};
 use crate::calendar::TimeLevel;
 use crate::command::CoordToken;
 use crate::error::{EngineError, FormulaError};
-use crate::ids::{ItemId, LineItemId, ListId, VersionId};
+use crate::ids::{ItemId, LineItemId, ListId, TimeRangeId, VersionId};
 use crate::model::blank_value;
 use crate::shape::Axis;
 use crate::structure::LineItem;
@@ -18,7 +18,10 @@ enum Rule {
     /// Only members that are in the subset, and any total.
     Subset(HashSet<ItemId>),
     /// Only periods that are not finer than the line item's.
-    Time { level: TimeLevel, offset: i64 },
+    Time {
+        level: TimeLevel,
+        range: Option<TimeRangeId>,
+    },
     /// Only versions of the restriction, if there is one.
     Versions(Option<Vec<VersionId>>),
 }
@@ -78,13 +81,13 @@ impl LiPlan<'_> {
                     tokens.push(CoordToken::Item(item));
                     summary |= node.summary;
                 }
-                (Rule::Time { level, offset }, Id::Period(found, index)) => {
+                (Rule::Time { level, range }, Id::Period(found, index)) => {
                     if found < *level {
                         return Projection::Na;
                     }
                     summary |= found > *level;
                     tokens.push(CoordToken::Period(cx.period_label(found, index)));
-                    period = Some((found, index, *offset));
+                    period = Some((found, index, *range));
                 }
                 (Rule::Versions(only), Id::Version(id)) => {
                     if only.as_ref().is_some_and(|only| !only.contains(&id)) {
@@ -97,8 +100,8 @@ impl LiPlan<'_> {
             }
         }
         let switchover = match (summary, period, version) {
-            (false, Some((level, index, offset)), Some(version)) => {
-                cx.before_switchover(version, level, index, offset)
+            (false, Some((level, index, range)), Some(version)) => {
+                cx.structure.before_switchover(version, level, range, index)
             }
             _ => false,
         };
@@ -200,12 +203,11 @@ impl<'a> Cx<'a> {
                     .filter(|time| time.range == *range)
                     .and_then(|_| self.dim_index(&ViewDim::Time))
                     .map(|dim| {
-                        let offset = structure.time_offset(*range);
                         (
                             dim,
                             Rule::Time {
                                 level: *level,
-                                offset,
+                                range: *range,
                             },
                         )
                     }),
@@ -228,26 +230,6 @@ impl<'a> Cx<'a> {
                 .line_item_errors(id)
                 .is_some_and(|errors| !errors.is_empty()),
         })
-    }
-
-    /// Whether a version shows the actual version's cells for the period.
-    fn before_switchover(
-        &self,
-        version: VersionId,
-        level: TimeLevel,
-        period: u32,
-        offset: i64,
-    ) -> bool {
-        let (Some(time), Some(switchover)) = (
-            &self.time,
-            self.structure
-                .version(version)
-                .and_then(|version| version.switchover),
-        ) else {
-            return false;
-        };
-        offset + i64::from(time.calendar.months_in_period(level, period).end)
-            <= i64::from(switchover)
     }
 
     /// The label of a period as the module's calendar writes it.
