@@ -1,6 +1,11 @@
 import { createFileRoute } from "@tanstack/react-router"
-import { PageHeader } from "@/components/page-header"
+import { ModelsPage } from "@/features/models/models-page"
 
 export const Route = createFileRoute("/_app/w/$workspaceId/")({
-  component: () => <PageHeader title="Models" />,
+  component: WorkspaceModelsRoute,
 })
+
+function WorkspaceModelsRoute() {
+  const { workspaceId } = Route.useParams()
+  return <ModelsPage key={workspaceId} workspaceId={workspaceId} />
+}

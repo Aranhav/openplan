@@ -8,3 +8,8 @@ export const roleLabels: Record<WorkspaceRole, string> = {
   builder: "Builder",
   admin: "Admin",
 }
+
+/** Builders and admins can create, change and delete models; planners and viewers only read them. */
+export function canEditModels(role: WorkspaceRole): boolean {
+  return role === "builder" || role === "admin"
+}

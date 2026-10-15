@@ -59,7 +59,10 @@ export interface Session {
   meRequests: number
 }
 
-/** Answers the setup-status and me endpoints from `state`, which a test can change mid-flight. */
+/**
+ * Answers the setup-status and me endpoints from `state`, which a test can change mid-flight.
+ * Every workspace is empty of models until a test calls `serveModels`.
+ */
 export function mockSession(initial: Partial<Session> = {}): Session {
   const state: Session = { needsSetup: false, signedIn: true, me, meRequests: 0, ...initial }
   server.use(
@@ -70,8 +73,52 @@ export function mockSession(initial: Partial<Session> = {}): Session {
         ? HttpResponse.json(state.me)
         : problem(401, "auth.unauthenticated", "Sign in to continue.")
     }),
+    http.get("/api/v1/workspaces/:id/models", () => HttpResponse.json([])),
   )
   return state
+}
+
+export interface ModelStore {
+  models: ModelDto[]
+}
+
+/**
+ * Serves the model endpoints from `store.models`, which a test can change mid-flight. Renaming
+ * and deleting change it the way the server would; call it after `mockSession`.
+ */
+export function serveModels(models: ModelDto[]): ModelStore {
+  const store: ModelStore = { models }
+  const find = (id: unknown) => store.models.find((model) => model.id === id)
+  server.use(
+    http.get("/api/v1/workspaces/:id/models", ({ params }) =>
+      HttpResponse.json(store.models.filter((model) => model.workspace_id === params.id)),
+    ),
+    http.get("/api/v1/models/:id", ({ params }) => {
+      const model = find(params.id)
+      return model ? HttpResponse.json(model) : problem(404, "not_found", "Not found.")
+    }),
+    http.patch("/api/v1/models/:id", async ({ params, request }) => {
+      const model = find(params.id)
+      if (!model) {
+        return problem(404, "not_found", "Not found.")
+      }
+      const updated = {
+        ...model,
+        ...((await request.json()) as Partial<ModelDto>),
+        updated_at: new Date().toISOString(),
+      }
+      store.models = store.models.map((m) => (m.id === model.id ? updated : m))
+      return HttpResponse.json(updated)
+    }),
+    http.delete("/api/v1/models/:id", ({ params }) => {
+      if (!find(params.id)) {
+        return problem(404, "not_found", "Not found.")
+      }
+      store.models = store.models.filter((model) => model.id !== params.id)
+      return new HttpResponse(null, { status: 204 })
+    }),
+  )
+  return store
 }
 
 /** Renders the real route tree, starting at `path`, against the mocked server. */

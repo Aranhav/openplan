@@ -7,7 +7,8 @@ import { pickWorkspace, setLastWorkspace } from "@/lib/last-workspace"
 /**
  * The workspace the user is working in: the one in the address, else the one that owns the model
  * being viewed, else the one they used last, else the first they belong to. A workspace found in
- * the address is remembered for next time.
+ * the address is remembered for next time. An address that names a workspace the user is not in
+ * has no current workspace, rather than another one shown in its place.
  */
 export function useCurrentWorkspace() {
   const { workspaceId, modelId } = useParams({ strict: false })
@@ -18,7 +19,9 @@ export function useCurrentWorkspace() {
   const fromRoute = workspaces?.find((workspace) => workspace.id === routeWorkspaceId)
   // On a model's page the workspace is unknown until the model arrives; guessing would flash another.
   const awaitingModel = modelId !== undefined && model.isPending
-  const workspace = fromRoute ?? (awaitingModel ? undefined : pickWorkspace(workspaces ?? []))
+  const workspace =
+    fromRoute ??
+    (awaitingModel || workspaceId !== undefined ? undefined : pickWorkspace(workspaces ?? []))
 
   const rememberedId = fromRoute?.id
   useEffect(() => {

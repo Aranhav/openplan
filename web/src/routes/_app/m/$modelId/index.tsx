@@ -1,6 +1,11 @@
 import { createFileRoute } from "@tanstack/react-router"
-import { PageHeader } from "@/components/page-header"
+import { ModelPage } from "@/features/models/model-page"
 
 export const Route = createFileRoute("/_app/m/$modelId/")({
-  component: () => <PageHeader title="Model" />,
+  component: ModelRoute,
 })
+
+function ModelRoute() {
+  const { modelId } = Route.useParams()
+  return <ModelPage key={modelId} modelId={modelId} />
+}

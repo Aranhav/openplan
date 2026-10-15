@@ -74,6 +74,16 @@ describe("the current workspace", () => {
     await waitFor(() => expect(router.state.location.pathname).toBe(`/w/${workspace.id}`))
   })
 
+  it("is nothing when the address names a workspace the user is not in", async () => {
+    mockSession({ me: meInTwoWorkspaces })
+    window.localStorage.setItem(LAST_WORKSPACE_KEY, globex.id)
+    renderApp("/w/0192f3a0-0000-7000-8000-0000000000ff")
+
+    expect(await screen.findByRole("button", { name: /No workspace/ })).toBeVisible()
+    expect(screen.queryByRole("button", { name: /Globex/ })).not.toBeInTheDocument()
+    expect(window.localStorage.getItem(LAST_WORKSPACE_KEY)).toBe(globex.id)
+  })
+
   it("is nothing for someone who belongs to no workspace", async () => {
     mockSession({ me: { ...me, workspaces: [] } })
     const { router } = renderApp("/")
