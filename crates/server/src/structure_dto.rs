@@ -851,6 +851,16 @@ mod tests {
         scaled.write_access_driver = Some(price_id);
         let scaled_id = scaled.id;
         commands.push(Command::CreateLineItem(scaled));
+        let mut whole = line_item(
+            summary,
+            "Whole",
+            1,
+            Format::TimePeriod {
+                level: TimeLevel::All,
+            },
+        );
+        whole.time_scale = TimeScale::Level(TimeLevel::All);
+        commands.push(Command::CreateLineItem(whole));
         let mut unscaled = line_item(summary, "Unscaled", 0, Format::number());
         unscaled.time_scale = TimeScale::None;
         unscaled.versions = VersionsScope::None;
@@ -954,5 +964,22 @@ mod tests {
             countries["items"][0]["parent"],
             json!(first.parent.unwrap().0)
         );
+    }
+
+    #[test]
+    fn a_calendar_without_a_current_month_serializes_it_as_null_like_the_engine() {
+        let model = Model::new(Calendar {
+            fiscal_year_start_month: 1,
+            first_year: 2026,
+            years: 1,
+            current_month: None,
+        });
+        let doc = model.export_structure();
+        let engine = serde_json::to_value(&doc).unwrap();
+
+        let typed = serde_json::to_value(StructureDto::from(doc)).unwrap();
+
+        assert_eq!(typed, engine);
+        assert_eq!(typed["calendar"]["current_month"], Value::Null);
     }
 }
