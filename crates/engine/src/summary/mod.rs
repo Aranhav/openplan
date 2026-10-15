@@ -12,7 +12,7 @@ mod cache;
 mod switchover;
 
 pub(crate) use cache::{Summary, SummaryCache};
-pub(crate) use switchover::{cutoffs, with_actual_before_switchover};
+pub(crate) use switchover::{cutoffs, show_written, with_actual_before_switchover};
 
 /// The levels a grid is summarized to: one axis per axis of the source shape, in the same
 /// order.

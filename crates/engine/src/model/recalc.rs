@@ -164,8 +164,8 @@ fn differs(
     Ok(old_layout != new_layout || before.shape_of(&old_layout)? != after.shape_of(&new_layout)?)
 }
 
-/// Whether the calendar, the time ranges or the versions differ in a way that changes values
-/// anywhere.
+/// Whether the calendar, the time ranges or the versions (their names too, which formulas can
+/// show) differ in a way that changes values anywhere.
 fn environment_changed(before: &Structure, after: &Structure) -> bool {
     let versions = |structure: &Structure| {
         structure
@@ -174,6 +174,7 @@ fn environment_changed(before: &Structure, after: &Structure) -> bool {
             .map(|version| {
                 (
                     version.id,
+                    version.name.clone(),
                     version.is_actual,
                     version.is_current,
                     version.switchover,
@@ -242,6 +243,7 @@ impl Model {
             plan.changed.insert(id, Dirty::All);
         }
         if changes.structure_changed {
+            self.switched.clear();
             self.graph = Arc::new(Graph::build(&self.structure)?);
             plan.add_structure(
                 (before, graph_before),
@@ -266,6 +268,7 @@ impl Model {
     pub(super) fn recalc_everything(&mut self, changes: &mut ChangeSet) -> Result<(), EngineError> {
         self.graph = Arc::new(Graph::build(&self.structure)?);
         self.computed.clear();
+        self.switched.clear();
         self.errors.clear();
         let plan = Plan {
             changed: HashMap::new(),
@@ -281,14 +284,22 @@ impl Model {
         let Model {
             inputs,
             computed,
+            switched,
             errors,
             stats,
             ..
         } = self;
+        let working = Working::new(
+            &structure,
+            &graph,
+            inputs,
+            std::mem::take(computed),
+            std::mem::take(switched),
+        );
         let mut run = Run {
             structure: &structure,
             graph: &graph,
-            working: Working::new(&structure, &graph, inputs, std::mem::take(computed)),
+            working,
             errors,
             changes,
             stats: RecalcStats::default(),
@@ -300,7 +311,11 @@ impl Model {
             stats: done,
             ..
         } = run;
-        *computed = working.into_computed();
+        let (calculated, shown) = working.into_parts();
+        *computed = calculated;
+        if outcome.is_ok() {
+            *switched = shown;
+        }
         *stats = done;
         outcome
     }
@@ -339,6 +354,10 @@ impl Run<'_> {
             self.pending.insert(id, Dirty::All);
         }
         for (id, dirty) in changed {
+            match &dirty {
+                Dirty::All => self.working.forget(id),
+                Dirty::Cells(cells) => self.working.wrote(id, cells),
+            }
             self.mark(id, &dirty);
         }
         let graph = self.graph;

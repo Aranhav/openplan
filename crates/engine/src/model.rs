@@ -29,7 +29,9 @@ const SWITCHOVER_MESSAGE: &str = "Periods before the switchover show Actual valu
 /// What the last command, batch or full recalculation calculated.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RecalcStats {
-    /// Cells of calculated line items that were evaluated.
+    /// Cells of calculated line items that were evaluated: the target cells only. A formula
+    /// evaluated for some of its cells may still run a scan over its whole line item, such as
+    /// `CUMULATE`, which these cells do not count.
     pub evaluated_cells: usize,
     /// Calculated line items that were evaluated, wholly or in part.
     pub line_items: usize,
@@ -45,6 +47,9 @@ pub struct Model {
     computed: HashMap<LineItemId, Arc<Column>>,
     /// What is wrong with the formulas of the calculated line items that have no values.
     errors: HashMap<LineItemId, Vec<FormulaError>>,
+    /// The cells of the line items with Time and Versions axes as formulas read them, once a
+    /// version has a switchover, which a recalculation keeps in line with the cells it writes.
+    switched: HashMap<LineItemId, Arc<Column>>,
     /// The compiled formulas of the calculated line items, and what reads what.
     graph: Arc<Graph>,
     stats: RecalcStats,
@@ -64,6 +69,7 @@ impl Model {
             inputs: HashMap::new(),
             computed: HashMap::new(),
             errors: HashMap::new(),
+            switched: HashMap::new(),
             graph: Arc::new(Graph::default()),
             stats: RecalcStats::default(),
             generation: 0,
@@ -315,6 +321,7 @@ impl Model {
             &self.graph,
             &self.inputs,
             self.computed.clone(),
+            self.switched.clone(),
         )
     }
 
@@ -326,8 +333,9 @@ impl Model {
         }
     }
 
-    /// Applies the commands in order to the model itself and calculates what they change.
-    /// Commands applied before one that fails stay applied.
+    /// Applies the commands in order to the model itself and calculates what they change. A
+    /// command that fails leaves the model half changed, so the caller discards it; that is
+    /// why `apply_batch` runs this on a copy.
     fn run(&mut self, commands: Vec<Command>) -> Result<ChangeSet, EngineError> {
         let before = Arc::clone(&self.structure);
         let graph_before = Arc::clone(&self.graph);

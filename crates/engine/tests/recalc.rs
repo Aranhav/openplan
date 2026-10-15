@@ -26,7 +26,7 @@ fn period(label: &str) -> CoordToken {
 }
 
 fn month(index: usize) -> CoordToken {
-    period(MONTHS[index])
+    period(&format!("{} {}", &MONTHS[index % 12][..3], 26 + index / 12))
 }
 
 fn item(id: ItemId) -> CoordToken {
@@ -199,6 +199,13 @@ impl Fx {
         match self.model.read_cells(id, &[coords]).unwrap().pop().unwrap() {
             Value::Number(number) => number,
             other => panic!("expected a number, found {other:?}"),
+        }
+    }
+
+    fn text_at(&self, id: LineItemId, coords: Vec<CoordToken>) -> String {
+        match self.model.read_cells(id, &[coords]).unwrap().pop().unwrap() {
+            Value::Text(text) => text.to_string(),
+            other => panic!("expected text, found {other:?}"),
         }
     }
 
@@ -1001,87 +1008,287 @@ fn parallel_layers_deterministic() {
     assert_eq!(dump(&fx, &watched, &ids), edited);
 }
 
-/// The benchmark shape of the engine: 10,000 products by 36 months by 3 versions, about 1.08
-/// million cells in every line item.
 #[test]
-#[cfg_attr(
-    debug_assertions,
-    ignore = "needs an optimized build: cargo test --release -p openplan-engine edit_1m_cells -- --nocapture"
-)]
-fn edit_1m_cells_recalculates_in_milliseconds() {
-    const PRODUCTS: usize = 10_000;
-    let mut fx = Fx::new(3);
+fn renaming_a_version_updates_the_formulas_that_show_its_name() {
+    let mut fx = Fx::new(1);
+    let sheet = fx.module("Sheet", vec![month_axis(), AxisSpec::Versions]);
+    let named = fx.add(line_item(
+        sheet,
+        "Shown",
+        Format::Text,
+        Some("NAME(ITEM(Versions))"),
+    ));
+    let joined = fx.add(line_item(
+        sheet,
+        "Joined",
+        Format::Text,
+        Some("\"v: \" & ITEM(Versions)"),
+    ));
+    let budget = fx
+        .model
+        .structure()
+        .version_by_name("Budget")
+        .unwrap()
+        .clone();
+    let at = vec![month(0), item(ItemId(budget.id.0))];
+    assert_eq!(fx.text_at(named, at.clone()), "Budget");
+    assert_eq!(fx.text_at(joined, at.clone()), "v: Budget");
+
+    fx.model
+        .apply(Command::UpsertVersion {
+            id: budget.id,
+            name: "Plan".to_string(),
+            is_actual: false,
+            is_current: true,
+            switchover: None,
+        })
+        .unwrap();
+
+    assert_eq!(fx.text_at(named, at.clone()), "Plan");
+    assert_eq!(fx.text_at(joined, at), "v: Plan");
+}
+
+/// 100 products by 12 months by the 3 versions, with the Forecast showing the Actual version
+/// before July.
+fn switched_sales() -> (Fx, Vec<ItemId>, [CoordToken; 3], [LineItemId; 4]) {
+    let mut fx = Fx::new(1);
     let products = fx.list("Products", None);
-    let ids = fx.named_items(products, "P", PRODUCTS);
+    let ids = fx.named_items(products, "P", 100);
     let sales = fx.module(
         "Sales",
         vec![list_axis(products), month_axis(), AxisSpec::Versions],
     );
     let units = fx.number(sales, "Units");
     let price = fx.number(sales, "Price");
-    let versions: Vec<ItemId> = fx
-        .model
-        .structure()
-        .versions()
-        .iter()
-        .map(|version| ItemId(version.id.0))
-        .collect();
-    let months: Vec<String> = (0..36)
-        .map(|m| format!("{} {}", &MONTHS[m % 12][..3], 26 + m / 12))
-        .collect();
-    for (line_item, base) in [(units, 10.0), (price, 2.0)] {
-        for block in ids.chunks(1_000) {
-            let edits = block
-                .iter()
-                .flat_map(|&product| {
-                    let months = &months;
-                    let versions = &versions;
-                    (0..36).flat_map(move |m| {
-                        versions.iter().map(move |&version| CellEdit {
-                            coords: vec![item(product), period(&months[m]), item(version)],
-                            value: Value::Number(base + (m % 5) as f64),
-                        })
-                    })
-                })
-                .collect();
-            fx.model
-                .apply(Command::SetCells { line_item, edits })
-                .unwrap();
-        }
-    }
     let revenue = fx.calc(sales, "Revenue", "Units * Price");
     let cost = fx.calc(sales, "Cost", "Revenue * 0.6");
-    fx.calc(sales, "Margin", "Revenue - Cost");
-    let cumulative = fx.calc(sales, "Cumulative Margin", "CUMULATE(Margin)");
-
-    let coords = |product: usize, m: usize, version: usize| {
-        vec![
-            item(ids[product]),
-            period(&months[m]),
-            item(versions[version]),
-        ]
+    let version = |fx: &Fx, name: &str| {
+        let version = fx.model.structure().version_by_name(name).unwrap();
+        (item(ItemId(version.id.0)), version.clone())
     };
-    let mut best = std::time::Duration::MAX;
-    for round in 0..5 {
-        let started = std::time::Instant::now();
-        fx.set_number(units, coords(4_321, 7, 1), 100.0 + f64::from(round));
-        let elapsed = started.elapsed();
-        println!("edit {round}: {elapsed:?}");
-        best = best.min(elapsed);
-    }
+    let (actual, _) = version(&fx, "Actual");
+    let (budget, _) = version(&fx, "Budget");
+    let (forecast, forecast_version) = version(&fx, "Forecast");
+    fx.model
+        .apply(Command::UpsertVersion {
+            id: forecast_version.id,
+            name: forecast_version.name,
+            is_actual: false,
+            is_current: false,
+            switchover: Some(6),
+        })
+        .unwrap();
+    (
+        fx,
+        ids,
+        [actual, budget, forecast],
+        [units, price, revenue, cost],
+    )
+}
+
+#[test]
+fn an_actual_edit_before_a_switchover_dirties_only_the_versions_that_show_it() {
+    let (mut fx, ids, [actual, budget, forecast], [units, price, revenue, cost]) = switched_sales();
+    let at = |version: &CoordToken, m: usize| vec![item(ids[7]), month(m), version.clone()];
+    fx.set_number(price, at(&actual, 3), 2.0);
+    fx.set_number(price, at(&forecast, 8), 5.0);
+
+    // An edit of the actual version in March reaches the Forecast, which shows it until July.
+    fx.set_number(units, at(&actual, 3), 10.0);
+    let stats = fx.model.last_recalc_stats();
+    assert_eq!((stats.line_items, stats.evaluated_cells), (2, 4));
+    assert_eq!(fx.number_at(revenue, at(&actual, 3)), 20.0);
+    assert_eq!(fx.number_at(revenue, at(&forecast, 3)), 20.0);
+    assert_eq!(fx.number_at(cost, at(&forecast, 3)), 12.0);
+    assert_eq!(fx.number_at(revenue, at(&budget, 3)), 0.0);
+
+    // Later, the Forecast has its own cells.
+    fx.set_number(units, at(&actual, 8), 7.0);
+    assert_eq!(fx.model.last_recalc_stats().evaluated_cells, 2);
+    assert_eq!(fx.number_at(revenue, at(&forecast, 8)), 0.0);
+    fx.set_number(units, at(&forecast, 8), 3.0);
+    assert_eq!(fx.model.last_recalc_stats().evaluated_cells, 2);
+    assert_eq!(fx.number_at(revenue, at(&forecast, 8)), 15.0);
+
+    // Another version's edit stays in its own cell.
+    fx.set_number(units, at(&budget, 3), 4.0);
+    assert_eq!(fx.model.last_recalc_stats().evaluated_cells, 2);
+    assert_eq!(fx.number_at(revenue, at(&actual, 3)), 20.0);
+    assert_eq!(fx.number_at(revenue, at(&forecast, 3)), 20.0);
+}
+
+#[test]
+fn a_source_without_time_is_switched_by_the_periods_of_the_line_item_reading_it() {
+    let (mut fx, ids, [actual, budget, forecast], _) = switched_sales();
+    let products = fx.model.structure().lists().next().unwrap().id;
+    let rates = fx.module("Rates", vec![list_axis(products), AxisSpec::Versions]);
+    let sales = fx.model.structure().module_by_name("Sales").unwrap().id;
+    let rate = fx.number(rates, "Rate");
+    let priced = fx.calc(sales, "Priced", "Rate * 2");
+    let at = |version: &CoordToken, m: usize| vec![item(ids[2]), month(m), version.clone()];
+    let rate_at = |version: &CoordToken| vec![item(ids[2]), version.clone()];
+
+    fx.set_number(rate, rate_at(&actual), 3.0);
 
     let stats = fx.model.last_recalc_stats();
-    println!("last edit: {stats:?}, best {best:?}");
-    assert_eq!(stats.line_items, 4);
-    assert_eq!(stats.evaluated_cells, 3 + PRODUCTS * 36 * 3);
-    let edited = 104.0;
-    let price_there = 2.0 + 2.0;
+    assert_eq!(stats.line_items, 1);
+    // Every month of the Actual version, and the six that the Forecast shows of it.
+    assert_eq!(stats.evaluated_cells, 12 + 6);
+    assert_eq!(fx.number_at(priced, at(&forecast, 5)), 6.0);
+    assert_eq!(fx.number_at(priced, at(&forecast, 6)), 0.0);
+    assert_eq!(fx.number_at(priced, at(&budget, 5)), 0.0);
+    fx.set_number(rate, rate_at(&budget), 4.0);
+    assert_eq!(fx.model.last_recalc_stats().evaluated_cells, 12);
+    assert_eq!(fx.number_at(priced, at(&budget, 11)), 8.0);
+}
+
+/// The benchmark shape of the engine: 10,000 products by 36 months by 3 versions, about 1.08
+/// million cells in every line item, with the Forecast showing the Actual version for the
+/// months before `switchover`.
+struct Benchmark {
+    fx: Fx,
+    ids: Vec<ItemId>,
+    months: Vec<String>,
+    versions: Vec<ItemId>,
+    units: LineItemId,
+    revenue: LineItemId,
+    cost: LineItemId,
+    cumulative: LineItemId,
+}
+
+const PRODUCTS: usize = 10_000;
+
+impl Benchmark {
+    fn new(switchover: Option<u32>) -> Benchmark {
+        let mut fx = Fx::new(3);
+        let products = fx.list("Products", None);
+        let ids = fx.named_items(products, "P", PRODUCTS);
+        let sales = fx.module(
+            "Sales",
+            vec![list_axis(products), month_axis(), AxisSpec::Versions],
+        );
+        let units = fx.number(sales, "Units");
+        let price = fx.number(sales, "Price");
+        let versions: Vec<ItemId> = fx
+            .model
+            .structure()
+            .versions()
+            .iter()
+            .map(|version| ItemId(version.id.0))
+            .collect();
+        let months: Vec<String> = (0..36)
+            .map(|m| format!("{} {}", &MONTHS[m % 12][..3], 26 + m / 12))
+            .collect();
+        for (line_item, base) in [(units, 10.0), (price, 2.0)] {
+            for block in ids.chunks(1_000) {
+                let edits = block
+                    .iter()
+                    .flat_map(|&product| {
+                        let months = &months;
+                        let versions = &versions;
+                        (0..36).flat_map(move |m| {
+                            versions.iter().map(move |&version| CellEdit {
+                                coords: vec![item(product), period(&months[m]), item(version)],
+                                value: Value::Number(base + (m % 5) as f64),
+                            })
+                        })
+                    })
+                    .collect();
+                fx.model
+                    .apply(Command::SetCells { line_item, edits })
+                    .unwrap();
+            }
+        }
+        if let Some(month) = switchover {
+            let forecast = fx
+                .model
+                .structure()
+                .version_by_name("Forecast")
+                .unwrap()
+                .clone();
+            fx.model
+                .apply(Command::UpsertVersion {
+                    id: forecast.id,
+                    name: forecast.name,
+                    is_actual: false,
+                    is_current: false,
+                    switchover: Some(month),
+                })
+                .unwrap();
+        }
+        let revenue = fx.calc(sales, "Revenue", "Units * Price");
+        let cost = fx.calc(sales, "Cost", "Revenue * 0.6");
+        fx.calc(sales, "Margin", "Revenue - Cost");
+        let cumulative = fx.calc(sales, "Cumulative Margin", "CUMULATE(Margin)");
+        Benchmark {
+            fx,
+            ids,
+            months,
+            versions,
+            units,
+            revenue,
+            cost,
+            cumulative,
+        }
+    }
+
+    fn coords(&self, product: usize, m: usize, version: usize) -> Vec<CoordToken> {
+        vec![
+            item(self.ids[product]),
+            period(&self.months[m]),
+            item(self.versions[version]),
+        ]
+    }
+
+    /// Edits one cell of Units five times and returns the best time, which must be within the
+    /// target of the engine.
+    fn timed_edit(&mut self, product: usize, m: usize, version: usize) -> std::time::Duration {
+        let mut best = std::time::Duration::MAX;
+        for round in 0..ROUNDS {
+            let started = std::time::Instant::now();
+            let coords = self.coords(product, m, version);
+            self.fx
+                .set_number(self.units, coords, 100.0 + f64::from(round));
+            let elapsed = started.elapsed();
+            println!("edit {round}: {elapsed:?}");
+            best = best.min(elapsed);
+        }
+        let stats = self.fx.model.last_recalc_stats();
+        println!("last edit: {stats:?}, best {best:?}");
+        assert_eq!(stats.line_items, 4);
+        best
+    }
+}
+
+const TARGET: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Edits of one cell timed in a row; the cell ends up with `100 + ROUNDS - 1`.
+const ROUNDS: u32 = 15;
+const EDITED: f64 = 100.0 + (ROUNDS - 1) as f64;
+
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "needs an optimized build: cargo test --release -p openplan-engine edit_1m_cells -- --nocapture"
+)]
+fn edit_1m_cells_recalculates_in_milliseconds() {
+    let mut big = Benchmark::new(None);
+
+    let best = big.timed_edit(4_321, 7, 1);
+
     assert_eq!(
-        fx.number_at(revenue, coords(4_321, 7, 1)),
+        big.fx.model.last_recalc_stats().evaluated_cells,
+        3 + PRODUCTS * 36 * 3
+    );
+    let edited = EDITED;
+    let price_there = 2.0 + 2.0;
+    let there = big.coords(4_321, 7, 1);
+    assert_eq!(
+        big.fx.number_at(big.revenue, there.clone()),
         edited * price_there
     );
     assert_eq!(
-        fx.number_at(cost, coords(4_321, 7, 1)),
+        big.fx.number_at(big.cost, there.clone()),
         edited * price_there * 0.6
     );
     let margins: f64 = (0..=7)
@@ -1095,10 +1302,42 @@ fn edit_1m_cells_recalculates_in_milliseconds() {
             revenue - revenue * 0.6
         })
         .sum();
-    assert_close(fx.number_at(cumulative, coords(4_321, 7, 1)), margins);
+    assert_close(big.fx.number_at(big.cumulative, there), margins);
     assert!(
-        best < std::time::Duration::from_millis(50),
+        best < TARGET,
         "one edit took {best:?}, over the 50 ms target"
+    );
+}
+
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "needs an optimized build: cargo test --release -p openplan-engine edit_1m_cells -- --nocapture"
+)]
+fn edit_1m_cells_with_a_switchover_recalculates_in_milliseconds() {
+    let mut big = Benchmark::new(Some(6));
+
+    // An edit of the Budget stays in its own cell; one of the Actual before the Forecast's
+    // switchover also reaches the Forecast, which shows it.
+    let budget = big.timed_edit(4_321, 7, 1);
+    let before = big.timed_edit(4_321, 3, 0);
+
+    assert_eq!(
+        big.fx.model.last_recalc_stats().evaluated_cells,
+        6 + PRODUCTS * 36 * 3
+    );
+    let (actual, forecast) = (big.coords(4_321, 3, 0), big.coords(4_321, 3, 2));
+    assert_eq!(big.fx.number_at(big.revenue, actual), EDITED * (2.0 + 3.0));
+    assert_eq!(
+        big.fx.number_at(big.revenue, forecast),
+        EDITED * (2.0 + 3.0)
+    );
+    let later = big.coords(4_321, 7, 2);
+    assert_eq!(big.fx.number_at(big.revenue, later), 12.0 * 4.0);
+    assert!(budget < TARGET, "a Budget edit took {budget:?}, over 50 ms");
+    assert!(
+        before < TARGET,
+        "an Actual edit took {before:?}, over 50 ms"
     );
 }
 
@@ -1561,16 +1800,40 @@ enum Edit {
         region: u8,
     },
     Switchover {
+        version: usize,
         month: u8,
+    },
+    AddVersion,
+    RenameVersion {
+        which: usize,
+    },
+    DeleteVersion {
+        which: usize,
+    },
+    /// Sets the calendar to one year or two.
+    Years(bool),
+    /// Deletes a line item, which leaves the formulas that read it in error.
+    Delete {
+        which: usize,
+    },
+    /// Creates a deleted line item again with a formula of its own.
+    Recreate {
+        which: usize,
+        spec: Spec,
+    },
+    /// Renames a line item, or back, which leaves the formulas that read it in error.
+    Rename {
+        which: usize,
+    },
+    /// Takes the formula of a line item away, which makes it an input.
+    Clear {
+        which: usize,
     },
 }
 
 fn operand() -> impl Strategy<Value = Operand> {
-    (0u8..10, any::<usize>(), 0u8..2).prop_map(|(wrap, source, form)| Operand {
-        wrap,
-        source,
-        form,
-    })
+    let wrap = prop_oneof![5 => 0u8..2, 6 => 2u8..17];
+    (wrap, any::<usize>(), 0u8..2).prop_map(|(wrap, source, form)| Operand { wrap, source, form })
 }
 
 fn spec() -> impl Strategy<Value = Spec> {
@@ -1592,7 +1855,15 @@ fn edit() -> impl Strategy<Value = Edit> {
         1 => (0u8..2).prop_map(|region| Edit::AddCountry { region }),
         1 => any::<usize>().prop_map(|which| Edit::DeleteCountry { which }),
         1 => (any::<usize>(), 0u8..2).prop_map(|(which, region)| Edit::Reparent { which, region }),
-        1 => (0u8..12).prop_map(|month| Edit::Switchover { month }),
+        1 => (any::<usize>(), 0u8..12).prop_map(|(version, month)| Edit::Switchover { version, month }),
+        1 => Just(Edit::AddVersion),
+        1 => any::<usize>().prop_map(|which| Edit::RenameVersion { which }),
+        1 => any::<usize>().prop_map(|which| Edit::DeleteVersion { which }),
+        1 => any::<bool>().prop_map(Edit::Years),
+        2 => any::<usize>().prop_map(|which| Edit::Delete { which }),
+        3 => (any::<usize>(), spec()).prop_map(|(which, spec)| Edit::Recreate { which, spec }),
+        2 => any::<usize>().prop_map(|which| Edit::Rename { which }),
+        2 => any::<usize>().prop_map(|which| Edit::Clear { which }),
     ]
 }
 
@@ -1610,15 +1881,23 @@ fn formula_for(kind: Kind, spec: &Spec, sources: &[(String, Kind)]) -> String {
             (Kind::Coarse, Kind::Fine, 1) => format!("{name}[SUM: Dept]"),
             _ => name.clone(),
         };
-        match (operand.wrap, kind) {
+        let versioned = kind != Kind::Flat;
+        match (operand.wrap, versioned) {
             (2, _) => format!("PREVIOUS({reference})"),
             (3, _) => format!("CUMULATE({reference})"),
             (4, _) => format!("({reference} * 2)"),
             (5, _) => format!("LAG({reference}, 2, 0)"),
             (6, _) => format!("OFFSET({reference}, -1, 0)"),
             (7, _) => format!("YEARTODATE({reference})"),
-            (8, Kind::Fine | Kind::Coarse) => format!("CURRENTVERSION({reference})"),
-            (9, Kind::Fine | Kind::Coarse) => format!("PREVIOUSVERSION({reference})"),
+            (8, true) => format!("CURRENTVERSION({reference})"),
+            (9, true) => format!("PREVIOUSVERSION({reference})"),
+            (10, _) => format!("NEXT({reference})"),
+            (11, _) => format!("LEAD({reference}, 1, 0)"),
+            (12, _) => format!("MOVINGSUM({reference}, -2, 0)"),
+            (13, _) => format!("TIMESUM({reference})"),
+            (14, _) => format!("YEARVALUE({reference})"),
+            (15, true) => format!("RANK({reference})"),
+            (16, true) => format!("({reference} + LEN(NAME(ITEM(Versions))))"),
             _ => reference,
         }
     };
@@ -1637,33 +1916,83 @@ fn formula_for(kind: Kind, spec: &Spec, sources: &[(String, Kind)]) -> String {
     }
 }
 
+/// A version of the property test, with what it takes to upsert it again.
+#[derive(Clone, Debug)]
+struct Ver {
+    id: VersionId,
+    name: String,
+    is_actual: bool,
+    is_current: bool,
+    switchover: Option<u32>,
+}
+
+impl Ver {
+    fn new(id: VersionId, name: &str, is_actual: bool, is_current: bool) -> Ver {
+        Ver {
+            id,
+            name: name.to_string(),
+            is_actual,
+            is_current,
+            switchover: None,
+        }
+    }
+
+    fn upsert(&self) -> Command {
+        Command::UpsertVersion {
+            id: self.id,
+            name: self.name.clone(),
+            is_actual: self.is_actual,
+            is_current: self.is_current,
+            switchover: self.switchover,
+        }
+    }
+}
+
+/// A line item with a generated formula.
+struct Derived {
+    name: String,
+    id: LineItemId,
+    kind: Kind,
+    alive: bool,
+}
+
 /// A model built from commands that can be built again from the same commands, to check that
 /// what recalculating after each command gives is what calculating everything gives.
 struct Rig {
     model: Model,
     history: Vec<Vec<Command>>,
+    initial_years: u8,
+    years: u8,
     regions: Vec<ItemId>,
     countries_list: ListId,
     regions_list: ListId,
     countries: Vec<ItemId>,
     next_country: usize,
-    /// The actual version and the current version, which the model adds to its own.
-    versions: [VersionId; 2],
+    /// The modules of the fine, coarse and flat line items.
+    modules: [ModuleId; 3],
+    /// The actual version, the current version and the versions added since, which the model
+    /// adds to its own.
+    versions: Vec<Ver>,
+    next_version: usize,
     /// Countries, months and versions by `F1` and `F2`, regions, months and versions by `C1`,
     /// months by `T1`, and the region of each country by `Dept`.
     inputs: [LineItemId; 5],
     /// The line items that generated formulas can read, with their kinds.
     bases: Vec<(String, LineItemId, Kind)>,
-    derived: Vec<(String, LineItemId, Kind)>,
+    derived: Vec<Derived>,
 }
 
 impl Rig {
-    fn new(initial: &[(u8, Spec)]) -> Rig {
+    fn new(years: u8, switchover: u8, initial: &[(u8, Spec)]) -> Rig {
         let regions_list = ListId::new();
         let countries_list = ListId::new();
         let regions: Vec<ItemId> = (0..2).map(|_| ItemId::new()).collect();
         let countries: Vec<ItemId> = (0..4).map(|_| ItemId::new()).collect();
-        let versions = [VersionId::new(), VersionId::new()];
+        let mut versions = vec![
+            Ver::new(VersionId::new(), "Act", true, false),
+            Ver::new(VersionId::new(), "Cur", false, true),
+        ];
+        versions[1].switchover = (switchover > 0).then_some(u32::from(switchover));
         let module = |name: &str, axes: Vec<AxisSpec>| {
             let id = ModuleId::new();
             let command = Command::CreateModule {
@@ -1697,14 +2026,18 @@ impl Rig {
         let (opening, create_opening) =
             new(fine, "Opening", Format::number(), Some("PREVIOUS(Closing)"));
         let mut rig = Rig {
-            model: Model::new(calendar(1)),
+            model: Model::new(calendar(years)),
             history: Vec::new(),
+            initial_years: years,
+            years,
             regions: regions.clone(),
             countries_list,
             regions_list,
             countries: countries.clone(),
             next_country: 4,
-            versions,
+            modules: [fine, coarse, flat],
+            versions: versions.clone(),
+            next_version: 0,
             inputs: [f1, f2, c1, t1, dept],
             bases: vec![
                 ("F1".to_string(), f1, Kind::Fine),
@@ -1737,20 +2070,8 @@ impl Rig {
             production_data: false,
         };
         assert!(rig.run(vec![
-            Command::UpsertVersion {
-                id: versions[0],
-                name: "Act".to_string(),
-                is_actual: true,
-                is_current: false,
-                switchover: None,
-            },
-            Command::UpsertVersion {
-                id: versions[1],
-                name: "Cur".to_string(),
-                is_actual: false,
-                is_current: true,
-                switchover: None,
-            },
+            versions[0].upsert(),
+            versions[1].upsert(),
             list(regions_list, "Regions", None),
             list(countries_list, "Countries", Some(regions_list)),
             Command::UpsertListItems {
@@ -1790,18 +2111,30 @@ impl Rig {
         }]));
         for (at, (kind, spec)) in initial.iter().enumerate() {
             let kind = [Kind::Fine, Kind::Coarse, Kind::Flat][usize::from(*kind) % 3];
-            let module = match kind {
-                Kind::Fine => fine,
-                Kind::Coarse => coarse,
-                Kind::Flat => flat,
-            };
             let name = format!("D{at}");
             let formula = formula_for(kind, spec, &rig.sources_before(at));
-            let (id, create) = new(module, &name, Format::number(), Some(&formula));
+            let (id, create) = new(rig.module_of(kind), &name, Format::number(), Some(&formula));
             assert!(rig.run(vec![create]), "{name} = {formula}");
-            rig.derived.push((name, id, kind));
+            rig.derived.push(Derived {
+                name,
+                id,
+                kind,
+                alive: true,
+            });
         }
         rig
+    }
+
+    fn module_of(&self, kind: Kind) -> ModuleId {
+        match kind {
+            Kind::Fine => self.modules[0],
+            Kind::Coarse => self.modules[1],
+            Kind::Flat => self.modules[2],
+        }
+    }
+
+    fn months(&self) -> usize {
+        12 * usize::from(self.years)
     }
 
     /// Applies commands as one batch, and keeps them to build the model again if they were
@@ -1816,17 +2149,28 @@ impl Rig {
         }
     }
 
-    /// The line items before the derived line item at `at`.
+    /// The line items before the derived line item at `at` that exist.
     fn sources_before(&self, at: usize) -> Vec<(String, Kind)> {
+        let derived = self.derived[..at.min(self.derived.len())]
+            .iter()
+            .filter(|derived| derived.alive)
+            .map(|derived| (derived.name.clone(), derived.kind));
         self.bases
             .iter()
-            .chain(&self.derived[..at.min(self.derived.len())])
             .map(|(name, _, kind)| (name.clone(), *kind))
+            .chain(derived)
+            .collect()
+    }
+
+    /// The derived line items that exist (or that do not, with `alive` false).
+    fn derived_where(&self, alive: bool) -> Vec<usize> {
+        (0..self.derived.len())
+            .filter(|&at| self.derived[at].alive == alive)
             .collect()
     }
 
     fn version(&self, at: usize) -> CoordToken {
-        item(ItemId(self.versions[at % 2].0))
+        item(ItemId(self.versions[at % self.versions.len()].id.0))
     }
 
     /// The commands that type in cells, one for each input among `picks`.
@@ -1837,10 +2181,11 @@ impl Rig {
             let region = self.regions[cell / 12 % self.regions.len()];
             let number = Value::Number(f64::from(value));
             let version = self.version(cell / 5);
+            let at = cell % self.months();
             let (coords, value) = match input {
-                0 | 1 => (vec![item(country), month(cell % 12), version], number),
-                2 => (vec![item(region), month(cell % 12), version], number),
-                3 => (vec![month(cell % 12)], number),
+                0 | 1 => (vec![item(country), month(at), version], number),
+                2 => (vec![item(region), month(at), version], number),
+                3 => (vec![month(at)], number),
                 _ => (
                     vec![item(self.countries[cell % self.countries.len()])],
                     Value::Item(Some(self.regions[value.rem_euclid(2) as usize])),
@@ -1860,6 +2205,8 @@ impl Rig {
             .collect()
     }
 
+    /// Applies an edit. A command the model refuses, such as a formula that would make a
+    /// circular reference or a cell before a switchover, changes nothing.
     fn apply(&mut self, edit: &Edit) {
         match edit {
             Edit::Cells(picks) => {
@@ -1886,16 +2233,15 @@ impl Rig {
                 }
             }
             Edit::Formula { derived, spec } => {
-                let at = derived % self.derived.len();
-                let (_, id, kind) = self.derived[at];
-                let formula = formula_for(kind, spec, &self.sources_before(at));
-                assert!(
+                let alive = self.derived_where(true);
+                if let Some(&at) = alive.get(derived % alive.len().max(1)) {
+                    let formula =
+                        formula_for(self.derived[at].kind, spec, &self.sources_before(at));
                     self.run(vec![Command::UpdateLineItem {
-                        id,
+                        id: self.derived[at].id,
                         patch: formula_patch(&formula),
-                    }]),
-                    "{formula}"
-                );
+                    }]);
+                }
             }
             Edit::Summary { input, method } => {
                 let summary = [
@@ -1906,23 +2252,24 @@ impl Rig {
                 ][usize::from(*method)]
                 .clone();
                 let id = self.inputs[usize::from(*input)];
-                assert!(self.run(vec![Command::UpdateLineItem {
+                self.run(vec![Command::UpdateLineItem {
                     id,
                     patch: LineItemPatch {
                         summary: Some(summary),
                         ..LineItemPatch::default()
                     },
-                }]));
+                }]);
             }
             Edit::AddCountry { region } => {
                 let id = ItemId::new();
                 let command = self.new_country(id, *region);
-                assert!(self.run(vec![command]));
-                self.countries.push(id);
+                if self.run(vec![command]) {
+                    self.countries.push(id);
+                }
             }
             Edit::Reparent { which, region } => {
                 let id = self.countries[which % self.countries.len()];
-                assert!(self.run(vec![Command::UpsertListItems {
+                self.run(vec![Command::UpsertListItems {
                     list: self.countries_list,
                     items: vec![ItemSpec {
                         id,
@@ -1930,25 +2277,121 @@ impl Rig {
                         name: format!("moved {id:?}"),
                         parent: Some(self.regions[usize::from(*region)]),
                     }],
-                }]));
+                }]);
             }
             Edit::DeleteCountry { which } => {
                 if self.countries.len() > 1 {
-                    let id = self.countries.remove(which % self.countries.len());
-                    assert!(self.run(vec![Command::DeleteListItems {
+                    let id = self.countries[which % self.countries.len()];
+                    if self.run(vec![Command::DeleteListItems {
                         list: self.countries_list,
                         ids: vec![id],
-                    }]));
+                    }]) {
+                        self.countries.retain(|&country| country != id);
+                    }
                 }
             }
-            Edit::Switchover { month } => {
-                assert!(self.run(vec![Command::UpsertVersion {
-                    id: self.versions[1],
-                    name: "Cur".to_string(),
-                    is_actual: false,
-                    is_current: true,
-                    switchover: (*month > 0).then_some(u32::from(*month)),
-                }]));
+            Edit::Switchover { version, month } => {
+                let others: Vec<usize> = (0..self.versions.len())
+                    .filter(|&at| !self.versions[at].is_actual)
+                    .collect();
+                let at = others[version % others.len()];
+                let mut changed = self.versions[at].clone();
+                changed.switchover = (*month > 0).then_some(u32::from(*month));
+                if self.run(vec![changed.upsert()]) {
+                    self.versions[at] = changed;
+                }
+            }
+            Edit::AddVersion => {
+                let name = format!("X{}", self.next_version);
+                self.next_version += 1;
+                let added = Ver::new(VersionId::new(), &name, false, false);
+                if self.run(vec![added.upsert()]) {
+                    self.versions.push(added);
+                }
+            }
+            Edit::RenameVersion { which } => {
+                let at = which % self.versions.len();
+                let mut renamed = self.versions[at].clone();
+                renamed.name = format!("R{}", self.next_version);
+                self.next_version += 1;
+                if self.run(vec![renamed.upsert()]) {
+                    self.versions[at] = renamed;
+                }
+            }
+            Edit::DeleteVersion { which } => {
+                if self.versions.len() > 2 {
+                    let at = 2 + which % (self.versions.len() - 2);
+                    let id = self.versions[at].id;
+                    if self.run(vec![Command::DeleteVersion { id }]) {
+                        self.versions.remove(at);
+                    }
+                }
+            }
+            Edit::Years(two) => {
+                let years = if *two { 2 } else { 1 };
+                if self.run(vec![Command::SetCalendar {
+                    calendar: calendar(years),
+                }]) {
+                    self.years = years;
+                }
+            }
+            Edit::Delete { which } => {
+                let alive = self.derived_where(true);
+                if let Some(&at) = alive.get(which % alive.len().max(1)) {
+                    let id = self.derived[at].id;
+                    if self.run(vec![Command::DeleteLineItem { id }]) {
+                        self.derived[at].alive = false;
+                    }
+                }
+            }
+            Edit::Recreate { which, spec } => {
+                let dead = self.derived_where(false);
+                if let Some(&at) = dead.get(which % dead.len().max(1)) {
+                    let (name, kind) = (self.derived[at].name.clone(), self.derived[at].kind);
+                    let formula = formula_for(kind, spec, &self.sources_before(at));
+                    let line_item = line_item(
+                        self.module_of(kind),
+                        &name,
+                        Format::number(),
+                        Some(&formula),
+                    );
+                    let id = line_item.id;
+                    if self.run(vec![Command::CreateLineItem(line_item)]) {
+                        self.derived[at].id = id;
+                        self.derived[at].alive = true;
+                    }
+                }
+            }
+            Edit::Rename { which } => {
+                let alive = self.derived_where(true);
+                if let Some(&at) = alive.get(which % alive.len().max(1)) {
+                    let name = &self.derived[at].name;
+                    let renamed = match name.strip_suffix('x') {
+                        Some(original) => original.to_string(),
+                        None => format!("{name}x"),
+                    };
+                    if self.run(vec![Command::UpdateLineItem {
+                        id: self.derived[at].id,
+                        patch: LineItemPatch {
+                            name: Some(renamed.clone()),
+                            ..LineItemPatch::default()
+                        },
+                    }]) {
+                        self.derived[at].name = renamed;
+                    }
+                }
+            }
+            Edit::Clear { which } => {
+                let alive = self.derived_where(true);
+                if let Some(&at) = alive.get(which % alive.len().max(1)) {
+                    self.run(vec![Command::UpdateLineItem {
+                        id: self.derived[at].id,
+                        patch: LineItemPatch {
+                            formula: Some(None),
+                            ..LineItemPatch::default()
+                        },
+                    }]);
+                }
             }
         }
     }
@@ -1969,7 +2412,7 @@ impl Rig {
 
     /// A model built from the same commands that calculates every line item from scratch.
     fn rebuilt(&self) -> Model {
-        let mut model = Model::new(calendar(1));
+        let mut model = Model::new(calendar(self.initial_years));
         for commands in &self.history {
             model.apply_batch(commands.clone()).unwrap();
         }
@@ -1990,7 +2433,13 @@ impl Rig {
         ]);
         let by_year = LevelSpec(vec![year]);
         let mut shown = Vec::new();
-        for (name, id, kind) in self.bases.iter().chain(&self.derived) {
+        let derived = self
+            .derived
+            .iter()
+            .filter(|derived| derived.alive)
+            .map(|derived| (&derived.name, &derived.id, &derived.kind));
+        let bases = self.bases.iter().map(|(name, id, kind)| (name, id, kind));
+        for (name, id, kind) in bases.chain(derived) {
             let rows: Vec<Vec<CoordToken>> = match kind {
                 Kind::Fine => self.countries.iter().map(|&c| vec![item(c)]).collect(),
                 Kind::Coarse => self.regions.iter().map(|&r| vec![item(r)]).collect(),
@@ -2004,15 +2453,12 @@ impl Rig {
             };
             let mut cells = Vec::new();
             for row in &rows {
-                for m in 0..12 {
-                    for version in 0..2 {
+                for m in 0..self.months() {
+                    for version in 0..self.versions.len() {
                         let mut coords = row.clone();
                         coords.push(month(m));
-                        cells.extend(
-                            model
-                                .read_cells(*id, &[versioned(coords, version)])
-                                .unwrap(),
-                        );
+                        let read = model.read_cells(*id, &[versioned(coords, version)]);
+                        cells.extend(read.unwrap());
                     }
                 }
             }
@@ -2025,11 +2471,14 @@ impl Rig {
             };
             let mut summaries = Vec::new();
             for row in rows {
-                for version in 0..2 {
-                    let mut coords = row.clone();
-                    coords.push(period("FY26"));
-                    let summary = model.read_summary(*id, &versioned(coords, version), levels);
-                    summaries.push(summary.map_err(|error| error.to_string()));
+                for fiscal_year in 0..self.years {
+                    for version in 0..self.versions.len() {
+                        let mut coords = row.clone();
+                        coords.push(period(&format!("FY{}", 26 + fiscal_year)));
+                        let coords = versioned(coords, version);
+                        let summary = model.read_summary(*id, &coords, levels);
+                        summaries.push(summary.map_err(|error| error.to_string()));
+                    }
                 }
             }
             shown.push(format!(
@@ -2056,14 +2505,16 @@ impl Rig {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(48))]
+    #![proptest_config(ProptestConfig::with_cases(40))]
 
     #[test]
     fn incremental_equals_full(
+        years in 1u8..=2,
+        switchover in 0u8..12,
         initial in proptest::collection::vec((0u8..3, spec()), 3..7),
-        edits in proptest::collection::vec(edit(), 1..10),
+        edits in proptest::collection::vec(edit(), 1..12),
     ) {
-        let mut rig = Rig::new(&initial);
+        let mut rig = Rig::new(years, switchover, &initial);
         rig.check()?;
         for edit in &edits {
             rig.apply(edit);

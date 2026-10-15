@@ -9,7 +9,9 @@ use crate::graph::Graph;
 use crate::ids::LineItemId;
 use crate::shape::{Axis, Shape};
 use crate::structure::{Layout, LineItem, Structure, SummaryMethod};
-use crate::summary::{LevelSpec, Summary, ratio_parts, roll_up, with_actual_before_switchover};
+use crate::summary::{
+    LevelSpec, Summary, ratio_parts, roll_up, show_written, with_actual_before_switchover,
+};
 use crate::value::Column;
 
 use super::{missing_line_item, ratio_part};
@@ -25,6 +27,7 @@ pub(super) struct Working<'a> {
     /// Line items rolled up to the levels that formulas have asked for.
     rolled_up: Mutex<HashMap<(LineItemId, LevelSpec), Arc<Summary>>>,
     /// Calculated or typed-in cells as formulas read them, where that differs from the cells.
+    /// They outlive a recalculation, which keeps them in line with the cells it writes.
     switched: Mutex<HashMap<LineItemId, Arc<Column>>>,
 }
 
@@ -64,6 +67,7 @@ impl<'a> Working<'a> {
         graph: &'a Graph,
         inputs: &'a HashMap<LineItemId, Arc<Column>>,
         computed: HashMap<LineItemId, Arc<Column>>,
+        switched: HashMap<LineItemId, Arc<Column>>,
     ) -> Working<'a> {
         Working {
             structure,
@@ -71,12 +75,22 @@ impl<'a> Working<'a> {
             inputs,
             computed,
             rolled_up: Mutex::default(),
-            switched: Mutex::default(),
+            switched: Mutex::new(switched),
         }
     }
 
-    pub(super) fn into_computed(self) -> HashMap<LineItemId, Arc<Column>> {
-        self.computed
+    /// The calculated cells and the cells as formulas read them.
+    pub(super) fn into_parts(
+        self,
+    ) -> (
+        HashMap<LineItemId, Arc<Column>>,
+        HashMap<LineItemId, Arc<Column>>,
+    ) {
+        let switched = self
+            .switched
+            .into_inner()
+            .unwrap_or_else(PoisonError::into_inner);
+        (self.computed, switched)
     }
 
     /// The number of cells calculated for a line item, if it has been calculated.
@@ -97,10 +111,56 @@ impl<'a> Working<'a> {
         if let Some(column) = self.computed.get_mut(&id) {
             Arc::make_mut(column).scatter(at, values);
         }
-        self.forget(id);
+        self.forget_rolled_up(id);
+        self.wrote(id, at);
     }
 
-    fn forget(&mut self, id: LineItemId) {
+    /// Takes note that some cells of a line item were written, so that the cells as formulas
+    /// read them follow.
+    pub(super) fn wrote(&mut self, id: LineItemId, at: &[usize]) {
+        let Some(shown) = self
+            .switched
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get_mut(&id)
+        else {
+            return;
+        };
+        let updated = self
+            .inputs
+            .get(&id)
+            .or_else(|| self.computed.get(&id))
+            .zip(self.structure.line_item(id))
+            .and_then(|(cells, line_item)| {
+                let layout = self.structure.layout(line_item).ok()?;
+                let shape = self.structure.shape_of(&layout).ok()?;
+                show_written(
+                    self.structure,
+                    &shape,
+                    layout.restriction.as_deref(),
+                    (cells, at),
+                    Arc::make_mut(shown),
+                )
+                .ok()
+            });
+        if updated.is_none() {
+            self.switched
+                .get_mut()
+                .unwrap_or_else(PoisonError::into_inner)
+                .remove(&id);
+        }
+    }
+
+    /// Takes note that all the cells of a line item may have changed.
+    pub(super) fn forget(&mut self, id: LineItemId) {
+        self.forget_rolled_up(id);
+        self.switched
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&id);
+    }
+
+    fn forget_rolled_up(&mut self, id: LineItemId) {
         let structure = self.structure;
         let uses = |rolled: &LineItemId| {
             structure
@@ -112,10 +172,6 @@ impl<'a> Working<'a> {
             .get_mut()
             .unwrap_or_else(PoisonError::into_inner)
             .retain(|(rolled, _), _| *rolled != id && !uses(rolled));
-        self.switched
-            .get_mut()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&id);
     }
 
     /// The cells of a line item over its own shape: typed in, calculated so far or blank.

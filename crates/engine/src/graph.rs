@@ -15,7 +15,7 @@ use crate::formula::{SelectTarget, Span, TExpr, TModifier, UnOp, parse, resolve}
 use crate::ids::{LineItemId, ListId};
 use crate::shape::{Axis, Shape};
 use crate::structure::{Layout, LineItem, Structure, SummaryMethod};
-use crate::summary::ratio_parts;
+use crate::summary::{cutoffs, ratio_parts};
 use crate::value::{Format, Value, ValueType};
 
 mod order;
@@ -63,22 +63,40 @@ pub(crate) struct Link {
 pub(crate) enum LinkKind {
     /// Each cell of the target reads the cell of the source with the same coordinates: a change
     /// of some cells of the source changes those cells of the target and no others.
-    Aligned(Alignment),
+    Aligned(Box<Alignment>),
     /// A change of any cell of the source can change any cell of the target.
     Whole,
 }
 
 /// How the cells of a source line item line up with those of a target that reads it cell by
 /// cell: every dimension of the source is a dimension of the target, and the target repeats the
-/// source over the dimensions it adds.
+/// source over the dimensions it adds. Where a version shows the actual version's cells before
+/// its switchover, a target cell of that version reads the actual version's source cell.
 #[derive(Clone, Debug)]
 pub(crate) struct Alignment {
     source: Shape,
     target: Shape,
     /// The axis of the target that each axis of the source is.
     matched: Vec<usize>,
-    /// The stride and length of each axis of the target that no axis of the source is.
-    free: Vec<(usize, usize)>,
+    /// The position, stride and length of each axis of the target that no axis of the source is.
+    free: Vec<(usize, usize, usize)>,
+    switchover: Option<Switchover>,
+}
+
+/// The periods of each version that show the actual version.
+#[derive(Clone, Debug)]
+struct Switchover {
+    /// The Versions axis of the source and of the target.
+    source_versions: usize,
+    target_versions: usize,
+    /// The Time axis of the target, whose periods decide, and the axis of the source that
+    /// follows it, if the source has one.
+    target_time: usize,
+    source_time: Option<usize>,
+    /// The position of the actual version along the Versions axis.
+    actual: usize,
+    /// For each version, how many leading periods show the actual version.
+    cutoff: Vec<u32>,
 }
 
 impl Graph {
@@ -148,7 +166,7 @@ impl Graph {
             }
             for edge in edges {
                 let kind = match (&edge.alignment, edge.reads.pointwise) {
-                    (Some(alignment), true) => LinkKind::Aligned(alignment.clone()),
+                    (Some(alignment), true) => LinkKind::Aligned(Box::new(alignment.clone())),
                     _ => LinkKind::Whole,
                 };
                 links.entry(edge.source).or_default().push(Link {
@@ -638,9 +656,9 @@ fn footprint(
 
 impl Alignment {
     /// How `source` lines up with `target`, or `None` when a cell of the source can reach cells
-    /// of the target other than those with the same coordinates: a dimension of the source that
-    /// the target lacks, or a different one, or a Versions dimension whose cells show those of
-    /// the actual version before a switchover.
+    /// of the target other than those with the same coordinates and, before a switchover, those
+    /// of the versions that show the actual version: a dimension of the source that the target
+    /// lacks, or a different one, or Versions axes that span other versions.
     fn between(
         structure: &Structure,
         (source_layout, source): (&Layout, &Shape),
@@ -654,24 +672,32 @@ impl Alignment {
             }
             matched.push(position);
         }
-        let switches = structure
-            .versions()
-            .iter()
-            .any(|version| version.switchover.is_some());
-        if source.axis_pos(&Axis::Versions).is_some()
-            && (switches || source_layout.restriction != target_layout.restriction)
-        {
-            return None;
-        }
+        let switchover = match source.axis_pos(&Axis::Versions) {
+            Some(_) if source_layout.restriction != target_layout.restriction => return None,
+            Some(source_versions) => Switchover::of(
+                structure,
+                (source, source_versions),
+                (target_layout, target),
+                &matched,
+            ),
+            None => None,
+        };
         let free = (0..target.axes.len())
             .filter(|position| !matched.contains(position))
-            .map(|position| (target.strides[position], target.lens[position] as usize))
+            .map(|position| {
+                (
+                    position,
+                    target.strides[position],
+                    target.lens[position] as usize,
+                )
+            })
             .collect();
         Some(Alignment {
             source: source.clone(),
             target: target.clone(),
             matched,
             free,
+            switchover,
         })
     }
 
@@ -682,34 +708,126 @@ impl Alignment {
         if size == 0 {
             return Some(Vec::new());
         }
-        let fanout: usize = self.free.iter().map(|&(_, len)| len).product();
+        let fanout: usize = self.free.iter().map(|&(_, _, len)| len).product();
         if cells.len().saturating_mul(fanout).saturating_mul(2) >= size {
             return None;
         }
         let mut reading = Vec::with_capacity(cells.len() * fanout);
         for &cell in cells {
-            let start = reading.len();
-            let first: usize = self
-                .matched
+            let coords: Vec<usize> = self
+                .source
+                .strides
                 .iter()
-                .enumerate()
-                .map(|(axis, &position)| {
-                    let coord = cell / self.source.strides[axis] % self.source.lens[axis] as usize;
-                    coord * self.target.strides[position]
-                })
+                .zip(&self.source.lens)
+                .map(|(&stride, &len)| cell / stride % len as usize)
+                .collect();
+            let first: usize = coords
+                .iter()
+                .zip(&self.matched)
+                .map(|(&coord, &position)| coord * self.target.strides[position])
                 .sum();
-            reading.push(first);
-            for &(stride, len) in &self.free {
-                let have = reading.len() - start;
-                for step in 1..len {
-                    for at in 0..have {
-                        let moved = reading[start + at] + step * stride;
-                        reading.push(moved);
+            self.repeat(first, None, &mut reading);
+            if let Some(switchover) = &self.switchover
+                && coords[switchover.source_versions] == switchover.actual
+            {
+                self.show_actual(switchover, &coords, first, &mut reading);
+            }
+            if reading.len().saturating_mul(2) >= size {
+                return None;
+            }
+        }
+        Some(reading)
+    }
+
+    /// Adds the cells of the target that repeat the cell `first` over the axes the source lacks,
+    /// except the axis `fixed`.
+    fn repeat(&self, first: usize, fixed: Option<usize>, out: &mut Vec<usize>) {
+        let start = out.len();
+        out.push(first);
+        for &(position, stride, len) in &self.free {
+            if fixed == Some(position) {
+                continue;
+            }
+            let have = out.len() - start;
+            for step in 1..len {
+                for at in 0..have {
+                    let moved = out[start + at] + step * stride;
+                    out.push(moved);
+                }
+            }
+        }
+    }
+
+    /// Adds the cells of the other versions that show the actual version's cell at `coords`,
+    /// which is read by the target cell `first`.
+    fn show_actual(
+        &self,
+        switchover: &Switchover,
+        coords: &[usize],
+        first: usize,
+        out: &mut Vec<usize>,
+    ) {
+        let stride = self.target.strides[switchover.target_versions];
+        let time_stride = self.target.strides[switchover.target_time];
+        for (version, &periods) in switchover.cutoff.iter().enumerate() {
+            let periods = periods as usize;
+            if version == switchover.actual || periods == 0 {
+                continue;
+            }
+            let there = first - switchover.actual * stride + version * stride;
+            match switchover.source_time {
+                Some(time) if coords[time] < periods => self.repeat(there, None, out),
+                Some(_) => {}
+                None => {
+                    for period in 0..periods {
+                        let at = there + period * time_stride;
+                        self.repeat(at, Some(switchover.target_time), out);
                     }
                 }
             }
         }
-        Some(reading)
+    }
+}
+
+impl Switchover {
+    /// The periods of each version of `target` that show the actual version, if any, for a
+    /// source whose Versions axis is the axis `source_versions` of `source` and whose axes
+    /// are those `matched` of the target.
+    fn of(
+        structure: &Structure,
+        (source, source_versions): (&Shape, usize),
+        (target_layout, target): (&Layout, &Shape),
+        matched: &[usize],
+    ) -> Option<Switchover> {
+        let target_time = target.time_pos()?;
+        let target_versions = matched[source_versions];
+        let Axis::Time { level, range } = target.axes[target_time] else {
+            return None;
+        };
+        let keys = structure
+            .axis_keys(&Axis::Versions, target_layout.restriction.as_deref())
+            .ok()?;
+        let cutoff = cutoffs(structure, level, range, &keys).ok()?;
+        let actual = structure
+            .versions()
+            .iter()
+            .find(|version| version.is_actual)
+            .and_then(|version| {
+                keys.iter()
+                    .position(|key| *key == Some(version.id.0.as_u128()))
+            })?;
+        let source_time = source.time_pos();
+        cutoff
+            .iter()
+            .any(|&periods| periods > 0)
+            .then_some(Switchover {
+                source_versions,
+                target_versions,
+                target_time,
+                source_time,
+                actual,
+                cutoff,
+            })
     }
 }
 
