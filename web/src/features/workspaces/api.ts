@@ -32,15 +32,6 @@ export function useCreateWorkspace() {
   })
 }
 
-export function useRenameWorkspace() {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: ({ id, name }: { id: string; name: string }) =>
-      unwrap(api.PATCH("/workspaces/{id}", { params: { path: { id } }, body: { name } })),
-    onSuccess: () => refreshWorkspaces(queryClient),
-  })
-}
-
 export function useMembers(wsId: string) {
   return useQuery({
     queryKey: queryKeys.members(wsId),

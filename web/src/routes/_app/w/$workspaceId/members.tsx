@@ -7,5 +7,5 @@ export const Route = createFileRoute("/_app/w/$workspaceId/members")({
 
 function WorkspaceMembersRoute() {
   const { workspaceId } = Route.useParams()
-  return <MembersPage key={workspaceId} workspaceId={workspaceId} />
+  return <MembersPage key={workspaceId} />
 }

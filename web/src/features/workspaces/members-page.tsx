@@ -12,7 +12,7 @@ import { MembersTable, MembersTableSkeleton } from "./members-table"
 import { canManageMembers } from "./roles"
 import { WorkspaceNotFound } from "./workspace-not-found"
 
-export function MembersPage({ workspaceId }: { workspaceId: string }) {
+export function MembersPage() {
   const { workspace, isLoading } = useCurrentWorkspace()
 
   if (isLoading) {
@@ -23,8 +23,8 @@ export function MembersPage({ workspaceId }: { workspaceId: string }) {
       </>
     )
   }
-  // The current workspace falls back to another one when the address names none the user is in.
-  if (workspace?.id !== workspaceId) {
+  // Without a current workspace, the address names one the user is not in.
+  if (!workspace) {
     return <WorkspaceNotFound />
   }
   return <WorkspaceMembers workspace={workspace} />

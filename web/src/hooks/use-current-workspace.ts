@@ -30,5 +30,5 @@ export function useCurrentWorkspace() {
     }
   }, [rememberedId])
 
-  return { workspace, isLoading: !workspaces || awaitingModel, setLastWorkspace }
+  return { workspace, isLoading: !workspaces || awaitingModel }
 }

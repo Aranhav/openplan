@@ -12,7 +12,6 @@ import {
   useCreateWorkspace,
   useMembers,
   useRemoveMember,
-  useRenameWorkspace,
   useUpdateMember,
   useWorkspaces,
 } from "./api"
@@ -92,26 +91,6 @@ describe("workspace mutations", () => {
     await result.current.create.mutateAsync({ name: "Initech" })
 
     expect(posted).toHaveBeenCalledWith({ name: "Initech" })
-    expect(requests).toHaveBeenCalledOnce()
-  })
-
-  it("renaming a workspace refreshes the list", async () => {
-    const patched = vi.fn()
-    server.use(
-      http.patch(`/api/v1/workspaces/${workspace.id}`, async ({ request }) => {
-        patched(await request.json())
-        return HttpResponse.json({ ...workspace, name: "Acme Inc" })
-      }),
-    )
-    const requests = serveMe()
-    const { queryClient, wrapper } = setup()
-    queryClient.setQueryData(queryKeys.me, me)
-    const { result } = renderHook(() => ({ list: useWorkspaces(), rename: useRenameWorkspace() }), {
-      wrapper,
-    })
-    await result.current.rename.mutateAsync({ id: workspace.id, name: "Acme Inc" })
-
-    expect(patched).toHaveBeenCalledWith({ name: "Acme Inc" })
     expect(requests).toHaveBeenCalledOnce()
   })
 })
