@@ -12,7 +12,10 @@ mod value;
 pub use calendar::{Calendar, TimeLevel, TimeRange};
 pub use command::{CellEdit, ChangeSet, Command, CoordToken, ItemSpec, LineItemPatch};
 pub use error::{CellIssue, EngineError, FormulaError};
-pub use formula::{BinOp, Expr, Modifier, ModifierKind, Name, Span, UnOp, parse};
+pub use formula::{
+    BinOp, Expr, Modifier, ModifierKind, Name, SelectTarget, Span, TExpr, TModifier, UnOp,
+    functions, parse, resolve,
+};
 pub use ids::{ItemId, LineItemId, ListId, ModuleId, SubsetId, TimeRangeId, VersionId};
 pub use model::Model;
 pub use shape::{Axis, Shape};

@@ -440,13 +440,14 @@ fn already_exists(what: &'static str, id: Uuid) -> EngineError {
 }
 
 /// Case-insensitive name comparison.
-fn same_name(a: &str, b: &str) -> bool {
+pub(crate) fn same_name(a: &str, b: &str) -> bool {
     a.chars()
         .flat_map(char::to_lowercase)
         .eq(b.chars().flat_map(char::to_lowercase))
 }
 
-fn fold(text: &str) -> String {
+/// The text in lower case, the form names are compared in.
+pub(crate) fn fold(text: &str) -> String {
     text.chars().flat_map(char::to_lowercase).collect()
 }
 

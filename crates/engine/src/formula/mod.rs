@@ -1,12 +1,15 @@
-//! Front end of the formula language: tokens, syntax tree and parser (spec §4.1–4.2).
-//! Nothing here knows about the model; names are resolved and typed in later phases.
+//! Front end of the formula language: tokens, syntax tree and parser (spec §4.1–4.2), then
+//! name resolution and type checking against the model (spec §4.3–4.5).
 
 mod ast;
+pub mod functions;
 mod lexer;
 mod parser;
+mod resolve;
 
 pub use ast::{BinOp, Expr, Modifier, ModifierKind, Name, Span, UnOp};
 pub use parser::parse;
+pub use resolve::{SelectTarget, TExpr, TModifier, resolve};
 
 use crate::error::FormulaError;
 
