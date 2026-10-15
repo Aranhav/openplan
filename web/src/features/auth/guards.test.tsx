@@ -6,7 +6,7 @@ import type { ReactNode } from "react"
 import { describe, expect, it, vi } from "vitest"
 import { me, mockSession, renderApp } from "@/test/app"
 import { server } from "@/test/server"
-import { useLogout } from "./api"
+import { useLogout, useMe } from "./api"
 
 function appContext(router: ReturnType<typeof renderApp>["router"]) {
   return router.state.matches.find((match) => match.routeId === "/_app")?.context
@@ -44,6 +44,14 @@ describe("the app guard", () => {
 
     await screen.findByRole("heading", { name: "Sign in" })
     expect(router.state.location.search).toEqual({ redirect: "/?tab=plan" })
+  })
+
+  it("replaces the protected entry, so Back does not return to it", async () => {
+    mockSession({ signedIn: false })
+    const { router } = renderApp("/?tab=plan")
+
+    await screen.findByRole("heading", { name: "Sign in" })
+    expect(router.history.length).toBe(1)
   })
 
   it("lets a signed-in user through and exposes them on the route context", async () => {
@@ -117,7 +125,7 @@ describe("the sign-in page", () => {
 })
 
 describe("useLogout", () => {
-  it("signs out, forgets the session's data and goes to sign in", async () => {
+  it("signs out and goes to sign in once, without a stray refetch of the user", async () => {
     const session = mockSession()
     const signOut = vi.fn()
     server.use(
@@ -127,22 +135,29 @@ describe("useLogout", () => {
         return new HttpResponse(null, { status: 204 })
       }),
     )
-    const { queryClient, router } = renderApp("/")
+    const { queryClient, router } = renderApp("/?tab=plan")
     await waitFor(() => expect(router.state.status).toBe("idle"))
     queryClient.setQueryData(["workspaces"], [{ id: "1" }])
 
-    const { result } = renderHook(() => useLogout(), {
+    // A component that stays mounted through the logout, like the app shell will.
+    const { result } = renderHook(() => ({ user: useMe(), logout: useLogout() }), {
       wrapper: ({ children }: { children: ReactNode }) => (
         <QueryClientProvider client={queryClient}>
           <RouterContextProvider router={router}>{children}</RouterContextProvider>
         </QueryClientProvider>
       ),
     })
-    result.current.mutate()
+    await waitFor(() => expect(result.current.user.data).toEqual(me))
+    const requestsBefore = session.meRequests
+    result.current.logout.mutate()
 
     expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument()
-    expect(router.state.location.pathname).toBe("/login")
+    await waitFor(() => expect(result.current.logout.isSuccess).toBe(true))
     expect(signOut).toHaveBeenCalledOnce()
+    expect(router.state.location.href).toBe("/login")
+    expect(router.history.length).toBe(1)
+    // Only the /login guard asks who is signed in.
+    expect(session.meRequests - requestsBefore).toBe(1)
     expect(queryClient.getQueryData(["workspaces"])).toBeUndefined()
     expect(queryClient.getQueryData(["me"])).toBeUndefined()
   })

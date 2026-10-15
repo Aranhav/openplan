@@ -23,18 +23,21 @@ export const me = { user, workspaces: [workspace] }
 export interface Session {
   needsSetup: boolean
   signedIn: boolean
+  /** How many times the me endpoint has been asked. */
+  meRequests: number
 }
 
 /** Answers the setup-status and me endpoints from `state`, which a test can change mid-flight. */
 export function mockSession(initial: Partial<Session> = {}): Session {
-  const state: Session = { needsSetup: false, signedIn: true, ...initial }
+  const state: Session = { needsSetup: false, signedIn: true, meRequests: 0, ...initial }
   server.use(
     http.get("/api/v1/setup/status", () => HttpResponse.json({ needs_setup: state.needsSetup })),
-    http.get("/api/v1/auth/me", () =>
-      state.signedIn
+    http.get("/api/v1/auth/me", () => {
+      state.meRequests += 1
+      return state.signedIn
         ? HttpResponse.json(me)
-        : problem(401, "auth.unauthenticated", "Sign in to continue."),
-    ),
+        : problem(401, "auth.unauthenticated", "Sign in to continue.")
+    }),
   )
   return state
 }

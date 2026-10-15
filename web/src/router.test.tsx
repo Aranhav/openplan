@@ -101,6 +101,7 @@ describe("when the session expires", () => {
     expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument()
     expect(router.state.location.pathname).toBe("/login")
     expect(router.state.location.search).toEqual({})
+    expect(router.history.length).toBe(1)
     expect(queryClient.getQueryData(["models"])).toBeUndefined()
     expect(queryClient.getQueryData(["me"])).toBeUndefined()
   })
@@ -123,6 +124,7 @@ describe("when the session expires", () => {
 
     expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument()
     expect(router.state.location.search).toEqual({ redirect: "/?tab=plan" })
+    expect(router.history.length).toBe(1)
   })
 
   it("keeps the user signed in when a 401 only means wrong credentials", async () => {

@@ -56,7 +56,7 @@ export function useLogout() {
     // Clear first: /login treats a cached `me` as proof that the user is still signed in.
     onSuccess: () => {
       queryClient.removeQueries()
-      return navigate({ to: "/login" })
+      return navigate({ to: "/login", replace: true })
     },
   })
 }

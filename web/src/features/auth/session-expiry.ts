@@ -28,7 +28,8 @@ export function watchSessionExpiry(queryClient: QueryClient, router: AnyRouter) 
     try {
       // Clear first: /login treats a cached `me` as proof that the user is still signed in.
       queryClient.removeQueries()
-      await router.navigate({ to: "/login", search: loginSearch(href) })
+      // Replace, don't push: Back must not return to a page that only bounces to /login again.
+      await router.navigate({ to: "/login", search: loginSearch(href), replace: true })
     } finally {
       leaving = false
     }
