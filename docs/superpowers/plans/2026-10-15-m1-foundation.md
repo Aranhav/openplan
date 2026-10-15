@@ -316,9 +316,9 @@ docker/Dockerfile
 **Interfaces:**
 - Consumes: Task 8 (`context.me`, hooks), Task 7.
 - Produces:
-  - `features/workspaces/api.ts`: `useWorkspaces()`, `useCreateWorkspace()`, `useRenameWorkspace()`, `useMembers(wsId)`, `useAddMember(wsId)`, `useUpdateMember(wsId)`, `useRemoveMember(wsId)`.
+  - `features/workspaces/api.ts`: `useWorkspaces()`, `useCreateWorkspace()`, `useMembers(wsId)`, `useAddMember(wsId)`, `useUpdateMember(wsId)`, `useRemoveMember(wsId)`.
   - `features/models/api.ts`: `useModels(wsId)`, `useModel(id)`, `useCreateModel(wsId)`, `useUpdateModel(id)`, `useDeleteModel()`; mutations invalidate `queryKeys.models(wsId)` and `queryKeys.model(id)`.
-  - `useCurrentWorkspace(): { workspace: {id,name,role} | undefined, setLastWorkspace(id: string): void }` — resolves from route param `workspaceId`, or from the current model's `workspace_id`, else `localStorage["openplan.lastWorkspace"]`, else first workspace.
+  - `useCurrentWorkspace(): { workspace: {id,name,role} | undefined, isLoading: boolean }` — resolves from route param `workspaceId`, or from the current model's `workspace_id`, else `localStorage["openplan.lastWorkspace"]`, else first workspace; a workspace found in the route is remembered through `setLastWorkspace(id)` in `lib/last-workspace.ts`.
   - `EmptyState({ icon, title, description, action? })`, `ErrorState({ error, onRetry })`, `PageHeader({ title, description?, actions? })`.
   - Shell layout in `_app.tsx`: `SidebarProvider` → `AppSidebar` + `SidebarInset` containing `SiteHeader` and `<main className="flex-1 p-4 md:p-6">`.
   - `AppSidebar`: header = `WorkspaceSwitcher` (shadcn "team switcher" pattern: `DropdownMenu` listing workspaces with role badge, plus "Create workspace" item for instance admins opening a `Dialog`); content group "Workspace": Models (`LayoutGrid`) → `/w/$id`, Members (`Users`) → `/w/$id/members`; group "Instance" (instance admins only): Users (`UserCog`) → `/admin/users`; footer = `NavUser` (`Avatar` initials, name, email; `DropdownMenu`: Profile → `/profile`, Theme submenu Light/Dark/System with check on current, Sign out). Active route highlighted via `SidebarMenuButton isActive`. Collapsible to icons (`collapsible="icon"`).
