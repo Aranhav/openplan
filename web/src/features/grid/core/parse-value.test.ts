@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest"
+import { numberFormat } from "@/test/number-format"
 import { copyText, editText } from "./format-value"
 import { parseInput, type ParseContext } from "./parse-value"
-import type { Format, NumberUnit, PeriodLevel, Value } from "./types"
+import type { Format, PeriodLevel, Value } from "./types"
 
 const NORTH = "0198f0aa-0000-7000-8000-00000000000a"
 const SOUTH = "0198f0aa-0000-7000-8000-00000000000b"
@@ -24,14 +25,10 @@ const ctx: ParseContext = {
   ]),
 }
 
-function numberFormat(unit: NumberUnit = { type: "none" }): Format {
-  return { type: "number", decimals: 2, thousands_sep: true, unit, negative: "minus" }
-}
-
 const plain = numberFormat()
-const eur = numberFormat({ type: "currency", code: "EUR" })
-const usd = numberFormat({ type: "currency", code: "USD" })
-const percent = numberFormat({ type: "percent" })
+const eur = numberFormat({ unit: { type: "currency", code: "EUR" } })
+const usd = numberFormat({ unit: { type: "currency", code: "USD" } })
+const percent = numberFormat({ unit: { type: "percent" } })
 
 function numberOf(raw: string, format: Format = plain) {
   const result = parseInput(raw, format, ctx)
@@ -59,6 +56,20 @@ describe("parseInput numbers", () => {
 
   it("ignores spaces around the number", () => {
     expect(numberOf("  42  ")).toEqual({ t: "number", v: 42 })
+  })
+
+  it("treats non-breaking spaces like spaces, as Excel and web pages put them", () => {
+    const nbsp = "\u00a0"
+    expect(numberOf(`${nbsp}12${nbsp}`)).toEqual({ t: "number", v: 12 })
+    expect(numberOf(`€${nbsp}12`, eur)).toEqual({ t: "number", v: 12 })
+    expect(numberOf(`12${nbsp}EUR`, eur)).toEqual({ t: "number", v: 12 })
+    expect(numberOf(`12${nbsp}%`)).toEqual({ t: "number", v: 0.12 })
+    expect(numberOf(`(${nbsp}12${nbsp})`)).toEqual({ t: "number", v: -12 })
+  })
+
+  it("refuses a space or a non-breaking space inside the number", () => {
+    expect(messageOf("1 234", plain)).toBe("'1 234' isn't a number.")
+    expect(messageOf("1\u00a0234", plain)).toBe("'1\u00a0234' isn't a number.")
   })
 
   it("accepts thousands separators", () => {
@@ -450,10 +461,7 @@ describe("parseInput time periods", () => {
 })
 
 describe("copying a cell and pasting the text back", () => {
-  const percentWithParens = numberFormat({ type: "percent" })
-  if (percentWithParens.type === "number") {
-    percentWithParens.negative = "parens"
-  }
+  const percentWithParens = numberFormat({ unit: { type: "percent" }, negative: "parens" })
   const numberFormats: [string, Format][] = [
     ["a plain number", plain],
     ["a currency", eur],

@@ -1,24 +1,7 @@
 import { describe, expect, it } from "vitest"
+import { numberFormat } from "@/test/number-format"
 import { copyText, editText, formatValue } from "./format-value"
-import type { Format, NumberUnit, Value } from "./types"
-
-function numberFormat(
-  options: {
-    decimals?: number
-    thousands_sep?: boolean
-    unit?: NumberUnit
-    negative?: "minus" | "parens"
-  } = {},
-): Format {
-  return {
-    type: "number",
-    decimals: 2,
-    thousands_sep: true,
-    unit: { type: "none" },
-    negative: "minus",
-    ...options,
-  }
-}
+import type { Format, Value } from "./types"
 
 const num = (v: number): Value => ({ t: "number", v })
 
