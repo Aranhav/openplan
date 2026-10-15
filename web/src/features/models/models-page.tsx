@@ -60,7 +60,11 @@ function WorkspaceModels({ workspace }: { workspace: components["schemas"]["Work
       />
       {models.isPending && <ModelCardsSkeleton />}
       {models.isError && !list && (
-        <ErrorState error={models.error} onRetry={() => void models.refetch()} />
+        <ErrorState
+          error={models.error}
+          isFetching={models.isFetching}
+          onRetry={() => void models.refetch()}
+        />
       )}
       {list?.length === 0 && (
         <EmptyState

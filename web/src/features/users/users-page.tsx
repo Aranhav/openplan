@@ -69,7 +69,11 @@ function UserAdmin() {
       {users.data ? (
         <UsersTable users={users.data} />
       ) : users.isError ? (
-        <ErrorState error={users.error} onRetry={() => void users.refetch()} />
+        <ErrorState
+          error={users.error}
+          isFetching={users.isFetching}
+          onRetry={() => void users.refetch()}
+        />
       ) : (
         <UsersTableSkeleton />
       )}

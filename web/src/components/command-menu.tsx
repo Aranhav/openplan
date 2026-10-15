@@ -201,7 +201,11 @@ function ModelsGroup({
   if (models.isError) {
     return (
       <CommandGroup heading="Models">
-        <ErrorState error={models.error} onRetry={() => void models.refetch()} />
+        <ErrorState
+          error={models.error}
+          isFetching={models.isFetching}
+          onRetry={() => void models.refetch()}
+        />
       </CommandGroup>
     )
   }
