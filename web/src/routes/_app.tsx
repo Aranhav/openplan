@@ -29,7 +29,7 @@ function AppLayout() {
   return (
     <SidebarProvider defaultOpen={!document.cookie.includes("sidebar_state=false")}>
       <AppSidebar />
-      <SidebarInset>
+      <SidebarInset className="min-w-0">
         <SiteHeader />
         <div className="flex-1 p-4 md:p-6">
           <Outlet />

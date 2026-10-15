@@ -59,17 +59,19 @@ export function PasswordForm({ email }: { email: string }) {
     <Form {...form}>
       <form onSubmit={form.handleSubmit(onSubmit)} noValidate className="flex flex-col gap-6">
         <CardContent className="flex flex-col gap-6">
-          {/* Password managers look for the account name beside a password; this one is theirs. */}
-          <Input
-            type="text"
-            name="username"
-            autoComplete="username"
-            value={email}
-            readOnly
-            tabIndex={-1}
-            aria-hidden="true"
-            className="sr-only"
-          />
+          {/* Password managers look for the account name beside a password; this one is theirs.
+              The wrapper hides it: `sr-only` on the Input itself loses to the Input's width. */}
+          <div className="sr-only">
+            <Input
+              type="text"
+              name="username"
+              autoComplete="username"
+              value={email}
+              readOnly
+              tabIndex={-1}
+              aria-hidden="true"
+            />
+          </div>
           {rateLimited && (
             <Alert variant="destructive">
               <CircleAlert />

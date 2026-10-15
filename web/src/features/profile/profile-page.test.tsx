@@ -207,7 +207,10 @@ describe("the password card", () => {
     expect(username).toHaveAttribute("readonly")
     expect(username).toHaveAttribute("aria-hidden", "true")
     expect(username).toHaveAttribute("tabindex", "-1")
-    expect(username).toHaveClass("sr-only")
+    // The wrapper hides it: on the input itself, its own width classes would win and leave a
+    // container-wide box that widens the page.
+    expect(username).not.toHaveClass("sr-only")
+    expect(username.closest(".sr-only")).not.toBeNull()
     expect(password.queryByLabelText("Email")).not.toBeInTheDocument()
   })
 
