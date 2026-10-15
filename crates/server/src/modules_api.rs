@@ -20,7 +20,7 @@ use openplan_engine::{
     AxisSpec, Command, Completion, CompletionKind, Format, LineItem, LineItemId, LineItemPatch,
     ListId, Model, ModuleId, Structure, SummaryMethod, TimeScale, VersionsScope, functions,
 };
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
@@ -30,7 +30,7 @@ use crate::{
     auth::CurrentUser,
     authz::{WorkspaceRole, require_workspace_role},
     error::{AppError, AppResult, FieldError, FormulaProblem},
-    extract::{ApiJson, ApiPath, ApiQuery},
+    extract::{ApiJson, ApiPath, ApiQuery, nullable},
     structure_api::{model_row, read_handle, write_handle},
     structure_dto::{
         AxisDto, FormatDto, LineItemDto, ModuleDto, NumberUnitDto, SummaryMethodDto, TimeScaleDto,
@@ -63,16 +63,6 @@ pub fn router() -> Router<AppState> {
         .route("/models/{id}/formula/check", post(check_formula))
         .route("/models/{id}/formula/completions", get(completions))
         .route("/formula/functions", get(functions_reference))
-}
-
-/// Reads a field that may also be sent as `null`: absent is `None`, `null` is `Some(None)` and a
-/// value is `Some(Some(value))`.
-fn nullable<'de, T, D>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
-where
-    T: Deserialize<'de>,
-    D: Deserializer<'de>,
-{
-    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -232,11 +222,6 @@ impl From<Completion> for CompletionDto {
             detail: completion.detail,
         }
     }
-}
-
-/// A code as the engine keeps it: trimmed, and absent when blank.
-fn code_of(raw: String) -> Option<String> {
-    Some(raw.trim().to_string()).filter(|code| !code.is_empty())
 }
 
 /// A formula as the engine keeps it: absent when blank.
@@ -625,7 +610,7 @@ pub(crate) async fn create_line_item(
             .versions
             .map_or(VersionsScope::Module, VersionsScope::from),
         notes: body.notes.unwrap_or_default(),
-        code: body.code.and_then(code_of),
+        code: body.code.as_deref().and_then(validate::code),
         read_access_driver: body.read_access_driver.map(LineItemId),
         write_access_driver: body.write_access_driver.map(LineItemId),
     };
@@ -701,7 +686,9 @@ pub(crate) async fn update_line_item(
         time_scale: body.time_scale.map(TimeScale::from),
         versions: body.versions.map(VersionsScope::from),
         notes: body.notes,
-        code: body.code.map(|code| code.and_then(code_of)),
+        code: body
+            .code
+            .map(|code| code.as_deref().and_then(validate::code)),
         read_access_driver: body.read_access_driver.map(|driver| driver.map(LineItemId)),
         write_access_driver: body
             .write_access_driver

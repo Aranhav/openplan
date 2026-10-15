@@ -8,7 +8,7 @@ use axum::{
     },
     http::{StatusCode, request::Parts},
 };
-use serde::de::DeserializeOwned;
+use serde::{Deserialize, Deserializer, de::DeserializeOwned};
 
 use crate::{
     error::{AppError, FieldError},
@@ -30,6 +30,16 @@ where
         let Json(value) = Json::<T>::from_request(req, state).await?;
         Ok(ApiJson(value))
     }
+}
+
+/// Reads a field that may also be sent as `null`: absent is `None`, `null` is `Some(None)` and a
+/// value is `Some(Some(value))`. Use it as `#[serde(default, deserialize_with = "nullable")]`.
+pub fn nullable<'de, T, D>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: Deserializer<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 /// A path parameter whose rejections are `application/problem+json` 404s: a
