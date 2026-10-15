@@ -1,6 +1,7 @@
 import { Loader2, LogOut, UserMinus } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
 import { toast } from "sonner"
+import { NAME_CELL, WIDE_CELL } from "@/components/table-layout"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Select, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -15,6 +16,7 @@ import {
 } from "@/components/ui/table"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { useMe } from "@/features/auth/api"
+import { useElementMap } from "@/hooks/use-element-map"
 import { LG_BREAKPOINT, useIsMobile } from "@/hooks/use-mobile"
 import { errorDetail } from "@/lib/api/client"
 import type { components } from "@/lib/api/schema"
@@ -28,11 +30,6 @@ import { type WorkspaceRole, roleLabels } from "./roles"
 type MemberDto = components["schemas"]["MemberDto"]
 type WorkspaceSummary = components["schemas"]["WorkspaceSummary"]
 
-// Below `lg` the Email column makes way for the email under the name, which keeps the table within
-// the screen; the placeholder below has to follow the same layout.
-const NAME_CELL = "w-full max-w-0 pl-4 lg:w-auto lg:max-w-64"
-const EMAIL_CELL = "hidden lg:table-cell"
-
 interface MembersTableProps {
   workspace: WorkspaceSummary
   members: MemberDto[]
@@ -42,7 +39,7 @@ interface MembersTableProps {
 
 export function MembersTable({ workspace, members, canManage }: MembersTableProps) {
   const { data: me } = useMe()
-  const removeButtons = useRef(new Map<string, HTMLButtonElement>())
+  const removeButtons = useElementMap<HTMLButtonElement>()
   // The member in the dialog stays put as it closes; only `confirming` says whether it is shown.
   const [removal, setRemoval] = useState<{ member: MemberDto; index: number }>()
   const [confirming, setConfirming] = useState(false)
@@ -68,7 +65,7 @@ export function MembersTable({ workspace, members, canManage }: MembersTableProp
     const focusId = stillListed
       ? opener.member.user_id
       : listed[Math.min(opener.index, listed.length - 1)]?.user_id
-    const next = removeButtons.current.get(focusId ?? "") ?? document.querySelector("h1")
+    const next = removeButtons.get(focusId) ?? document.querySelector("h1")
     next?.focus()
   }
 
@@ -78,7 +75,7 @@ export function MembersTable({ workspace, members, canManage }: MembersTableProp
         <TableHeader>
           <TableRow>
             <TableHead className="pl-4">Name</TableHead>
-            <TableHead className={EMAIL_CELL}>Email</TableHead>
+            <TableHead className={WIDE_CELL}>Email</TableHead>
             <TableHead className={cn(!canManage && "pr-4")}>Role</TableHead>
             {canManage && (
               <TableHead className="w-12 pr-4">
@@ -107,7 +104,7 @@ export function MembersTable({ workspace, members, canManage }: MembersTableProp
                   </div>
                 </TableCell>
                 <TableCell
-                  className={cn(EMAIL_CELL, "max-w-64 truncate text-muted-foreground")}
+                  className={cn(WIDE_CELL, "max-w-64 truncate text-muted-foreground")}
                   title={member.email}
                 >
                   {member.email}
@@ -125,13 +122,7 @@ export function MembersTable({ workspace, members, canManage }: MembersTableProp
                     <RemoveButton
                       isSelf={isSelf}
                       name={member.name}
-                      buttonRef={(button) => {
-                        if (button) {
-                          removeButtons.current.set(member.user_id, button)
-                        } else {
-                          removeButtons.current.delete(member.user_id)
-                        }
-                      }}
+                      buttonRef={removeButtons.refFor(member.user_id)}
                       onClick={() => {
                         setRemoval({ member, index })
                         setConfirming(true)
@@ -290,7 +281,7 @@ export function MembersTableSkeleton({ canManage = false }: { canManage?: boolea
         <TableHeader>
           <TableRow>
             <TableHead className="pl-4">Name</TableHead>
-            <TableHead className={EMAIL_CELL}>Email</TableHead>
+            <TableHead className={WIDE_CELL}>Email</TableHead>
             <TableHead className={cn(!canManage && "pr-4")}>Role</TableHead>
             {canManage && <TableHead className="w-12 pr-4" />}
           </TableRow>
@@ -302,7 +293,7 @@ export function MembersTableSkeleton({ canManage = false }: { canManage?: boolea
                 <Skeleton className="h-4 w-32 max-w-full" />
                 <Skeleton className="mt-1.5 h-3 w-40 max-w-full lg:hidden" />
               </TableCell>
-              <TableCell className={EMAIL_CELL}>
+              <TableCell className={WIDE_CELL}>
                 <Skeleton className="h-4 w-44" />
               </TableCell>
               <TableCell className={cn(!canManage && "pr-4")}>

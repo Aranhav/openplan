@@ -1,6 +1,7 @@
 import { KeyRound, Loader2, MoreHorizontal, Pencil, UserCheck, UserX } from "lucide-react"
-import { useRef, useState } from "react"
+import { useState } from "react"
 import { toast } from "sonner"
+import { NAME_CELL, WIDE_CELL } from "@/components/table-layout"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -19,6 +20,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { useMe } from "@/features/auth/api"
+import { useElementMap } from "@/hooks/use-element-map"
 import { errorDetail } from "@/lib/api/client"
 import type { components } from "@/lib/api/schema"
 import { cn } from "@/lib/utils"
@@ -29,16 +31,11 @@ import { UserDialog } from "./user-dialog"
 
 type UserDto = components["schemas"]["UserDto"]
 
-// Below `lg` the Email, Role and Status columns make way for the same facts under the name, which
-// keeps the table within the screen; the placeholder below has to follow the same layout.
-const NAME_CELL = "w-full max-w-0 pl-4 lg:w-auto lg:max-w-64"
-const WIDE_CELL = "hidden lg:table-cell"
-
 type UserDialogKind = "edit" | "reset" | "disable"
 
 export function UsersTable({ users }: { users: UserDto[] }) {
   const { data: me } = useMe()
-  const menuButtons = useRef(new Map<string, HTMLButtonElement>())
+  const menuButtons = useElementMap<HTMLButtonElement>()
   // The user in the dialogs stays put as one closes; only `dialog` says which one is shown.
   const [targetId, setTargetId] = useState<string>()
   const [dialog, setDialog] = useState<UserDialogKind>()
@@ -53,7 +50,7 @@ export function UsersTable({ users }: { users: UserDto[] }) {
   // The dialogs open from menu items, which are gone by then: focus returns to the menu's button.
   function restoreFocus(event: Event) {
     event.preventDefault()
-    menuButtons.current.get(targetId ?? "")?.focus()
+    menuButtons.get(targetId)?.focus()
   }
 
   function onOpenChange(isOpen: boolean) {
@@ -114,13 +111,7 @@ export function UsersTable({ users }: { users: UserDto[] }) {
                   <UserActions
                     user={user}
                     isSelf={isSelf}
-                    buttonRef={(button) => {
-                      if (button) {
-                        menuButtons.current.set(user.id, button)
-                      } else {
-                        menuButtons.current.delete(user.id)
-                      }
-                    }}
+                    buttonRef={menuButtons.refFor(user.id)}
                     onOpen={(kind) => open(kind, user)}
                   />
                 </TableCell>

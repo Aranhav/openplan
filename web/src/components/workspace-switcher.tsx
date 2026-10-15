@@ -1,6 +1,6 @@
 import { Link } from "@tanstack/react-router"
 import { Check, ChevronsUpDown, Plus } from "lucide-react"
-import { useRef, useState } from "react"
+import { useState } from "react"
 import { Badge } from "@/components/ui/badge"
 import {
   DropdownMenu,
@@ -22,11 +22,14 @@ import { useWorkspaces } from "@/features/workspaces/api"
 import { CreateWorkspaceDialog } from "@/features/workspaces/create-workspace-dialog"
 import { roleLabels } from "@/features/workspaces/roles"
 import { useCurrentWorkspace } from "@/hooks/use-current-workspace"
+import { useRestoreFocus } from "@/hooks/use-restore-focus"
 import { cn } from "@/lib/utils"
 
 export function WorkspaceSwitcher() {
   const { isMobile, setOpenMobile } = useSidebar()
-  const trigger = useRef<HTMLButtonElement>(null)
+  // The create dialog is opened from a menu item, which is gone by the time it closes: focus goes
+  // back to the button that opened the menu.
+  const { ref: trigger, onCloseAutoFocus: restoreFocus } = useRestoreFocus<HTMLButtonElement>()
   const { data: me } = useMe()
   const { data: workspaces = [] } = useWorkspaces()
   const { workspace, isLoading } = useCurrentWorkspace()
@@ -121,12 +124,7 @@ export function WorkspaceSwitcher() {
         <CreateWorkspaceDialog
           open={creating}
           onOpenChange={setCreating}
-          // The dialog was opened from a menu item, which is gone by now: give focus back to the
-          // button that opened the menu.
-          onCloseAutoFocus={(event) => {
-            event.preventDefault()
-            trigger.current?.focus()
-          }}
+          onCloseAutoFocus={restoreFocus}
         />
       )}
     </>
