@@ -2,6 +2,7 @@ pub mod actor;
 pub mod app;
 pub mod auth;
 pub mod authz;
+pub mod cells_api;
 pub mod client_ip;
 pub mod config;
 pub mod db;

@@ -18,6 +18,10 @@ use crate::{
         },
     },
     authz::WorkspaceRole,
+    cells_api::{
+        CellChangeDto, CellEditDto, ChangedByDto, ReadCellsRequest, ReadCellsResponse, ValueDto,
+        WriteCellsRequest, WriteCellsResponse,
+    },
     error::Problem,
     models::{Calendar, CreateModelRequest, ModelDto, ModelMode, UpdateModelRequest},
     modules_api::{
@@ -118,6 +122,9 @@ const CSRF_EXEMPT_PATHS: [&str; 3] = ["/api/v1/setup", "/api/v1/auth/login", "/a
         crate::modules_api::check_formula,
         crate::modules_api::completions,
         crate::modules_api::functions_reference,
+        crate::cells_api::write_cells,
+        crate::cells_api::read_cells,
+        crate::cells_api::cell_history,
     ),
     components(schemas(
         Problem,
@@ -189,6 +196,14 @@ const CSRF_EXEMPT_PATHS: [&str; 3] = ["/api/v1/setup", "/api/v1/auth/login", "/a
         CompletionDto,
         CompletionKindDto,
         FunctionDto,
+        ValueDto,
+        CellEditDto,
+        WriteCellsRequest,
+        WriteCellsResponse,
+        ReadCellsRequest,
+        ReadCellsResponse,
+        ChangedByDto,
+        CellChangeDto,
     ))
 )]
 pub struct ApiDoc;

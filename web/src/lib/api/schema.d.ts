@@ -132,6 +132,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/models/{id}/cells": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["write_cells"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/models/{id}/cells/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["cell_history"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/models/{id}/cells/read": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["read_cells"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/models/{id}/formula/check": {
         parameters: {
             query?: never;
@@ -650,12 +698,42 @@ export interface components {
              */
             years: number;
         };
+        /** @description A change of one cell. */
+        CellChangeDto: {
+            /** Format: date-time */
+            at: string;
+            new: components["schemas"]["ValueDto"];
+            /** @description The value the cell had before. */
+            old: components["schemas"]["ValueDto"];
+            user?: null | components["schemas"]["ChangedByDto"];
+        };
+        /** @description One cell to write. */
+        CellEditDto: {
+            /**
+             * @description One token for each dimension of the line item, in the order the cells are laid out: the
+             *     list and subset dimensions first, then Time, then Versions. An item id for a list or
+             *     subset, a period label such as `Jan 26` for Time, and a version id for Versions.
+             */
+            coords: string[];
+            /**
+             * Format: uuid
+             * @description The input line item the cell belongs to.
+             */
+            line_item_id: string;
+            value: components["schemas"]["ValueDto"];
+        };
         ChangePasswordRequest: {
             current_password: string;
             new_password: string;
         };
         ChangeRoleRequest: {
             role: components["schemas"]["WorkspaceRole"];
+        };
+        /** @description The user who made a change. */
+        ChangedByDto: {
+            /** Format: uuid */
+            id: string;
+            name: string;
         };
         CheckFormulaRequest: {
             formula: string;
@@ -994,6 +1072,22 @@ export interface components {
             /** @description Always `about:blank`. */
             type: string;
         };
+        ReadCellsRequest: {
+            /**
+             * @description At most 10,000 cells, each with one token for each dimension of the line item. A list or
+             *     subset dimension takes an item id, which reads the cell itself, an item of a list above
+             *     it, which reads the total of the items below it, or `"top"`, the total of all of them. A
+             *     Time dimension takes a period label at its level or a coarser one, whatever the case. A
+             *     Versions dimension takes a version id.
+             */
+            cells: string[][];
+            /** Format: uuid */
+            line_item_id: string;
+        };
+        ReadCellsResponse: {
+            /** @description The value of each cell asked for, in the same order. */
+            values: components["schemas"]["ValueDto"][];
+        };
         ReorderLineItemsRequest: {
             /** @description Every line item of the module once, in the order they are to have. */
             ids: string[];
@@ -1276,6 +1370,51 @@ export interface components {
             is_instance_admin: boolean;
             name: string;
         };
+        /**
+         * @description The value of a cell, tagged with its type in `t`. A date, an item or a period that is not set
+         *     is `null`.
+         */
+        ValueDto: {
+            /** @enum {string} */
+            t: "number";
+            /** Format: double */
+            v: number;
+        } | {
+            /** @enum {string} */
+            t: "boolean";
+            v: boolean;
+        } | {
+            /** @enum {string} */
+            t: "text";
+            v: string;
+        } | {
+            /** @enum {string} */
+            t: "date";
+            /**
+             * Format: date
+             * @description A day.
+             */
+            v: string | null;
+        } | {
+            /** @enum {string} */
+            t: "item";
+            /**
+             * Format: uuid
+             * @description The id of an item of the list the line item is formatted as.
+             */
+            v: string | null;
+        } | {
+            /** @enum {string} */
+            t: "period";
+            /**
+             * @description A period of the calendar: its level and its position among the periods of that level,
+             *     counted from the start of the calendar.
+             */
+            v: [
+                "month" | "quarter" | "half_year" | "year" | "all",
+                number
+            ] | null;
+        };
         /** @description The type a formula evaluates to. */
         ValueTypeDto: {
             /** @enum {string} */
@@ -1339,6 +1478,19 @@ export interface components {
             id: string;
             name: string;
             role: components["schemas"]["WorkspaceRole"];
+        };
+        WriteCellsRequest: {
+            /** @description At most 100,000 cells. A cell edited twice takes the value of its last edit. */
+            edits: components["schemas"]["CellEditDto"][];
+        };
+        WriteCellsResponse: {
+            /** @description The line items whose cells changed: those that were written and those calculated again. */
+            changed_line_item_ids: string[];
+            /**
+             * Format: int64
+             * @description The sequence number of the change in the model's change log.
+             */
+            seq: number;
         };
     };
     responses: {
@@ -1822,6 +1974,183 @@ export interface operations {
                 };
             };
             /** @description A field is out of range, or the current period is not a month of the calendar (validation) */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    write_cells: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The model's id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WriteCellsRequest"];
+            };
+        };
+        responses: {
+            /** @description The cells were written and what depends on them was calculated again */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WriteCellsResponse"];
+                };
+            };
+            /** @description Not signed in (auth.unauthenticated) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not a workspace planner (auth.forbidden). It is also returned when the CSRF token is missing or invalid (auth.csrf). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such model, or the caller is not a member of its workspace (not_found) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description More than 100,000 edits (validation), a line item that does not exist (structure.invalid), a coordinate that fits no cell (cells.invalid_coordinate), a calculated line item (cells.not_input), or a value that does not fit its cell (cells.invalid_value; `errors` names each cell as `cells[i]`, i being its position among the edits for its line item). Nothing is written. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    cell_history: {
+        parameters: {
+            query: {
+                /** @description The line item the cell belongs to. */
+                line_item_id: string;
+                /**
+                 * @description The coordinates of the cell, one for each dimension of the line item, joined by `|`: an
+                 *     item id or version id, or a period label, whatever the case. Empty for a line item
+                 *     without dimensions.
+                 */
+                cell_key: string;
+            };
+            header?: never;
+            path: {
+                /** @description The model's id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The last 100 changes of the cell, newest first. A write that left the cell as it was is not a change. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CellChangeDto"][];
+                };
+            };
+            /** @description Not signed in (auth.unauthenticated) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such model, or the caller is not a member of its workspace (not_found) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A query parameter is missing (validation) or the line item does not exist (structure.invalid) */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    read_cells: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The model's id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReadCellsRequest"];
+            };
+        };
+        responses: {
+            /** @description The value of each cell, at the level its tokens name */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReadCellsResponse"];
+                };
+            };
+            /** @description Not signed in (auth.unauthenticated) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            403: components["responses"]["CsrfRejected"];
+            /** @description No such model, or the caller is not a member of its workspace (not_found) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description More than 10,000 cells (validation), a line item that does not exist (structure.invalid), or a token that fits no level of its dimension (cells.invalid_coordinate) */
             422: {
                 headers: {
                     [name: string]: unknown;

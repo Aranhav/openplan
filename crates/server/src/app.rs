@@ -23,6 +23,7 @@ use uuid::Uuid;
 use crate::{
     actor::ModelRegistry,
     auth::{self, csrf, rate_limit::LoginLimiter, renewal},
+    cells_api,
     config::Config,
     error::AppError,
     models, modules_api,
@@ -131,6 +132,7 @@ pub fn build_router(state: AppState) -> Router {
         .merge(models::router())
         .merge(structure_api::router())
         .merge(modules_api::router())
+        .merge(cells_api::router())
         .layer(middleware::from_fn(csrf::require_csrf));
     let api_v1: Router<AppState> = csrf_protected
         .merge(auth::routes::session_router())
