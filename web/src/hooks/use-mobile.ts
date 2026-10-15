@@ -1,7 +1,7 @@
 import * as React from "react"
 
 /** Tailwind's `md` and `lg` breakpoints, in px. */
-export const MD_BREAKPOINT = 768
+const MD_BREAKPOINT = 768
 export const LG_BREAKPOINT = 1024
 
 /** Whether the window is narrower than `breakpoint`; the sidebar's `md` unless told otherwise. */
