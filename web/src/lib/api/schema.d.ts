@@ -1992,7 +1992,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description A field is out of range, or the current period is not a month of the calendar (validation) */
+            /** @description A field is out of range, or the current period is not a month of the calendar (validation, structure.invalid) */
             422: {
                 headers: {
                     [name: string]: unknown;

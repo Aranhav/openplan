@@ -474,7 +474,7 @@ pub(crate) async fn get_structure(
         (status = 403, description = "Not a workspace builder (auth.forbidden)"),
         (status = 404, description = "No such model, or the caller is not a member of its workspace (not_found)"),
         (status = 409, description = "The model is in production mode (model.production_locked)"),
-        (status = 422, description = "A field is out of range, or the current period is not a month of the calendar (validation)"),
+        (status = 422, description = "A field is out of range, or the current period is not a month of the calendar (validation, structure.invalid)"),
     )
 )]
 pub(crate) async fn update_calendar(
