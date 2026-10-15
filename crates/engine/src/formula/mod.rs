@@ -1,19 +1,24 @@
-//! Front end of the formula language: tokens, syntax tree and parser (spec §4.1–4.2), then
-//! name resolution and type checking against the model (spec §4.3–4.5).
+//! The formula language: tokens, syntax tree and parser (spec §4.1–4.2), name resolution and
+//! type checking against the model (spec §4.3–4.5), and the evaluation of a typed formula over
+//! the cells of a line item (spec §3.6, §4.4 and §4.6).
 
+mod align;
 mod ast;
+mod eval;
 pub mod functions;
 mod lexer;
 mod parser;
 mod resolve;
 
 pub use ast::{BinOp, Expr, Modifier, ModifierKind, Name, Span, UnOp};
+pub(crate) use eval::{ColumnSource, EvalCtx, evaluate_formula};
 pub use parser::parse;
 pub use resolve::{SelectTarget, TExpr, TModifier, resolve};
 
 use crate::error::FormulaError;
 
 const SYNTAX: &str = "formula.syntax";
+const DIMENSION: &str = "formula.dimension";
 
 fn syntax_error(span: Span, message: impl Into<String>) -> FormulaError {
     FormulaError {

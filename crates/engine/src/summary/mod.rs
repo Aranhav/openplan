@@ -600,7 +600,7 @@ fn unsupported(structure: &Structure, source: &Axis, wanted: &Axis) -> EngineErr
 }
 
 /// A list followed by each list above it in the hierarchy.
-fn ancestors(structure: &Structure, list: ListId) -> Result<Vec<ListId>, EngineError> {
+pub(crate) fn ancestors(structure: &Structure, list: ListId) -> Result<Vec<ListId>, EngineError> {
     let mut chain = vec![list];
     let mut current = list_of(structure, list)?;
     while let Some(parent) = current.parent {
@@ -612,7 +612,7 @@ fn ancestors(structure: &Structure, list: ListId) -> Result<Vec<ListId>, EngineE
 
 /// Moves dense positions of list `from` up to the dense positions of their ancestors in
 /// `to`, which is above `from`.
-fn lift(
+pub(crate) fn lift(
     structure: &Structure,
     from: ListId,
     to: ListId,

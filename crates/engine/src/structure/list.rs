@@ -140,6 +140,7 @@ impl Structure {
             return Err(invalid("A list cannot have the id of a module."));
         }
         let name = check_name("list", &name, self.lists.values().map(|l| l.name.as_str()))?;
+        check_not_reserved(&name)?;
         if let Some(parent) = parent {
             if parent == id {
                 return Err(invalid("A list cannot be its own parent."));
@@ -171,14 +172,16 @@ impl Structure {
         }
         let name = name
             .map(|name| {
-                check_name(
+                let name = check_name(
                     "list",
                     &name,
                     self.lists
                         .values()
                         .filter(|list| list.id != id)
                         .map(|list| list.name.as_str()),
-                )
+                )?;
+                check_not_reserved(&name)?;
+                Ok::<_, EngineError>(name)
             })
             .transpose()?;
         let top_level_name = top_level_name
@@ -538,6 +541,17 @@ impl Structure {
             .get_mut(&id)
             .ok_or_else(|| not_found("list", id.0))
     }
+}
+
+/// The built-in dimensions are named in formulas as `Versions` and `Time`, which a list of
+/// that name would make ambiguous.
+fn check_not_reserved(name: &str) -> Result<(), EngineError> {
+    for reserved in ["Versions", "Time"] {
+        if same_name(name, reserved) {
+            return Err(invalid(format!("'{reserved}' is a reserved name.")));
+        }
+    }
+    Ok(())
 }
 
 /// Subset members must be distinct live items of the subset's list.

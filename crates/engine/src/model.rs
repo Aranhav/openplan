@@ -1,12 +1,13 @@
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use chrono::{Datelike, NaiveDate};
 
 use crate::calendar::Calendar;
 use crate::command::{CellEdit, ChangeSet, Command, CoordToken};
-use crate::error::{CellIssue, EngineError};
+use crate::error::{CellIssue, EngineError, FormulaError};
+use crate::formula::{ColumnSource, evaluate_formula};
 use crate::ids::{LineItemId, ListId, VersionId};
 use crate::shape::{Axis, Shape};
 use crate::structure::{Layout, LineItem, Structure, level_name};
@@ -14,15 +15,20 @@ use crate::summary::{LevelSpec, Summary, SummaryCache, aggregate, ratio_parts};
 use crate::value::{BLANK_DATE, BLANK_ITEM, BLANK_PERIOD, Cell, Column, Format, Value, ValueType};
 
 /// Days from 0001-01-01 (day 1 of the common era) to 1970-01-01.
-const EPOCH_DAYS_FROM_CE: i32 = 719_163;
+pub(crate) const EPOCH_DAYS_FROM_CE: i32 = 719_163;
 
 const SWITCHOVER_MESSAGE: &str = "Periods before the switchover show Actual values.";
 
-/// A planning model: its structure and the values typed into input line items.
+/// A planning model: its structure, the values typed into input line items and the values
+/// calculated for the others.
 #[derive(Clone, Debug)]
 pub struct Model {
     structure: Arc<Structure>,
     inputs: HashMap<LineItemId, Arc<Column>>,
+    /// The values of calculated line items as of the last recalculation.
+    computed: HashMap<LineItemId, Arc<Column>>,
+    /// What is wrong with the formulas of the calculated line items that have no values.
+    errors: HashMap<LineItemId, Vec<FormulaError>>,
     generation: u64,
     summaries: SummaryCache,
 }
@@ -35,6 +41,8 @@ impl Model {
         Model {
             structure: Arc::new(Structure::new(calendar)),
             inputs: HashMap::new(),
+            computed: HashMap::new(),
+            errors: HashMap::new(),
             generation: 0,
             summaries: SummaryCache::default(),
         }
@@ -76,9 +84,52 @@ impl Model {
         Ok(changes)
     }
 
+    /// Calculates every line item that has a formula, each from the values of the line items
+    /// computed before it in the order they were created, and returns the line items it
+    /// computed.
+    ///
+    /// A line item whose formula does not resolve, or cannot be aligned with the line items it
+    /// reads, gets blank values and the problems in [`Model::line_item_errors`].
+    pub fn recalc_all(&mut self) -> Result<ChangeSet, EngineError> {
+        let structure = Arc::clone(&self.structure);
+        let mut working = Working {
+            structure: &structure,
+            inputs: &self.inputs,
+            computed: HashMap::new(),
+            rolled_up: Mutex::default(),
+        };
+        let mut errors = HashMap::new();
+        let mut changes = self.empty_change_set();
+        for line_item in structure.line_items().filter(|li| li.formula.is_some()) {
+            let layout = structure.layout(line_item)?;
+            let shape = structure.shape_of(&layout)?;
+            let column = evaluate_formula(&structure, &working, line_item, &layout, &shape)
+                .unwrap_or_else(|problems| {
+                    errors.insert(line_item.id, problems);
+                    Column::new_blank(&line_item.format.value_type(), shape.size())
+                });
+            working.insert(line_item.id, column);
+            changes.note(line_item.id);
+        }
+        let Working { computed, .. } = working;
+        self.computed = computed;
+        self.errors = errors;
+        self.generation += 1;
+        changes.generation = self.generation;
+        self.summaries.record(&self.structure, &changes);
+        Ok(changes)
+    }
+
+    /// What is wrong with the formula of a calculated line item that has no values because of
+    /// it, as of the last recalculation.
+    pub fn line_item_errors(&self, li: LineItemId) -> Option<&[FormulaError]> {
+        self.errors.get(&li).map(Vec::as_slice)
+    }
+
     /// Reads leaf cells of a line item, each addressed by one token per axis.
     ///
-    /// A calculated line item has no stored values yet and reads as blank.
+    /// A calculated line item reads as blank until [`Model::recalc_all`] has computed it, and
+    /// shows the values of the last recalculation, not of the edits made since.
     pub fn read_cells(
         &self,
         li: LineItemId,
@@ -91,7 +142,7 @@ impl Model {
         let layout = self.structure.layout(line_item)?;
         let shape = self.structure.shape_of(&layout)?;
         let ty = line_item.format.value_type();
-        let column = self.inputs.get(&li);
+        let column = self.inputs.get(&li).or_else(|| self.computed.get(&li));
         coords
             .iter()
             .enumerate()
@@ -195,9 +246,14 @@ impl Model {
         Ok(summary)
     }
 
-    /// The stored cells of a line item over `shape`; blank for a calculated line item.
+    /// The cells of a line item over `shape`, typed in or calculated; blank for a calculated
+    /// line item that has not been computed.
     fn stored_column(&self, line_item: &LineItem, shape: &Shape) -> Arc<Column> {
-        self.inputs.get(&line_item.id).map_or_else(
+        let column = self
+            .inputs
+            .get(&line_item.id)
+            .or_else(|| self.computed.get(&line_item.id));
+        column.map_or_else(
             || {
                 Arc::new(Column::new_blank(
                     &line_item.format.value_type(),
@@ -210,18 +266,7 @@ impl Model {
 
     /// The cells of a ratio part, which must be laid out like the ratio's own.
     fn part_column(&self, id: LineItemId, shape: &Shape) -> Result<Arc<Column>, EngineError> {
-        let part = self
-            .structure
-            .line_item(id)
-            .ok_or_else(|| missing_line_item(id))?;
-        if self.structure.line_item_shape(id)? != *shape {
-            return Err(EngineError::Invalid {
-                message: format!(
-                    "Ratio part '{}' must have the same dimensions as the line item that divides it.",
-                    part.name
-                ),
-            });
-        }
+        let part = ratio_part(&self.structure, id, shape)?;
         Ok(self.stored_column(part, shape))
     }
 
@@ -284,6 +329,21 @@ impl Model {
         changes: &mut ChangeSet,
     ) -> Result<(), EngineError> {
         let new = Arc::clone(&self.structure);
+        let stale: Vec<LineItemId> = self
+            .computed
+            .iter()
+            .filter(|(id, column)| {
+                !new.line_item(**id)
+                    .is_some_and(|li| li.formula.is_some() && fits(&new, li, column))
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in stale {
+            self.computed.remove(&id);
+            changes.note(id);
+        }
+        self.errors
+            .retain(|id, _| new.line_item(*id).is_some_and(|li| li.formula.is_some()));
         let time_changed = old.calendar.years != new.calendar.years
             || old.calendar.fiscal_year_start_month != new.calendar.fiscal_year_start_month;
         for line_item in old.line_items().filter(|li| new.line_item(li.id).is_none()) {
@@ -433,6 +493,137 @@ fn missing_line_item(id: LineItemId) -> EngineError {
     }
 }
 
+/// Whether a calculated column still has the type and the number of cells its line item calls
+/// for.
+fn fits(structure: &Structure, line_item: &LineItem, column: &Column) -> bool {
+    let kind_fits = matches!(
+        (column, line_item.format.value_type()),
+        (Column::Number(_), ValueType::Number)
+            | (Column::Boolean(_), ValueType::Boolean)
+            | (Column::Text(_), ValueType::Text)
+            | (Column::Date(_), ValueType::Date)
+            | (Column::Item(_), ValueType::Item(_))
+            | (Column::Period(_), ValueType::Period(_))
+    );
+    kind_fits
+        && structure
+            .line_item_shape(line_item.id)
+            .is_ok_and(|shape| shape.size() == column.len())
+}
+
+/// The part of a ratio summary with id `id`, which must be laid out over `shape`.
+fn ratio_part<'a>(
+    structure: &'a Structure,
+    id: LineItemId,
+    shape: &Shape,
+) -> Result<&'a LineItem, EngineError> {
+    let part = structure
+        .line_item(id)
+        .ok_or_else(|| missing_line_item(id))?;
+    if structure.line_item_shape(id)? != *shape {
+        return Err(EngineError::Invalid {
+            message: format!(
+                "Ratio part '{}' must have the same dimensions as the line item that divides it.",
+                part.name
+            ),
+        });
+    }
+    Ok(part)
+}
+
+/// The values a recalculation reads: the cells typed into input line items and the calculated
+/// ones computed so far. Calculated line items are read straight from here, never through the
+/// summary cache, which holds the values of the last recalculation.
+struct Working<'a> {
+    structure: &'a Structure,
+    inputs: &'a HashMap<LineItemId, Arc<Column>>,
+    computed: HashMap<LineItemId, Arc<Column>>,
+    /// Line items rolled up to the levels that formulas have asked for.
+    rolled_up: Mutex<HashMap<(LineItemId, LevelSpec), Arc<Summary>>>,
+}
+
+impl Working<'_> {
+    /// Records the values of a calculated line item and forgets the roll-ups that used its
+    /// earlier values.
+    fn insert(&mut self, id: LineItemId, column: Column) {
+        self.computed.insert(id, Arc::new(column));
+        let structure = self.structure;
+        let uses = |rolled: &LineItemId| {
+            structure
+                .line_item(*rolled)
+                .and_then(|li| ratio_parts(li).ok().flatten())
+                .is_some_and(|(numerator, denominator)| numerator == id || denominator == id)
+        };
+        self.rolled_up
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|(rolled, _), _| *rolled != id && !uses(rolled));
+    }
+}
+
+impl ColumnSource for Working<'_> {
+    fn column(&self, id: LineItemId) -> Result<Arc<Column>, EngineError> {
+        if let Some(column) = self.inputs.get(&id).or_else(|| self.computed.get(&id)) {
+            return Ok(Arc::clone(column));
+        }
+        let line_item = self
+            .structure
+            .line_item(id)
+            .ok_or_else(|| missing_line_item(id))?;
+        let shape = self.structure.line_item_shape(id)?;
+        Ok(Arc::new(Column::new_blank(
+            &line_item.format.value_type(),
+            shape.size(),
+        )))
+    }
+
+    fn aggregated(&self, id: LineItemId, levels: &LevelSpec) -> Result<Arc<Summary>, EngineError> {
+        let key = (id, levels.clone());
+        let cached = |rolled_up: &HashMap<_, Arc<Summary>>| rolled_up.get(&key).map(Arc::clone);
+        if let Some(found) = cached(
+            &self
+                .rolled_up
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        ) {
+            return Ok(found);
+        }
+        let line_item = self
+            .structure
+            .line_item(id)
+            .ok_or_else(|| missing_line_item(id))?;
+        let shape = self.structure.line_item_shape(id)?;
+        let src = self.column(id)?;
+        let parts = ratio_parts(line_item)?
+            .map(|(numerator, denominator)| {
+                ratio_part(self.structure, numerator, &shape)?;
+                ratio_part(self.structure, denominator, &shape)?;
+                Ok::<_, EngineError>((self.column(numerator)?, self.column(denominator)?))
+            })
+            .transpose()?;
+        let time_method = line_item
+            .time_summary
+            .as_ref()
+            .unwrap_or(&line_item.summary);
+        let rolled = Arc::new(aggregate(
+            self.structure,
+            &shape,
+            &src,
+            &line_item.summary,
+            time_method,
+            levels,
+            parts
+                .as_ref()
+                .map(|(numerator, denominator)| (&**numerator, &**denominator)),
+        )?);
+        self.rolled_up
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(key, Arc::clone(&rolled));
+        Ok(rolled)
+    }
+}
+
 /// For one axis: where each position of the old layout lands in the new one.
 struct AxisMap {
     positions: Vec<Option<u32>>,
@@ -489,7 +680,7 @@ impl<'a> AxisMaps<'a> {
 }
 
 /// Converts a submitted value into the storage form of a cell of type `ty`.
-fn encode(structure: &Structure, ty: &ValueType, value: &Value) -> Result<Cell, String> {
+pub(crate) fn encode(structure: &Structure, ty: &ValueType, value: &Value) -> Result<Cell, String> {
     match (ty, value) {
         (ValueType::Number, Value::Number(number)) if number.is_finite() => {
             Ok(Cell::Number(*number))

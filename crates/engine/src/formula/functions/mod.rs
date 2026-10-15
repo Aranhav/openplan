@@ -1,9 +1,15 @@
 //! The built-in functions of the formula language (spec §4.5): names, arities, argument and
-//! result types, and the one-line documentation the editor shows. Evaluating a function is
-//! done elsewhere; this module only says which calls are valid and what they return.
+//! result types, and the one-line documentation the editor shows, and the evaluation of the
+//! calls that have an implementation.
 
+use crate::error::EngineError;
+use crate::shape::Shape;
 use crate::structure::same_name;
+use crate::value::Column;
 
+use super::{EvalCtx, TExpr};
+
+mod dimension;
 mod rules;
 
 pub use rules::Word;
@@ -603,4 +609,21 @@ pub fn lookup(name: &str) -> Option<FuncId> {
     DEFS.iter()
         .position(|def| same_name(def.name, name))
         .map(|position| FuncId::ALL[position])
+}
+
+/// Evaluates a call of `func` with the argument expressions `args` for the target cells at the
+/// linear indices `idx` of `target`.
+pub(crate) fn eval_fn(
+    func: FuncId,
+    ctx: &EvalCtx,
+    target: &Shape,
+    args: &[TExpr],
+    idx: &[usize],
+) -> Result<Column, EngineError> {
+    match func {
+        FuncId::Item => dimension::eval_item(ctx, target, args, idx),
+        other => Err(EngineError::Invalid {
+            message: format!("Function {} is not available yet.", other.def().name),
+        }),
+    }
 }

@@ -341,6 +341,46 @@ fn the_id_of_the_versions_dimension_is_reserved() {
 }
 
 #[test]
+fn versions_and_time_are_reserved_list_names() {
+    let mut model = model();
+    let existing = new_list(&mut model, "Products");
+    let before = snapshot(&model);
+    let create = |name: &str| Command::CreateList {
+        id: ListId::new(),
+        name: name.to_string(),
+        parent: None,
+        top_level_name: None,
+        numbered: false,
+        production_data: false,
+    };
+    for (name, message) in [
+        ("Versions", "'Versions' is a reserved name."),
+        ("  versions ", "'Versions' is a reserved name."),
+        ("TIME", "'Time' is a reserved name."),
+        ("time", "'Time' is a reserved name."),
+    ] {
+        let created = model.apply(create(name)).unwrap_err();
+        assert_eq!(created.code(), "structure.invalid", "{name}");
+        assert_eq!(created.to_string(), message, "{name}");
+        let renamed = model
+            .apply(Command::UpdateList {
+                id: existing,
+                name: Some(name.to_string()),
+                top_level_name: None,
+                production_data: None,
+                selective_access: None,
+            })
+            .unwrap_err();
+        assert_eq!(renamed.code(), "structure.invalid", "{name}");
+        assert_eq!(renamed.to_string(), message, "{name}");
+    }
+    assert_eq!(snapshot(&model), before);
+    // Names that merely contain the reserved words are fine.
+    new_list(&mut model, "Time Zones");
+    new_list(&mut model, "Versions Archive");
+}
+
+#[test]
 fn upsert_updates_existing_items_and_appends_new_ones_in_order() {
     let mut model = model();
     let products = new_list(&mut model, "Products");
