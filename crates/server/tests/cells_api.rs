@@ -875,6 +875,9 @@ async fn history_returns_changes(pool: PgPool) {
     assert_eq!(nothing.json, json!([]));
     let elsewhere = history(&mut planner, &id, &model.price, &key).await;
     assert_eq!(elsewhere.json, json!([]));
+    let unknown = history(&mut planner, &id, &model.units, "not|a|cell|key").await;
+    assert_eq!(unknown.status, StatusCode::OK, "{}", unknown.text);
+    assert_eq!(unknown.json, json!([]));
 
     // The change of a user who is gone is still there.
     sqlx::query("UPDATE change_log SET user_id = NULL WHERE kind = 'cell' AND user_id = $1")

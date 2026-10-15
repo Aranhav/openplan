@@ -424,3 +424,43 @@ pub(crate) async fn cell_history(
     .await?;
     Ok(Json(rows.into_iter().map(CellChangeDto::from).collect()))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+
+    #[test]
+    fn values_serialize_exactly_as_the_engine_writes_them_and_read_back() {
+        let values = [
+            Value::Number(1.5),
+            Value::Boolean(true),
+            Value::Text(Arc::from("Ship it")),
+            Value::Date(NaiveDate::from_ymd_opt(2026, 3, 15)),
+            Value::Date(None),
+            Value::Item(Some(ItemId::new())),
+            Value::Item(None),
+            Value::Period(Some((TimeLevel::HalfYear, 3))),
+            Value::Period(None),
+        ];
+        for value in values {
+            let written = serde_json::to_value(&value).unwrap();
+
+            assert_eq!(
+                serde_json::to_value(ValueDto::from(&value)).unwrap(),
+                written
+            );
+            let read: ValueDto = serde_json::from_value(written).unwrap();
+            assert_eq!(Value::from(read), value);
+        }
+    }
+
+    #[test]
+    fn a_part_of_a_cell_key_is_an_id_or_a_period_label() {
+        let id = Uuid::now_v7();
+
+        assert_eq!(token_of(&id.to_string()), CoordToken::Item(ItemId(id)));
+        assert_eq!(token_of("jan 26"), CoordToken::Period("jan 26".to_string()));
+    }
+}
