@@ -421,6 +421,30 @@ fn round_of_large_numbers_is_exact() {
 }
 
 #[test]
+fn round_of_large_numbers_is_the_nearest_double_of_the_decimal() {
+    let mut book = Book::new();
+    // Scaled by 10^6 this is past 2^52, but the fraction is still there to round.
+    assert_eq!(
+        book.numbers("ROUND(5728547987.8965435, 6)", 1),
+        [5728547987.896544]
+    );
+    assert_eq!(
+        book.numbers("ROUND(450359962737049.75, 1)", 1),
+        [450359962737049.8]
+    );
+    assert_eq!(
+        book.numbers("ROUND(450359962737049.75, 1, DOWN)", 1),
+        [450359962737049.7]
+    );
+    // 450359962737051136 is 450359962737051100 to the hundred, and the nearest double to that is
+    // 450359962737051072.
+    assert_eq!(
+        book.numbers("ROUND(450359962737051136, -2)", 1),
+        [450359962737051072.0]
+    );
+}
+
+#[test]
 fn mod_takes_the_sign_of_the_divisor() {
     let mut book = Book::new();
     book.numbers_in("A", &[7.0, -7.0, 7.0, -7.0, 5.5, 5.0, 0.0]);

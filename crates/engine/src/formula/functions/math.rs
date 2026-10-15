@@ -140,54 +140,158 @@ pub(super) fn eval_round(
         _ => return Err(mismatch()),
     };
     let values = eval_args(ctx, target, [x, places], idx)?;
-    match mode {
-        Word::Up => map2(&values, |x, places| {
-            round(x, places, |scaled| scaled.abs().ceil().copysign(scaled))
-        }),
-        Word::Down => map2(&values, |x, places| round(x, places, f64::trunc)),
-        _ => map2(&values, |x, places| round(x, places, f64::round)),
-    }
+    map2(&values, |x, places| round(x, places, mode))
 }
 
-/// Scaled numbers from 2^52 up are whole numbers already, since the spacing of numbers there is 1.
+/// From 2^52 up a number is whole already, since the spacing of numbers there is 1.
 const WHOLE_FROM: f64 = (1u64 << 52) as f64;
 
-/// Scaled numbers from 2^50 up are not snapped by [`settle`]: there the spacing of numbers is a
-/// quarter, too coarse to tell a fraction from the representation error of scaling.
+/// From 2^50 up a number is not snapped by [`settle`]: there the spacing of numbers is a quarter,
+/// too coarse to tell a half from the representation error of a computed number.
 const SNAP_BELOW: f64 = (1u64 << 50) as f64;
 
-/// `x` rounded to `places` decimals, where `whole` rounds a scaled number to a whole one. A
-/// scaled number with nothing to round is `x` itself, so that no round trip through scaling
-/// changes it.
-fn round(x: f64, places: f64, whole: impl Fn(f64) -> f64) -> f64 {
+/// `x` rounded to `places` decimals in `mode`. Rounding to a whole number works on `x` itself;
+/// any other number is rounded on the decimal digits it is written with (see [`round_decimal`]).
+fn round(x: f64, places: f64, mode: Word) -> f64 {
     let places = places.trunc().clamp(-400.0, 400.0) as i32;
-    let factor = 10f64.powi(places.abs());
-    let scaled = if places >= 0 { x * factor } else { x / factor };
-    if !scaled.is_finite() || scaled.abs() >= WHOLE_FROM {
-        return x;
-    }
-    let rounded = whole(settle(scaled));
-    if places >= 0 {
-        rounded / factor
+    if places == 0 {
+        round_whole(x, mode)
     } else {
-        rounded * factor
+        round_decimal(x, places, mode)
     }
 }
 
-/// A scaled number without the representation error of scaling: one within four units in the
-/// last place of a whole or half number is that number. `1.005 * 100` is `100.49999999999999`
-/// and `12.35 * 100` is `1235.0000000000002`, but they are the numbers typed, and they round
-/// as such. Above `SNAP_BELOW` the number is kept as it is.
-fn settle(scaled: f64) -> f64 {
-    let magnitude = scaled.abs();
-    if magnitude >= SNAP_BELOW {
-        return scaled;
+/// `x` rounded to a whole number in `mode`.
+fn round_whole(x: f64, mode: Word) -> f64 {
+    if !x.is_finite() || x.abs() >= WHOLE_FROM {
+        return x;
     }
-    let half = (scaled * 2.0).round() / 2.0;
+    let settled = settle(x);
+    match mode {
+        Word::Up => settled.abs().ceil().copysign(settled),
+        Word::Down => settled.trunc(),
+        _ => settled.round(),
+    }
+}
+
+/// A number within four units in the last place of a whole or half number is taken as that
+/// number, so that a computed `2.4999999999999996` rounds to a whole number as `2.5` does. From
+/// `SNAP_BELOW` up the number is kept as it is.
+fn settle(x: f64) -> f64 {
+    let magnitude = x.abs();
+    if magnitude >= SNAP_BELOW {
+        return x;
+    }
+    let half = (x * 2.0).round() / 2.0;
     let ulp = f64::from_bits(magnitude.to_bits() + 1) - magnitude;
-    if (scaled - half).abs() <= 4.0 * ulp {
+    if (x - half).abs() <= 4.0 * ulp {
         half
     } else {
-        scaled
+        x
     }
+}
+
+/// `x` rounded to `places` decimals (negative to the left of the point) in `mode`, on the decimal
+/// digits that `x` is written with: the shortest decimal that reads back as `x`, which is the
+/// number as it was typed. The result is the double nearest to the decimal that comes out.
+fn round_decimal(x: f64, places: i32, mode: Word) -> f64 {
+    if !x.is_finite() {
+        return x;
+    }
+    let written = format!("{}", x.abs());
+    let (whole, fraction) = written.split_once('.').unwrap_or((&written, ""));
+    let mut digits: Vec<u8> = whole
+        .bytes()
+        .chain(fraction.bytes())
+        .map(|byte| byte - b'0')
+        .collect();
+    // `point` counts the digits before the decimal point, and `kept` the digits that stay.
+    let mut point = whole.len() as i64;
+    let kept = point + i64::from(places);
+    if kept >= digits.len() as i64 {
+        return x;
+    }
+    let kept = if kept < 0 {
+        // The rounding place is beyond every digit, so zeros stand in for the digits before it.
+        digits.splice(0..0, std::iter::repeat_n(0, kept.unsigned_abs() as usize));
+        point -= kept;
+        0
+    } else {
+        kept as usize
+    };
+    let away = rounds_up(&digits[kept..], places, x.abs(), mode);
+    digits.truncate(kept);
+    if away {
+        point += add_one(&mut digits);
+    }
+    let text = if point <= 0 {
+        format!("0.{}{}", "0".repeat((-point) as usize), digit_text(&digits))
+    } else if point as usize >= digits.len() {
+        format!(
+            "{}{}",
+            digit_text(&digits),
+            "0".repeat(point as usize - digits.len())
+        )
+    } else {
+        let (integer, fraction) = digits.split_at(point as usize);
+        format!("{}.{}", digit_text(integer), digit_text(fraction))
+    };
+    let value: f64 = text.parse().unwrap_or(0.0);
+    if x < 0.0 { -value } else { value }
+}
+
+/// The shortest run of zeros or nines that marks representation error: a computed number lies
+/// just above a place with a run of zeros after it, or just below one with a run of nines.
+const ERROR_RUN: usize = 10;
+
+/// Whether the `dropped` digits after the last kept place take that place up by one, in `mode`.
+/// A remainder within four units in the last place of `magnitude`, with a run of at least
+/// [`ERROR_RUN`] zeros or nines after the place, is representation error: no remainder, or the
+/// whole place, so that a computed `0.30000000000000004` is 0.3. Otherwise the digits are rounded
+/// as written. The test only applies where the place is more than eight units in the last place
+/// apart.
+fn rounds_up(dropped: &[u8], places: i32, magnitude: f64, mode: Word) -> bool {
+    let unit = 10f64.powi(-places);
+    let ulp = f64::from_bits(magnitude.to_bits() + 1) - magnitude;
+    let lead = dropped.first().copied().unwrap_or(0);
+    let run = dropped.iter().take_while(|&&digit| digit == lead).count();
+    if unit.is_finite() && 8.0 * ulp < unit && run >= ERROR_RUN && (lead == 0 || lead == 9) {
+        let remainder = format!("0.{}", digit_text(dropped))
+            .parse::<f64>()
+            .unwrap_or(0.0)
+            * unit;
+        if lead == 0 && remainder <= 4.0 * ulp {
+            return false;
+        }
+        if lead == 9 && unit - remainder <= 4.0 * ulp {
+            return true;
+        }
+    }
+    match mode {
+        Word::Up => dropped.iter().any(|&digit| digit != 0),
+        Word::Down => false,
+        _ => dropped.first().is_some_and(|&digit| digit >= 5),
+    }
+}
+
+/// Adds one to the last of `digits`, carrying as far as needed. Returns 1 when the carry makes a
+/// new digit in front, which moves the decimal point along by one.
+fn add_one(digits: &mut Vec<u8>) -> i64 {
+    for digit in digits.iter_mut().rev() {
+        if *digit < 9 {
+            *digit += 1;
+            return 0;
+        }
+        *digit = 0;
+    }
+    digits.insert(0, 1);
+    1
+}
+
+/// The digits as text.
+fn digit_text(digits: &[u8]) -> String {
+    digits
+        .iter()
+        .map(|&digit| char::from(b'0' + digit))
+        .collect()
 }
