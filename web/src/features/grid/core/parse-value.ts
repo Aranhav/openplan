@@ -6,7 +6,8 @@ import type { Format, PeriodLevel, Value } from "./types"
 
 /**
  * What entries can name. Item ids are by lower-cased name and by lower-cased code, for a list
- * format's list; periods are by lower-cased label ("jan 26", "q1 fy26", "total").
+ * format's list; periods are by lower-cased label ("jan 26", "q1 fy26", "total") for every
+ * level of the timeline, and a time period format takes the labels of its own level.
  */
 export type ParseContext = {
   itemsByName: Map<string, string>
@@ -48,7 +49,7 @@ export function parseInput(raw: string, format: Format, ctx: ParseContext): Pars
     case "list":
       return parseItem(raw, ctx)
     case "time_period":
-      return parsePeriod(raw, ctx)
+      return parsePeriod(raw, format.level, ctx)
   }
 }
 
@@ -231,7 +232,16 @@ function parseItem(raw: string, ctx: ParseContext): ParseResult {
   return ok({ t: "item", v: id })
 }
 
-function parsePeriod(raw: string, ctx: ParseContext): ParseResult {
+const LEVEL_NAMES: Record<PeriodLevel, string> = {
+  month: "month",
+  quarter: "quarter",
+  half_year: "half year",
+  year: "year",
+  all: "total",
+}
+
+/** A time period cell holds one level only, so a label of another level is refused. */
+function parsePeriod(raw: string, level: PeriodLevel, ctx: ParseContext): ParseResult {
   const entry = raw.trim()
   if (entry === "") {
     return ok({ t: "period", v: null })
@@ -239,6 +249,9 @@ function parsePeriod(raw: string, ctx: ParseContext): ParseResult {
   const period = ctx.periodsByLabel.get(entry.toLowerCase())
   if (period === undefined) {
     return refuse(`${quoted(entry)} isn't a period of this timeline.`)
+  }
+  if (period[0] !== level) {
+    return refuse(`${quoted(entry)} isn't a ${LEVEL_NAMES[level]}.`)
   }
   return ok({ t: "period", v: [period[0], period[1]] })
 }

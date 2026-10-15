@@ -20,6 +20,7 @@ const ctx: ParseContext = {
     ["jan 26", ["month", 0]],
     ["feb 26", ["month", 1]],
     ["q1 fy26", ["quarter", 0]],
+    ["h1 fy26", ["half_year", 0]],
     ["fy26", ["year", 0]],
     ["total", ["all", 0]],
   ]),
@@ -418,19 +419,27 @@ describe("parseInput time periods", () => {
     })
   })
 
-  it("finds a period of any level", () => {
-    expect(parseInput("Q1 FY26", format, ctx)).toEqual({
-      ok: true,
-      value: { t: "period", v: ["quarter", 0] },
-    })
-    expect(parseInput("FY26", format, ctx)).toEqual({
-      ok: true,
-      value: { t: "period", v: ["year", 0] },
-    })
-    expect(parseInput("Total", format, ctx)).toEqual({
-      ok: true,
-      value: { t: "period", v: ["all", 0] },
-    })
+  it("accepts a label of the format's own level", () => {
+    const cases: [PeriodLevel, string, Value][] = [
+      ["quarter", "Q1 FY26", { t: "period", v: ["quarter", 0] }],
+      ["half_year", "H1 FY26", { t: "period", v: ["half_year", 0] }],
+      ["year", "FY26", { t: "period", v: ["year", 0] }],
+      ["all", "Total", { t: "period", v: ["all", 0] }],
+    ]
+    for (const [level, label, value] of cases) {
+      expect(parseInput(label, { type: "time_period", level }, ctx)).toEqual({ ok: true, value })
+    }
+  })
+
+  it("refuses a label of another level and says what the cell takes", () => {
+    expect(messageOf("Q1 FY26", format)).toBe("'Q1 FY26' isn't a month.")
+    expect(messageOf("FY26", format)).toBe("'FY26' isn't a month.")
+    expect(messageOf("Total", format)).toBe("'Total' isn't a month.")
+    const level = (name: PeriodLevel): Format => ({ type: "time_period", level: name })
+    expect(messageOf("Jan 26", level("quarter"))).toBe("'Jan 26' isn't a quarter.")
+    expect(messageOf("Jan 26", level("half_year"))).toBe("'Jan 26' isn't a half year.")
+    expect(messageOf("Jan 26", level("year"))).toBe("'Jan 26' isn't a year.")
+    expect(messageOf("Jan 26", level("all"))).toBe("'Jan 26' isn't a total.")
   })
 
   it("ignores spaces around the label", () => {
@@ -454,9 +463,12 @@ describe("parseInput time periods", () => {
     expect(parseInput("  ", format, ctx)).toEqual({ ok: true, value: { t: "period", v: null } })
   })
 
-  it("refuses a label that is not on the timeline", () => {
+  it("refuses a label that is not on the timeline, whatever the level", () => {
     expect(messageOf("Foo", format)).toBe("'Foo' isn't a period of this timeline.")
     expect(messageOf("Mar 26", format)).toBe("'Mar 26' isn't a period of this timeline.")
+    expect(messageOf("Foo", { type: "time_period", level: "year" })).toBe(
+      "'Foo' isn't a period of this timeline.",
+    )
   })
 })
 
