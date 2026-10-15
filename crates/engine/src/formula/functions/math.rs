@@ -146,9 +146,10 @@ pub(super) fn eval_round(
 /// From 2^52 up a number is whole already, so ROUND to a place of 0 or more leaves it as it is.
 const WHOLE_FROM: f64 = (1u64 << 52) as f64;
 
-/// `x` rounded to `places` decimals (negative to the left of the point) in `mode`, on the decimal
-/// that [`decimal_digits`] gives for `x`. The result is the double nearest to the decimal that
-/// comes out.
+/// `x` rounded to `places` decimals (negative to the left of the point) in `mode`. The fast path
+/// [`round_scaled`] answers where it is exact, and [`round_decimal`] everywhere else. Both round the
+/// decimal that [`decimal_digits`] gives for `x`, and the result is the double nearest to the
+/// decimal that comes out.
 fn round(x: f64, places: f64, mode: Word) -> f64 {
     if !x.is_finite() {
         return x;
@@ -157,6 +158,48 @@ fn round(x: f64, places: f64, mode: Word) -> f64 {
     if places >= 0 && x.abs() >= WHOLE_FROM {
         return x;
     }
+    round_scaled(x, places, mode).unwrap_or_else(|| round_decimal(x, places, mode))
+}
+
+/// The fast path of [`round`] for places from 0 to 15, where `10^places` is exact. `x` is scaled
+/// in floating point, rounded to a whole number and divided back. That agrees with the decimal
+/// path unless the scaled number lies within eight units in its last place of a rounding boundary:
+/// the half for NEAREST, and the whole numbers for UP and DOWN. The scaling and the digits that the
+/// decimal path takes can each move the number that far, so such numbers, and scaled numbers of
+/// 2^52 or more, return `None` and take the decimal path.
+fn round_scaled(x: f64, places: i64, mode: Word) -> Option<f64> {
+    if !(0..=15).contains(&places) {
+        return None;
+    }
+    let scale = 10f64.powi(places as i32);
+    let scaled = x.abs() * scale;
+    if scaled >= WHOLE_FROM {
+        return None;
+    }
+    let whole = scaled.floor();
+    let fraction = scaled - whole;
+    let ulp = f64::from_bits(scaled.to_bits() + 1) - scaled;
+    let tolerance = (8.0 * ulp).max(1e-9);
+    let near_boundary = match mode {
+        Word::Up | Word::Down => fraction < tolerance || 1.0 - fraction < tolerance,
+        _ => (fraction - 0.5).abs() < tolerance,
+    };
+    if near_boundary {
+        return None;
+    }
+    let units = match mode {
+        Word::Up => whole + 1.0,
+        Word::Down => whole,
+        _ if fraction > 0.5 => whole + 1.0,
+        _ => whole,
+    };
+    let value = units / scale;
+    Some(if x < 0.0 { -value } else { value })
+}
+
+/// `x` rounded to `places` decimals in `mode` on the decimal digits of `x` (see
+/// [`decimal_digits`]), and the result is the double nearest to the decimal that comes out.
+fn round_decimal(x: f64, places: i64, mode: Word) -> f64 {
     let (mut digits, mut point) = decimal_digits(x.abs());
     // `keep` digits stay: the rounding place is `places` places from the point.
     let keep = point + places;
@@ -238,4 +281,60 @@ fn digit_text(digits: &[u8]) -> String {
         .iter()
         .map(|&digit| char::from(b'0' + digit))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Word, round, round_decimal, round_scaled};
+
+    /// Scaled by 100 this is 1.9e15, where a product can be off by a quarter of a unit, so the fast
+    /// path leaves it to the decimal path.
+    #[test]
+    fn round_leaves_large_scaled_numbers_to_the_decimal_path() {
+        assert!(round_scaled(-18_973_917_696_423.1, 2, Word::Nearest).is_none());
+        assert_eq!(
+            round(-18_973_917_696_423.1, 2.0, Word::Nearest),
+            -18_973_917_696_423.1
+        );
+    }
+
+    /// The fast path and the decimal path agree on 100,000 values from a seeded generator, across
+    /// places 0 to 6 and all three modes. Half of the values are decimals of at most 15 digits, so
+    /// they sit on rounding ties.
+    #[test]
+    fn round_fast_path_matches_the_decimal_path() {
+        let mut state: u64 = 0x2545_F491_4F6C_DD1D;
+        let mut next = move || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            state >> 11
+        };
+        let modes = [Word::Nearest, Word::Up, Word::Down];
+        let mut fast = 0;
+        for i in 0..100_000 {
+            let magnitude = if i % 2 == 0 {
+                let digits = (next() % 1_000_000_000_000_000) as f64;
+                digits / 10f64.powi((next() % 9) as i32)
+            } else {
+                (next() as f64 / (1u64 << 53) as f64) * 10f64.powi((next() % 21) as i32 - 6)
+            };
+            let x = if next() % 2 == 0 {
+                magnitude
+            } else {
+                -magnitude
+            };
+            let places = (i % 7) as i64;
+            let mode = modes[(next() % 3) as usize];
+            if let Some(value) = round_scaled(x, places, mode) {
+                fast += 1;
+                assert_eq!(
+                    value,
+                    round_decimal(x, places, mode),
+                    "{x:e} at {places} places"
+                );
+            }
+        }
+        assert!(fast > 50_000, "the fast path answered only {fast} values");
+    }
 }
