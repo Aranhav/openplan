@@ -93,6 +93,7 @@ describe("the users page", () => {
     expect(first.getByText("(you)")).toBeVisible()
     const second = await rowOf("Grace Hopper")
     expect(second.queryByText("Instance admin")).not.toBeInTheDocument()
+    expect(second.getAllByText("Member")).toHaveLength(2)
     expect(second.getAllByText("Active")).toHaveLength(2)
     expect((await rowOf("Alan Turing")).getAllByText("Disabled")).toHaveLength(2)
   })

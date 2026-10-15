@@ -75,7 +75,8 @@ function Breadcrumbs() {
     return <Crumbs parent={parent} page={name} />
   }
   const page = routeId && WORKSPACE_PAGES[routeId]
-  return page ? <Crumbs parent={parent} page={page} /> : null
+  // Without a workspace, the address names one the user is not in, and the page says so.
+  return page && workspace ? <Crumbs parent={parent} page={page} /> : null
 }
 
 /** The workspace stays in view on a phone, where the sidebar is tucked away; its width is capped so the page keeps room. */

@@ -1,6 +1,7 @@
 import { Outlet, createFileRoute, redirect } from "@tanstack/react-router"
 import { AppSidebar } from "@/components/app-sidebar"
 import { SiteHeader } from "@/components/site-header"
+import { SkipLink } from "@/components/skip-link"
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
 import { meQuery, setupStatusQuery } from "@/features/auth/api"
 import { loginSearch } from "@/features/auth/redirect"
@@ -24,12 +25,15 @@ export const Route = createFileRoute("/_app")({
   component: AppLayout,
 })
 
+const MAIN_ID = "main"
+
 function AppLayout() {
   // The sidebar provider saves its state in a cookie; reading it back keeps a collapsed sidebar collapsed.
   return (
     <SidebarProvider defaultOpen={!document.cookie.includes("sidebar_state=false")}>
+      <SkipLink targetId={MAIN_ID} />
       <AppSidebar />
-      <SidebarInset className="min-w-0">
+      <SidebarInset id={MAIN_ID} tabIndex={-1} className="min-w-0 outline-none">
         <SiteHeader />
         <div className="flex-1 p-4 md:p-6">
           <Outlet />

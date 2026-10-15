@@ -148,7 +148,11 @@ export function UsersTable({ users }: { users: UserDto[] }) {
 }
 
 function RoleBadge({ user }: { user: UserDto }) {
-  return user.is_instance_admin ? <Badge>Instance admin</Badge> : null
+  return user.is_instance_admin ? (
+    <Badge>Instance admin</Badge>
+  ) : (
+    <Badge variant="outline">Member</Badge>
+  )
 }
 
 function StatusBadge({ user }: { user: UserDto }) {

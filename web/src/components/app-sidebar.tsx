@@ -50,66 +50,68 @@ export function AppSidebar(props: ComponentProps<typeof Sidebar>) {
         <WorkspaceSwitcher />
       </SidebarHeader>
       <SidebarContent>
-        {(workspace || isLoading) && (
-          <SidebarGroup>
-            <SidebarGroupLabel>Workspace</SidebarGroupLabel>
-            <SidebarGroupContent>
-              <SidebarMenu>
-                {workspace ? (
-                  <>
-                    <SidebarMenuItem>
-                      <SidebarMenuButton asChild tooltip="Models" isActive={Boolean(onModels)}>
-                        <Link
-                          to="/w/$workspaceId"
-                          params={{ workspaceId: workspace.id }}
-                          activeOptions={{ exact: true }}
-                          onClick={closeSheet}
-                        >
-                          <LayoutGrid />
-                          <span>Models</span>
-                        </Link>
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
-                    <SidebarMenuItem>
-                      <SidebarMenuButton asChild tooltip="Members" isActive={Boolean(onMembers)}>
-                        <Link
-                          to="/w/$workspaceId/members"
-                          params={{ workspaceId: workspace.id }}
-                          onClick={closeSheet}
-                        >
-                          <Users />
-                          <span>Members</span>
-                        </Link>
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
-                  </>
-                ) : (
-                  <>
-                    <SidebarMenuSkeleton showIcon />
-                    <SidebarMenuSkeleton showIcon />
-                  </>
-                )}
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
-        )}
-        {me?.user.is_instance_admin && (
-          <SidebarGroup>
-            <SidebarGroupLabel>Instance</SidebarGroupLabel>
-            <SidebarGroupContent>
-              <SidebarMenu>
-                <SidebarMenuItem>
-                  <SidebarMenuButton asChild tooltip="Users" isActive={Boolean(onUsers)}>
-                    <Link to="/admin/users" onClick={closeSheet}>
-                      <UserCog />
-                      <span>Users</span>
-                    </Link>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
-        )}
+        <nav aria-label="Main" className="flex flex-col gap-2">
+          {(workspace || isLoading) && (
+            <SidebarGroup>
+              <SidebarGroupLabel>Workspace</SidebarGroupLabel>
+              <SidebarGroupContent>
+                <SidebarMenu>
+                  {workspace ? (
+                    <>
+                      <SidebarMenuItem>
+                        <SidebarMenuButton asChild tooltip="Models" isActive={Boolean(onModels)}>
+                          <Link
+                            to="/w/$workspaceId"
+                            params={{ workspaceId: workspace.id }}
+                            activeOptions={{ exact: true }}
+                            onClick={closeSheet}
+                          >
+                            <LayoutGrid />
+                            <span>Models</span>
+                          </Link>
+                        </SidebarMenuButton>
+                      </SidebarMenuItem>
+                      <SidebarMenuItem>
+                        <SidebarMenuButton asChild tooltip="Members" isActive={Boolean(onMembers)}>
+                          <Link
+                            to="/w/$workspaceId/members"
+                            params={{ workspaceId: workspace.id }}
+                            onClick={closeSheet}
+                          >
+                            <Users />
+                            <span>Members</span>
+                          </Link>
+                        </SidebarMenuButton>
+                      </SidebarMenuItem>
+                    </>
+                  ) : (
+                    <>
+                      <SidebarMenuSkeleton showIcon />
+                      <SidebarMenuSkeleton showIcon />
+                    </>
+                  )}
+                </SidebarMenu>
+              </SidebarGroupContent>
+            </SidebarGroup>
+          )}
+          {me?.user.is_instance_admin && (
+            <SidebarGroup>
+              <SidebarGroupLabel>Instance</SidebarGroupLabel>
+              <SidebarGroupContent>
+                <SidebarMenu>
+                  <SidebarMenuItem>
+                    <SidebarMenuButton asChild tooltip="Users" isActive={Boolean(onUsers)}>
+                      <Link to="/admin/users" onClick={closeSheet}>
+                        <UserCog />
+                        <span>Users</span>
+                      </Link>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                </SidebarMenu>
+              </SidebarGroupContent>
+            </SidebarGroup>
+          )}
+        </nav>
       </SidebarContent>
       <SidebarFooter>
         <NavUser />

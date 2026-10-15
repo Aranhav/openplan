@@ -37,6 +37,19 @@ describe("the sidebar", () => {
     expect(within(nav).getByText("Workspace")).toBeVisible()
   })
 
+  it("is a navigation landmark of its own, holding the workspace and instance links", async () => {
+    mockSession()
+    renderApp(`/w/${workspace.id}`)
+
+    const sidebar = await findSidebar()
+    const main = within(sidebar).getByRole("navigation", { name: "Main" })
+    expect(
+      within(main)
+        .getAllByRole("link")
+        .map((link) => link.textContent),
+    ).toEqual(["Models", "Members", "Users"])
+  })
+
   it("links instance admins to the user list", async () => {
     mockSession()
     renderApp(`/w/${workspace.id}`)
@@ -86,6 +99,27 @@ describe("the sidebar", () => {
     renderApp(`/w/${workspace.id}`)
 
     expect(within(await findSidebar()).getByText(user.email)).toBeVisible()
+  })
+})
+
+describe("the skip link", () => {
+  it("is the first stop for the keyboard and moves focus to the page's content", async () => {
+    mockSession()
+    const typist = userEvent.setup()
+    const { router } = renderApp(`/w/${workspace.id}`)
+    await findSidebar()
+    await typist.tab()
+
+    const skip = screen.getByRole("link", { name: "Skip to content" })
+    expect(skip).toHaveFocus()
+    expect(skip).toHaveClass("sr-only", "focus:not-sr-only")
+    await typist.keyboard("{Enter}")
+
+    const main = screen.getByRole("main")
+    expect(main).toHaveFocus()
+    expect(main).toContainElement(screen.getByRole("heading", { level: 1, name: "Models" }))
+    // Following it is not a navigation: Back still leaves the page.
+    expect(router.state.location.hash).toBe("")
   })
 })
 
@@ -158,6 +192,14 @@ describe("the header", () => {
     const crumbs = await screen.findByRole("navigation", { name: "breadcrumb" })
     expect(within(crumbs).getByText("Profile")).toBeVisible()
     expect(within(crumbs).queryByRole("link", { name: "Acme Corp" })).not.toBeInTheDocument()
+  })
+
+  it("leaves the breadcrumb out for a workspace the user is not in", async () => {
+    mockSession()
+    renderApp("/w/0192f3a0-0000-7000-8000-0000000000ff")
+
+    expect(await screen.findByRole("heading", { name: "Workspace not found" })).toBeVisible()
+    expect(screen.queryByRole("navigation", { name: "breadcrumb" })).not.toBeInTheDocument()
   })
 
   it("titles the browser tab after the page", async () => {
