@@ -1,14 +1,14 @@
-use std::io::Write;
+use std::{io::Write, net::SocketAddr};
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use openplan_server::{
     app::{AppState, build_router},
+    auth::session,
     config::Config,
+    db, logging,
     openapi::openapi_json,
 };
-use sqlx::postgres::PgPoolOptions;
-use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
 #[command(name = "openplan", version, about = "OpenPlan planning platform")]
@@ -38,14 +38,15 @@ async fn main() -> anyhow::Result<()> {
 
 async fn serve() -> anyhow::Result<()> {
     let config = Config::from_env()?;
-    let filter = EnvFilter::try_new(&config.log)
-        .with_context(|| format!("OPENPLAN_LOG is not a valid filter: {}", config.log))?;
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    logging::init(&config.log)?;
 
-    let db = PgPoolOptions::new()
-        .connect(&config.database_url)
+    let db = db::connect(&config.database_url, config.db_pool_size).await?;
+    db::MIGRATOR
+        .run(&db)
         .await
-        .context("failed to connect to the database")?;
+        .context("failed to run database migrations")?;
+
+    tokio::spawn(session::purge_expired_periodically(db.clone()));
 
     let bind = config.bind;
     let app = build_router(AppState::new(db, config));
@@ -53,10 +54,13 @@ async fn serve() -> anyhow::Result<()> {
         .await
         .with_context(|| format!("failed to bind {bind}"))?;
     tracing::info!(%bind, "openplan listening");
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .context("server error")
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .context("server error")
 }
 
 async fn shutdown_signal() {

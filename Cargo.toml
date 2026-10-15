@@ -10,16 +10,22 @@ publish = false
 
 [workspace.dependencies]
 anyhow = "1"
+argon2 = "0.5"
 axum = "0.8"
-chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
+axum-extra = { version = "0.12", features = ["cookie"] }
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
+cookie = "0.18"
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 mime_guess = "2"
 proptest = { version = "1", default-features = false, features = ["std"] }
+rand = "0.9"
 rayon = "1"
 rust-embed = "8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 sqlx = { version = "0.8", default-features = false, features = [
     "runtime-tokio",
     "tls-rustls",
@@ -41,3 +47,10 @@ utoipa = { version = "5", features = ["axum_extras", "uuid", "chrono"] }
 utoipa-scalar = { version = "0.3", features = ["axum"] }
 uuid = { version = "1", features = ["v7", "serde"] }
 zstd = { version = "0.14", default-features = false }
+
+# Password hashing is far too slow unoptimized, which makes every login in the test suite crawl.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3

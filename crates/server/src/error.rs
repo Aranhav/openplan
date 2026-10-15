@@ -26,6 +26,14 @@ pub enum AppError {
     RateLimited { retry_after_secs: u64 },
     #[error("not found")]
     NotFound,
+    #[error("method not allowed")]
+    MethodNotAllowed,
+    #[error("bad request: {0}")]
+    BadRequest(String),
+    #[error("unsupported media type")]
+    UnsupportedMediaType,
+    #[error("payload too large")]
+    PayloadTooLarge,
     #[error("conflict ({code}): {detail}")]
     Conflict { code: &'static str, detail: String },
     #[error("not found ({code}): {detail}")]
@@ -47,15 +55,28 @@ impl From<sqlx::Error> for AppError {
     }
 }
 
-#[derive(Serialize)]
-struct Problem {
+impl From<FieldError> for AppError {
+    fn from(err: FieldError) -> Self {
+        AppError::Validation(vec![err])
+    }
+}
+
+/// The body of every error response, served as `application/problem+json`.
+#[derive(Serialize, ToSchema)]
+pub struct Problem {
+    /// Always `about:blank`.
     #[serde(rename = "type")]
     kind: &'static str,
+    /// The reason phrase of the HTTP status.
     title: &'static str,
     status: u16,
+    /// A stable code such as `auth.csrf` that clients can match on.
     code: &'static str,
+    /// A sentence for people.
     detail: String,
+    /// What is wrong with each field; only on 422 responses.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
     errors: Option<Vec<FieldError>>,
 }
 
@@ -96,6 +117,22 @@ impl IntoResponse for AppError {
                 StatusCode::NOT_FOUND,
                 "not_found",
                 "The requested resource was not found.".to_string(),
+            ),
+            AppError::MethodNotAllowed => (
+                StatusCode::METHOD_NOT_ALLOWED,
+                "method_not_allowed",
+                "The HTTP method is not allowed for this resource.".to_string(),
+            ),
+            AppError::BadRequest(detail) => (StatusCode::BAD_REQUEST, "bad_request", detail),
+            AppError::UnsupportedMediaType => (
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "unsupported_media_type",
+                "Send the request body as application/json.".to_string(),
+            ),
+            AppError::PayloadTooLarge => (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "payload_too_large",
+                "The request body is too large.".to_string(),
             ),
             AppError::Conflict { code, detail } => (StatusCode::CONFLICT, code, detail),
             AppError::CodedNotFound { code, detail } => (StatusCode::NOT_FOUND, code, detail),
@@ -216,6 +253,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn request_body_errors_have_their_own_status_and_code() {
+        let bad_request = AppError::BadRequest("The request body is not valid JSON.".into());
+        let response = bad_request.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(response).await;
+        assert_eq!(json["code"], "bad_request");
+        assert_eq!(json["detail"], "The request body is not valid JSON.");
+
+        let response = AppError::UnsupportedMediaType.into_response();
+        assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        assert_eq!(body_json(response).await["code"], "unsupported_media_type");
+
+        let response = AppError::PayloadTooLarge.into_response();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(body_json(response).await["code"], "payload_too_large");
+    }
+
+    #[tokio::test]
     async fn internal_error_hides_details() {
         let response =
             AppError::Internal(anyhow::anyhow!("connection string leaked")).into_response();
@@ -224,6 +279,20 @@ mod tests {
         let json = body_json(response).await;
         assert_eq!(json["code"], "internal");
         assert_eq!(json["detail"], "Something went wrong.");
+    }
+
+    #[test]
+    fn single_field_error_converts_to_validation() {
+        let err = AppError::from(FieldError {
+            field: "email".into(),
+            message: "Enter a valid email address.".into(),
+        });
+
+        let AppError::Validation(errors) = err else {
+            panic!("expected a validation error");
+        };
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].field, "email");
     }
 
     #[test]

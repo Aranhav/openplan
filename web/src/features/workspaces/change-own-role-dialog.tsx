@@ -1,0 +1,65 @@
+import { Loader2 } from "lucide-react"
+import type { MouseEvent } from "react"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+import { useMe } from "@/features/auth/api"
+import { closeUnlessBusy } from "@/lib/close-unless-busy"
+
+interface ChangeOwnRoleDialogProps {
+  open: boolean
+  /** Whether the change is being saved; the dialog can't be dismissed until it is done. */
+  pending: boolean
+  onConfirm: () => void
+  onOpenChange: (open: boolean) => void
+  /** Called as the dialog closes; preventing the event stops focus returning to where it was. */
+  onCloseAutoFocus: (event: Event) => void
+}
+
+/** A change to your own role can take away the ability to manage the workspace, so it is confirmed. */
+export function ChangeOwnRoleDialog({
+  open,
+  pending,
+  onConfirm,
+  onOpenChange,
+  onCloseAutoFocus,
+}: ChangeOwnRoleDialogProps) {
+  const { data: me } = useMe()
+  // An instance admin is an admin of every workspace, so a role of their own takes nothing away.
+  const keepsAccess = me?.user.is_instance_admin === true
+
+  function confirm(event: MouseEvent) {
+    // The action would close the dialog straight away; keep it open until the change is saved.
+    event.preventDefault()
+    onConfirm()
+  }
+
+  return (
+    <AlertDialog open={open} onOpenChange={closeUnlessBusy(pending, onOpenChange)}>
+      <AlertDialogContent onCloseAutoFocus={onCloseAutoFocus}>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Change your own role?</AlertDialogTitle>
+          <AlertDialogDescription>
+            {keepsAccess
+              ? "You'll stay an instance admin, so you can still manage this workspace."
+              : "You may lose the ability to manage this workspace."}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={pending}>Cancel</AlertDialogCancel>
+          <AlertDialogAction disabled={pending} onClick={confirm}>
+            {pending && <Loader2 className="animate-spin" />}
+            Change role
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  )
+}
