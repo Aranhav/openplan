@@ -6,7 +6,7 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::FromRow;
+use sqlx::{FromRow, PgConnection};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -68,6 +68,13 @@ fn user_not_found() -> AppError {
     }
 }
 
+fn last_instance_admin() -> AppError {
+    AppError::Conflict {
+        code: "user.last_instance_admin",
+        detail: "An instance needs at least one administrator.".into(),
+    }
+}
+
 fn own_account_rejection(forbidden: bool, field: &str, message: &str) -> Result<(), FieldError> {
     if forbidden {
         Err(FieldError {
@@ -77,6 +84,22 @@ fn own_account_rejection(forbidden: bool, field: &str, message: &str) -> Result<
     } else {
         Ok(())
     }
+}
+
+/// Refuses a change that would take `user_id`, the only enabled instance admin,
+/// out of that role. Locks every enabled instance admin in id order, so two
+/// admins who demote or disable each other queue instead of both succeeding.
+/// The change must run in the same transaction.
+async fn guard_last_instance_admin(tx: &mut PgConnection, user_id: Uuid) -> AppResult<()> {
+    let admins = sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM users WHERE is_instance_admin AND NOT disabled ORDER BY id FOR UPDATE",
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    if admins == [user_id] {
+        return Err(last_instance_admin());
+    }
+    Ok(())
 }
 
 #[utoipa::path(
@@ -163,6 +186,7 @@ pub(crate) async fn create_user(
         (status = 401, description = "Not signed in (auth.unauthenticated)"),
         (status = 403, description = "Not an instance admin (auth.forbidden)"),
         (status = 404, description = "No such user (user.not_found)"),
+        (status = 409, description = "The user is the last instance admin (user.last_instance_admin)"),
         (status = 422, description = "Some fields are invalid (validation)"),
     )
 )]
@@ -202,6 +226,9 @@ pub(crate) async fn update_user(
     };
 
     let mut tx = state.db.begin().await?;
+    if body.is_instance_admin == Some(false) || body.disabled == Some(true) {
+        guard_last_instance_admin(&mut tx, id).await?;
+    }
     let updated = sqlx::query_as::<_, UserDto>(
         "UPDATE users SET
            name = COALESCE($2, name),

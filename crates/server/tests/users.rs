@@ -88,6 +88,107 @@ async fn fail_session_deletes(pool: &PgPool) {
     .unwrap();
 }
 
+const SECOND_ADMIN_EMAIL: &str = "bea@acme.com";
+const THIRD_ADMIN_EMAIL: &str = "cleo@acme.com";
+
+/// Creates an instance admin as the signed-in `admin`, signs them in and
+/// returns their client and id.
+async fn create_instance_admin(
+    admin: &mut TestApp,
+    pool: &PgPool,
+    email: &str,
+) -> (TestApp, String) {
+    let created = admin
+        .post(
+            "/api/v1/users",
+            Some(json!({
+                "email": email,
+                "name": "Another Admin",
+                "password": PASSWORD,
+                "is_instance_admin": true,
+            })),
+        )
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text);
+    let mut client = TestApp::new(pool.clone());
+    assert_eq!(
+        login(&mut client, email, PASSWORD).await.status,
+        StatusCode::OK
+    );
+    (client, created.json["id"].as_str().unwrap().to_string())
+}
+
+/// Makes every user update take half a second, so that two concurrent
+/// requests overlap.
+async fn slow_user_updates(pool: &PgPool) {
+    sqlx::query(
+        "CREATE FUNCTION slow_user_update() RETURNS trigger LANGUAGE plpgsql AS
+         $$ BEGIN PERFORM pg_sleep(0.5); RETURN NEW; END $$",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "CREATE TRIGGER slow_user_update BEFORE UPDATE ON users
+         FOR EACH ROW EXECUTE FUNCTION slow_user_update()",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+async fn patch_user(app: &mut TestApp, id: &str, body: Value) -> TestResponse {
+    app.patch(&format!("/api/v1/users/{id}"), Some(body)).await
+}
+
+async fn enabled_instance_admins(pool: &PgPool) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM users WHERE is_instance_admin AND NOT disabled")
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// Two instance admins each send `body` for the other at the same time. Returns
+/// the sorted statuses and the 409 response.
+async fn mutual_change(pool: &PgPool, body: Value) -> (Vec<StatusCode>, Vec<TestResponse>) {
+    let mut ada = TestApp::new(pool.clone());
+    setup_admin(&mut ada).await;
+    let ada_id = admin_id(&mut ada).await;
+    let (mut bea, bea_id) = create_instance_admin(&mut ada, pool, SECOND_ADMIN_EMAIL).await;
+    slow_user_updates(pool).await;
+
+    let (by_ada, by_bea) = tokio::join!(
+        patch_user(&mut ada, &bea_id, body.clone()),
+        patch_user(&mut bea, &ada_id, body),
+    );
+
+    let mut statuses = vec![by_ada.status, by_bea.status];
+    statuses.sort();
+    (statuses, vec![by_ada, by_bea])
+}
+
+fn assert_one_succeeded_and_one_refused_as_last_admin(
+    statuses: &[StatusCode],
+    responses: &[TestResponse],
+) {
+    assert_eq!(
+        statuses,
+        [StatusCode::OK, StatusCode::CONFLICT],
+        "{} / {}",
+        responses[0].text,
+        responses[1].text
+    );
+    let refused = responses
+        .iter()
+        .find(|response| response.status == StatusCode::CONFLICT)
+        .unwrap();
+    assert_problem(refused, StatusCode::CONFLICT, "user.last_instance_admin");
+    assert_eq!(
+        refused.json["detail"],
+        "An instance needs at least one administrator."
+    );
+}
+
 fn assert_problem(response: &TestResponse, status: StatusCode, code: &str) {
     assert_eq!(response.status, status, "{}", response.text);
     let content_type = response.headers[header::CONTENT_TYPE].to_str().unwrap();
@@ -262,6 +363,68 @@ async fn admin_cannot_remove_own_admin_flag(pool: PgPool) {
         admin.get("/api/v1/auth/me").await.json["user"]["is_instance_admin"],
         true
     );
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn concurrent_demotions_cannot_leave_an_instance_without_an_admin(pool: PgPool) {
+    let (statuses, responses) = mutual_change(&pool, json!({ "is_instance_admin": false })).await;
+
+    assert_one_succeeded_and_one_refused_as_last_admin(&statuses, &responses);
+    assert_eq!(enabled_instance_admins(&pool).await, 1);
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn concurrent_disables_cannot_leave_an_instance_without_an_admin(pool: PgPool) {
+    let (statuses, responses) = mutual_change(&pool, json!({ "disabled": true })).await;
+
+    assert_one_succeeded_and_one_refused_as_last_admin(&statuses, &responses);
+    assert_eq!(enabled_instance_admins(&pool).await, 1);
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn concurrent_demotions_succeed_while_another_admin_remains(pool: PgPool) {
+    let mut ada = TestApp::new(pool.clone());
+    setup_admin(&mut ada).await;
+    let ada_id = admin_id(&mut ada).await;
+    let (mut bea, bea_id) = create_instance_admin(&mut ada, &pool, SECOND_ADMIN_EMAIL).await;
+    create_instance_admin(&mut ada, &pool, THIRD_ADMIN_EMAIL).await;
+    slow_user_updates(&pool).await;
+    let demote = json!({ "is_instance_admin": false });
+
+    let (by_ada, by_bea) = tokio::join!(
+        patch_user(&mut ada, &bea_id, demote.clone()),
+        patch_user(&mut bea, &ada_id, demote),
+    );
+
+    assert_eq!(by_ada.status, StatusCode::OK, "{}", by_ada.text);
+    assert_eq!(by_bea.status, StatusCode::OK, "{}", by_bea.text);
+    assert_eq!(enabled_instance_admins(&pool).await, 1);
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn admin_demotes_and_disables_another_instance_admin(pool: PgPool) {
+    let mut ada = TestApp::new(pool.clone());
+    setup_admin(&mut ada).await;
+    let (_, bea_id) = create_instance_admin(&mut ada, &pool, SECOND_ADMIN_EMAIL).await;
+    let (_, cleo_id) = create_instance_admin(&mut ada, &pool, THIRD_ADMIN_EMAIL).await;
+
+    let demoted = ada
+        .patch(
+            &format!("/api/v1/users/{bea_id}"),
+            Some(json!({ "is_instance_admin": false })),
+        )
+        .await;
+    let disabled = ada
+        .patch(
+            &format!("/api/v1/users/{cleo_id}"),
+            Some(json!({ "disabled": true })),
+        )
+        .await;
+
+    assert_eq!(demoted.status, StatusCode::OK, "{}", demoted.text);
+    assert_eq!(demoted.json["is_instance_admin"], false);
+    assert_eq!(disabled.status, StatusCode::OK, "{}", disabled.text);
+    assert_eq!(enabled_instance_admins(&pool).await, 1);
 }
 
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
