@@ -11,6 +11,9 @@ pub(crate) const BLANK_DATE: i32 = i32::MIN;
 pub(crate) const BLANK_ITEM: u32 = u32::MAX;
 pub(crate) const BLANK_PERIOD: u32 = u32::MAX;
 
+/// The most characters a text cell holds, whether typed in or calculated.
+pub(crate) const MAX_TEXT_CHARS: usize = 10_000;
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum NumberUnit {
@@ -143,6 +146,17 @@ pub(crate) fn sanitize_number(number: f64) -> f64 {
     }
 }
 
+/// The first [`MAX_TEXT_CHARS`] characters of `text`, or all of it if it has no more.
+pub(crate) fn clamp_text(text: &str) -> &str {
+    if text.len() <= MAX_TEXT_CHARS {
+        return text;
+    }
+    match text.char_indices().nth(MAX_TEXT_CHARS) {
+        Some((end, _)) => &text[..end],
+        None => text,
+    }
+}
+
 impl Column {
     /// A column of `len` blank cells of type `ty`.
     pub fn new_blank(ty: &ValueType, len: usize) -> Column {
@@ -181,13 +195,26 @@ impl Column {
         }
     }
 
-    /// Makes every number of a number column one that a cell can hold (see
-    /// [`sanitize_number`]). Other columns are left alone.
+    /// Makes every cell of a calculated column one that a cell can hold: a number as
+    /// [`sanitize_number`] gives it and a text cut to [`MAX_TEXT_CHARS`] characters, which
+    /// keeps text that formulas write into each other from growing without bound. Other
+    /// columns are left alone.
     pub(crate) fn sanitize(&mut self) {
-        if let Column::Number(cells) = self {
-            for cell in cells {
-                *cell = sanitize_number(*cell);
+        match self {
+            Column::Number(cells) => {
+                for cell in cells {
+                    *cell = sanitize_number(*cell);
+                }
             }
+            Column::Text(cells) => {
+                for cell in cells {
+                    let kept = clamp_text(cell).len();
+                    if kept < cell.len() {
+                        *cell = Arc::from(&cell[..kept]);
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
@@ -358,6 +385,31 @@ mod tests {
             assert_eq!(ty.blank(), blank);
             assert!(Column::new_blank(&ty, 1).is_blank_at(0));
         }
+    }
+
+    #[test]
+    fn text_is_cut_at_a_character_and_not_a_byte() {
+        let exactly = "\u{e9}".repeat(MAX_TEXT_CHARS);
+        assert!(clamp_text(&exactly) == exactly);
+        let over = format!("{exactly}x");
+        assert!(clamp_text(&over) == exactly);
+        assert_eq!(clamp_text("short"), "short");
+        assert_eq!(clamp_text(""), "");
+    }
+
+    #[test]
+    fn sanitizing_cuts_the_text_of_a_column_and_leaves_short_text_shared() {
+        let short: Arc<str> = Arc::from("short");
+        let long: Arc<str> = Arc::from("a".repeat(MAX_TEXT_CHARS + 5));
+        let mut column = Column::Text(vec![Arc::clone(&short), long]);
+
+        column.sanitize();
+
+        let Column::Text(cells) = column else {
+            unreachable!("a text column stays one");
+        };
+        assert!(Arc::ptr_eq(&cells[0], &short));
+        assert_eq!(cells[1].len(), MAX_TEXT_CHARS);
     }
 
     #[test]

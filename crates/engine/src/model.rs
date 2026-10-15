@@ -13,7 +13,9 @@ use crate::ids::{LineItemId, ListId, VersionId};
 use crate::shape::{Axis, Shape};
 use crate::structure::{Layout, LineItem, Structure, level_name};
 use crate::summary::{LevelSpec, Summary, SummaryCache, ratio_parts, roll_up};
-use crate::value::{BLANK_DATE, BLANK_ITEM, BLANK_PERIOD, Cell, Column, Format, Value, ValueType};
+use crate::value::{
+    BLANK_DATE, BLANK_ITEM, BLANK_PERIOD, Cell, Column, Format, MAX_TEXT_CHARS, Value, ValueType,
+};
 
 mod read;
 mod recalc;
@@ -26,9 +28,6 @@ use working::{Working, summarised_by_formula};
 pub(crate) const EPOCH_DAYS_FROM_CE: i32 = 719_163;
 
 const SWITCHOVER_MESSAGE: &str = "Periods before the switchover show Actual values.";
-
-/// The most characters a text cell holds.
-const MAX_TEXT_CHARS: usize = 10_000;
 
 /// What the last command, batch or full recalculation calculated.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

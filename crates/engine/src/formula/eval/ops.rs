@@ -12,7 +12,7 @@ use crate::formula::BinOp;
 use crate::ids::ListId;
 use crate::model::EPOCH_DAYS_FROM_CE;
 use crate::structure::Structure;
-use crate::value::{BLANK_DATE, Column, ValueType, sanitize_number};
+use crate::value::{BLANK_DATE, Column, ValueType, clamp_text, sanitize_number};
 
 fn mismatch() -> EngineError {
     EngineError::Invalid {
@@ -219,7 +219,8 @@ pub(crate) fn to_text(
     }))
 }
 
-/// A column of `len` texts, the `i`th of which `write` writes into the empty buffer it is given.
+/// A column of `len` texts, the `i`th of which `write` writes into the empty buffer it is given,
+/// cut to the length of a text cell.
 fn text_cells(len: usize, mut write: impl FnMut(usize, &mut String)) -> Column {
     let mut buffer = String::new();
     Column::Text(
@@ -227,7 +228,7 @@ fn text_cells(len: usize, mut write: impl FnMut(usize, &mut String)) -> Column {
             .map(|i| {
                 buffer.clear();
                 write(i, &mut buffer);
-                Arc::from(buffer.as_str())
+                Arc::from(clamp_text(&buffer))
             })
             .collect(),
     )

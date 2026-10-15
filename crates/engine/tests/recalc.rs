@@ -1142,6 +1142,71 @@ fn a_source_without_time_is_switched_by_the_periods_of_the_line_item_reading_it(
     assert_eq!(fx.number_at(priced, at(&budget, 11)), 8.0);
 }
 
+/// A scalar module with a Text line item `Step0` that holds `seed` and Text line items
+/// `Step1`, `Step2`, ... that each write the one before it twice.
+fn doubling_text(fx: &mut Fx, seed: &str, steps: usize) -> LineItemId {
+    let sheet = fx.module("Sheet", vec![]);
+    let mut last = fx.add(line_item(
+        sheet,
+        "Step0",
+        Format::Text,
+        Some(&format!("\"{seed}\"")),
+    ));
+    for step in 1..=steps {
+        let formula = format!("Step{0} & Step{0}", step - 1);
+        last = fx.add(line_item(
+            sheet,
+            &format!("Step{step}"),
+            Format::Text,
+            Some(&formula),
+        ));
+    }
+    last
+}
+
+#[test]
+fn computed_text_stops_growing_at_the_length_of_a_text_cell() {
+    for (seed, steps) in [("abcdefghij", 18), ("\u{e9}\u{e0}\u{65e5}\u{672c}", 13)] {
+        let mut fx = Fx::new(1);
+
+        let last = doubling_text(&mut fx, seed, steps);
+
+        let text = fx.text_at(last, vec![]);
+        assert_eq!(text.chars().count(), 10_000, "{seed}");
+        assert!(
+            text.chars().eq(seed.chars().cycle().take(10_000)),
+            "{seed}: the text is not the start of the doubled seed"
+        );
+    }
+}
+
+#[test]
+fn text_that_a_substitution_writes_into_its_own_result_cannot_outgrow_a_cell() {
+    let mut fx = Fx::new(1);
+    let sheet = fx.module("Sheet", vec![]);
+    let source = fx.add(line_item(sheet, "Source", Format::Text, None));
+    fx.model
+        .apply(Command::SetCells {
+            line_item: source,
+            edits: vec![CellEdit {
+                coords: vec![],
+                value: Value::Text("a".repeat(10_000).into()),
+            }],
+        })
+        .unwrap();
+
+    let grown = fx.add(line_item(
+        sheet,
+        "Grown",
+        Format::Text,
+        Some("SUBSTITUTE(SUBSTITUTE(Source, \"a\", Source), \"a\", Source)"),
+    ));
+
+    let text = fx.text_at(grown, vec![]);
+    assert_eq!(text.chars().count(), 10_000);
+    assert!(text.chars().all(|c| c == 'a'));
+}
+
 /// The benchmark shape of the engine: 10,000 products by 36 months by 3 versions, about 1.08
 /// million cells in every line item, with the Forecast showing the Actual version for the
 /// months before `switchover`.
