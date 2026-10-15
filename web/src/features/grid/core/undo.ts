@@ -1,3 +1,4 @@
+import type { CellRange } from "./selection"
 import type { Value } from "./types"
 
 /** One cell's change. `coords` are the member keys of the line item's own dimensions. */
@@ -8,8 +9,11 @@ export type CellEdit = {
   after: Value
 }
 
-/** Edits made together (one typed value, one paste), undone and redone together. */
-export type EditBatch = { edits: CellEdit[] }
+/**
+ * Edits made together (one typed value, one paste), undone and redone together. `where` is the
+ * range of the grid they were made in, for the grid to select again when it undoes or redoes them.
+ */
+export type EditBatch = { edits: CellEdit[]; where?: CellRange }
 
 const MAX_ENTRIES = 100
 

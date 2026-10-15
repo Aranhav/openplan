@@ -831,3 +831,73 @@ describe("typing into a cell and the arrow keys", () => {
     expectActive(grid, 1, NOTES)
   })
 })
+
+describe("after undo, redo and paste", () => {
+  it("undo selects the cell it restored and redo selects it again", async () => {
+    const { grid, bodies } = await setup()
+    await select(grid, 1, BUDGET)
+    await userEvent.keyboard("42{Enter}")
+    await waitFor(() => expect(bodies).toHaveLength(1))
+    await select(grid, 4, NOTES)
+
+    await userEvent.keyboard("{Control>}z{/Control}")
+    await waitFor(() => expectActive(grid, 1, BUDGET))
+    await select(grid, 4, NOTES)
+    await userEvent.keyboard("{Control>}{Shift>}z{/Shift}{/Control}")
+
+    await waitFor(() => expectActive(grid, 1, BUDGET))
+  })
+
+  it("undo selects the whole range that was cleared", async () => {
+    const { grid, bodies } = await setup()
+    await select(grid, 1, BUDGET)
+    await userEvent.keyboard("{Shift>}{ArrowDown}{ArrowRight}{/Shift}{Delete}")
+    await waitFor(() => expect(bodies).toHaveLength(1))
+    await select(grid, 5, NOTES)
+
+    await userEvent.keyboard("{Control>}z{/Control}")
+
+    await waitFor(() => expectActive(grid, 1, BUDGET))
+    for (const [row, col] of [
+      [1, BUDGET],
+      [2, BUDGET],
+      [1, REGION],
+      [2, REGION],
+    ]) {
+      expect(cellAt(grid, row, col)).toHaveAttribute("aria-selected", "true")
+    }
+    expect(cellAt(grid, 3, BUDGET)).toHaveAttribute("aria-selected", "false")
+  })
+
+  it("undo scrolls back to the restored cell", async () => {
+    const { grid, bodies } = await setup({}, salesView())
+    await select(grid, 0, 0)
+    await userEvent.keyboard("9{Enter}")
+    await waitFor(() => expect(bodies).toHaveLength(1))
+    await userEvent.keyboard("{Control>}{ArrowDown}{/Control}")
+    await waitFor(() => expect(grid.scrollTop).toBeGreaterThan(1000))
+
+    await userEvent.keyboard("{Control>}z{/Control}")
+
+    await waitFor(() => expect(grid.scrollTop).toBe(0))
+    await waitFor(() => expectActive(grid, 0, 0))
+  })
+
+  it("paste selects the block that was pasted, with the active cell at its top left", async () => {
+    const { grid, bodies } = await setup()
+    await select(grid, 1, BUDGET)
+
+    fireEvent.paste(document.body, { clipboardData: { getData: () => "5\tAP\n6\tNA\n7\tEU" } })
+
+    await waitFor(() => expect(bodies).toHaveLength(1))
+    expectActive(grid, 1, BUDGET)
+    for (const [row, col] of [
+      [1, BUDGET],
+      [3, REGION],
+    ]) {
+      expect(cellAt(grid, row, col)).toHaveAttribute("aria-selected", "true")
+    }
+    expect(cellAt(grid, 4, BUDGET)).toHaveAttribute("aria-selected", "false")
+    expect(cellAt(grid, 1, START)).toHaveAttribute("aria-selected", "false")
+  })
+})

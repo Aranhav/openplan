@@ -1,14 +1,20 @@
 import { useQueryClient } from "@tanstack/react-query"
-import { useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
 import { ApiError, errorDetail } from "@/lib/api/client"
 import { queryKeys } from "@/lib/api/keys"
 import { cellKey } from "./cell-targets"
 import { writeCells } from "./cells-api"
 import type { Value } from "./core/types"
+import type { CellRange } from "./core/selection"
 import { type CellEdit, UndoStack } from "./core/undo"
 
 type Side = "before" | "after"
+
+type Handlers = {
+  /** A batch was taken up by undo or redo: where it was made. */
+  onReplay?: (where: CellRange) => void
+}
 
 type Shown = { value: Value; batch: number }
 
@@ -30,7 +36,7 @@ function failureMessage(error: unknown): string {
  * Batches are written one at a time in the order they were made, so a quick undo finds the edit
  * before it and two edits of one cell end with the later value.
  */
-export function useCellEdits(modelId: string, moduleId: string) {
+export function useCellEdits(modelId: string, moduleId: string, handlers: Handlers = {}) {
   const queryClient = useQueryClient()
   const [shown, setShown] = useState<ReadonlyMap<string, Shown>>(new Map())
   const batches = useRef(0)
@@ -41,6 +47,11 @@ export function useCellEdits(modelId: string, moduleId: string) {
     () => new Map([...shown].map(([key, entry]) => [key, entry.value])),
     [shown],
   )
+
+  // What was done in a module cannot be undone from another, nor after coming back to it.
+  useEffect(() => {
+    history.current = null
+  }, [moduleId])
 
   function stack(): UndoStack {
     if (history.current?.moduleId !== moduleId) {
@@ -96,8 +107,11 @@ export function useCellEdits(modelId: string, moduleId: string) {
     return queryClient.invalidateQueries({ queryKey: queryKeys.query(modelId) })
   }
 
-  /** Writes a batch of edits. Resolves to whether the server took it. */
-  async function commit(edits: readonly CellEdit[]): Promise<boolean> {
+  /**
+   * Writes a batch of edits made in `where`, which undo and redo select again. Resolves to whether
+   * the server took it.
+   */
+  async function commit(edits: readonly CellEdit[], where?: CellRange): Promise<boolean> {
     if (edits.length === 0) {
       return true
     }
@@ -106,7 +120,7 @@ export function useCellEdits(modelId: string, moduleId: string) {
     try {
       await inOrder(async () => {
         await post(edits, "after")
-        history.push({ edits: [...edits] })
+        history.push({ edits: [...edits], where })
       })
       await reread()
       return true
@@ -127,6 +141,9 @@ export function useCellEdits(modelId: string, moduleId: string) {
         const entry = direction === "undo" ? history.undo() : history.redo()
         if (!entry) {
           return false
+        }
+        if (entry.where) {
+          handlers.onReplay?.(entry.where)
         }
         batch = show(entry.edits, side)
         try {

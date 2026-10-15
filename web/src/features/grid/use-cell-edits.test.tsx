@@ -60,11 +60,12 @@ function setup(moduleId = MODULE) {
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
   )
-  const hook = renderHook(({ module }) => useCellEdits(MODEL_ID, module), {
+  const onReplay = vi.fn()
+  const hook = renderHook(({ module }) => useCellEdits(MODEL_ID, module, { onReplay }), {
     wrapper,
     initialProps: { module: moduleId },
   })
-  return { queryClient, wrapper, ...hook }
+  return { queryClient, wrapper, onReplay, ...hook }
 }
 
 beforeEach(() => {
@@ -428,5 +429,60 @@ describe("useCellEdits undo and redo", () => {
     })
 
     expect(served.bodies).toHaveLength(1)
+  })
+})
+
+describe("useCellEdits history", () => {
+  it("forgets a module's history as soon as the grid leaves it, though it comes back", async () => {
+    const served = serveCells()
+    const { result, rerender } = setup()
+    await act(async () => {
+      await result.current.commit([edit(5)])
+    })
+
+    rerender({ module: "module-2" })
+    rerender({ module: MODULE })
+    await act(async () => {
+      await result.current.undo()
+    })
+
+    expect(served.bodies).toHaveLength(1)
+  })
+
+  it("tells where an undone or redone batch was made, as soon as it is taken up", async () => {
+    const response = gate()
+    serveCells({ hold: [Promise.resolve(), response.opened, Promise.resolve()] })
+    const where = { rowStart: 2, rowEnd: 3, colStart: 1, colEnd: 1 }
+    const { result, onReplay } = setup()
+    await act(async () => {
+      await result.current.commit([edit(5)], where)
+    })
+
+    let undoing!: Promise<void>
+    act(() => {
+      undoing = result.current.undo()
+    })
+    await waitFor(() => expect(onReplay).toHaveBeenCalledExactlyOnceWith(where))
+    await act(async () => {
+      response.release()
+      await undoing
+    })
+    await act(async () => {
+      await result.current.redo()
+    })
+
+    expect(onReplay).toHaveBeenCalledTimes(2)
+    expect(onReplay).toHaveBeenLastCalledWith(where)
+  })
+
+  it("does not tell about a batch that has no place", async () => {
+    serveCells()
+    const { result, onReplay } = setup()
+    await act(async () => {
+      await result.current.commit([edit(5)])
+      await result.current.undo()
+    })
+
+    expect(onReplay).not.toHaveBeenCalled()
   })
 })

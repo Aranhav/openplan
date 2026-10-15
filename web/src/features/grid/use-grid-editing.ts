@@ -50,6 +50,8 @@ type Options = {
   peek: (range: CellRange) => CellReader | undefined
   /** Moves the selection one cell, as after an edit. */
   moveSelection: (direction: Direction) => void
+  /** Selects a range, with the active cell at its top left, and brings it into view. */
+  selectRange: (range: CellRange) => void
   /** The grid, which has the focus: copy, cut and paste are taken from the document while it does. */
   gridRef: RefObject<HTMLElement | null>
   /** Puts the keyboard back on the grid when an editor closes. */
@@ -60,6 +62,10 @@ type Candidate = { target: CellTarget; value: Value }
 
 function cellCount(range: CellRange): number {
   return (range.rowEnd - range.rowStart + 1) * (range.colEnd - range.colStart + 1)
+}
+
+function cellRange(pos: Pos): CellRange {
+  return { rowStart: pos.row, rowEnd: pos.row, colStart: pos.col, colEnd: pos.col }
 }
 
 function cells(count: number): string {
@@ -114,10 +120,14 @@ export function useGridEditing({
   load,
   peek,
   moveSelection,
+  selectRange,
   gridRef,
   focusGrid,
 }: Options) {
-  const edits = useCellEdits(modelId, moduleId)
+  const edits = useCellEdits(modelId, moduleId, {
+    // Undo and redo show what they changed.
+    onReplay: selectRange,
+  })
   const { pending } = edits
   const [editor, setEditor] = useState<EditorState | null>(null)
   const active = selection.anchor
@@ -139,15 +149,16 @@ export function useGridEditing({
     return { lineItemId: target.lineItem.id, coords: target.coords, before, after: value }
   }
 
-  function write(candidates: readonly Candidate[]): Promise<boolean> {
+  /** Writes what differs from what the cells hold; `where` is what undo and redo select. */
+  function write(candidates: readonly Candidate[], where: CellRange): Promise<boolean> {
     const changes = candidates.flatMap(({ target, value }) => changeOf(target, value) ?? [])
-    return edits.commit(changes)
+    return edits.commit(changes, where)
   }
 
-  function toggle(target: CellTarget) {
+  function toggle(target: CellTarget, pos: Pos) {
     const current = effective(target).value
     if (current.t === "boolean") {
-      void write([{ target, value: { t: "boolean", v: !current.v } }])
+      void write([{ target, value: { t: "boolean", v: !current.v } }], cellRange(pos))
     }
   }
 
@@ -166,7 +177,7 @@ export function useGridEditing({
     if (format.type === "boolean") {
       // A check box takes no typing, only a toggle.
       if (typed === undefined) {
-        toggle(target)
+        toggle(target, pos)
       }
       return
     }
@@ -202,7 +213,7 @@ export function useGridEditing({
         toast.error(parsed.message)
         return false
       }
-      void write([{ target, value: parsed.value }])
+      void write([{ target, value: parsed.value }], cellRange(editor.pos))
     }
     close(move, refocus)
     return true
@@ -222,7 +233,7 @@ export function useGridEditing({
     pick: (value: Value, move: Direction | null) => {
       const target = editor && writable(editor.pos)
       if (target) {
-        void write([{ target, value }])
+        void write([{ target, value }], cellRange(editor.pos))
       }
       close(move, true)
     },
@@ -259,7 +270,7 @@ export function useGridEditing({
         }
       }
     }
-    await write(candidates)
+    await write(candidates, range)
   }
 
   async function fillDown() {
@@ -304,7 +315,7 @@ export function useGridEditing({
       }
       candidates.push({ target, value: parsed.value })
     }
-    if ((await write(candidates)) && skipped > 0) {
+    if ((await write(candidates, range)) && skipped > 0) {
       toast.success(`Filled ${cells(candidates.length)}${skippedNote(skipped)}`)
     }
   }
@@ -322,7 +333,8 @@ export function useGridEditing({
     if (plan.length === 0) {
       return
     }
-    const loaded = await readCells(rangeOfPositions(plan.map((edit) => edit.pos)))
+    const pasted = rangeOfPositions(plan.map((edit) => edit.pos))
+    const loaded = await readCells(pasted)
     if (!loaded) {
       return
     }
@@ -351,7 +363,10 @@ export function useGridEditing({
       }
       candidates.push({ target, value: parsed.value })
     }
-    if (await write(candidates)) {
+    // The pasted cells are selected, with the active cell at the top left, once it is known that
+    // every value fits.
+    selectRange(pasted)
+    if (await write(candidates, pasted)) {
       toast.success(`Pasted ${cells(candidates.length)}${skippedNote(skipped)}`)
     }
   }
@@ -460,7 +475,7 @@ export function useGridEditing({
     toggleAt: (pos: Pos) => {
       const target = writable(pos)
       if (target?.lineItem.format.type === "boolean") {
-        toggle(target)
+        toggle(target, pos)
       }
     },
     /** Runs a command that is not about moving the selection; answers whether it was one. */
@@ -475,7 +490,7 @@ export function useGridEditing({
         case "toggle": {
           const target = writable(active)
           if (target?.lineItem.format.type === "boolean") {
-            toggle(target)
+            toggle(target, active)
           }
           return true
         }

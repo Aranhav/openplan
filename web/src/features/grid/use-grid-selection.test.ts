@@ -35,6 +35,22 @@ describe("useGridSelection", () => {
     expect(result.current.selection).toEqual(cell(1, 1))
   })
 
+  it("selects a range with the active cell at its top left", () => {
+    const { result } = renderHook(() => useGridSelection(bounds))
+
+    act(() => result.current.selectRange({ rowStart: 3, rowEnd: 6, colStart: 1, colEnd: 4 }))
+
+    expect(result.current.selection).toEqual({ anchor: at(3, 1), focus: at(6, 4) })
+  })
+
+  it("keeps a range that was selected within the bounds", () => {
+    const { result } = renderHook(() => useGridSelection({ rows: 5, cols: 3 }))
+
+    act(() => result.current.selectRange({ rowStart: 3, rowEnd: 60, colStart: 1, colEnd: 40 }))
+
+    expect(result.current.selection).toEqual({ anchor: at(3, 1), focus: at(4, 2) })
+  })
+
   it("moves with the navigation commands and answers with the new selection", () => {
     const { result } = renderHook(() => useGridSelection(bounds))
     let next: Selection | undefined

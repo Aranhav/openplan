@@ -2,6 +2,7 @@ import { useMemo, useState } from "react"
 import type { GridCommand } from "./core/keymap"
 import {
   type Bounds,
+  type CellRange,
   type Pos,
   type Selection,
   move,
@@ -74,6 +75,14 @@ export function useGridSelection(bounds: Bounds) {
     setStored((previous) => ({ anchor: extend ? previous.anchor : pos, focus: pos }))
   }
 
+  /** Selects a range, the active cell at its top left, as after a paste or an undo. */
+  function selectRange(range: CellRange) {
+    setStored({
+      anchor: { row: range.rowStart, col: range.colStart },
+      focus: { row: range.rowEnd, col: range.colEnd },
+    })
+  }
+
   /**
    * Applies a navigation command and answers the selection it leads to. Any other command is
    * not for the selection: it answers `undefined` and changes nothing.
@@ -86,5 +95,5 @@ export function useGridSelection(bounds: Bounds) {
     return next
   }
 
-  return { selection, select, run }
+  return { selection, select, selectRange, run }
 }

@@ -35,7 +35,6 @@ import {
   columnAt,
   lineItemIdAt,
   lineItemSource,
-  revealOffset,
 } from "./grid-layout"
 import { useCellMenu } from "./use-cell-menu"
 import { useColumnWidths } from "./use-column-widths"
@@ -44,6 +43,7 @@ import { useFollowMember } from "./use-follow-member"
 import { sameSelection, useGridSelection } from "./use-grid-selection"
 import { useGridEditing } from "./use-grid-editing"
 import { useHoveredNote } from "./use-hovered-note"
+import { useReveal } from "./use-reveal"
 import { type Lookup, useViewData } from "./use-view-data"
 import type {
   ConditionalFormat,
@@ -111,9 +111,6 @@ function GridSkeleton() {
   )
 }
 
-// How long after the active cell moves that headers arriving late may still move the grid to it.
-const LATE_HEADERS_MS = 1000
-
 /** How many cells a range holds, in words, or nothing for a single cell. */
 function selectionMessage(range: CellRange): string {
   const rows = range.rowEnd - range.rowStart + 1
@@ -149,7 +146,10 @@ export function Grid({
   const data = useViewData(modelId, query, visible)
   const { rowDims, columnDims, totalRows, totalColumns, rowHeaders, colHeaders } = data
 
-  const { selection, select, run } = useGridSelection({ rows: totalRows, cols: totalColumns })
+  const { selection, select, selectRange, run } = useGridSelection({
+    rows: totalRows,
+    cols: totalColumns,
+  })
   const startDrag = useDragSelect(select)
 
   const { rowHeaderWidths, rowHeaderWidth, colWidths, colStarts, callbacks } = useColumnWidths({
@@ -226,41 +226,17 @@ export function Grid({
     }
   }, [activeLineItemId])
 
-  // Keep the end of the range that moves in view, clear of the sticky headers. Columns whose
-  // headers have not loaded count as the default width, so when headers arrive soon after the
-  // active cell has moved, its place has moved too, and the grid goes to it again.
-  const reveal = useEffectEvent((cell: Pos) => {
-    const element = scrollRef.current
-    if (!element || cell.row >= totalRows || cell.col >= totalColumns) {
-      return
-    }
-    const top = headerHeight + cell.row * ROW_HEIGHT
-    const left = rowHeaderWidth + colStarts[cell.col]
-    element.scrollTop = revealOffset(
-      { start: top, end: top + ROW_HEIGHT },
-      element.scrollTop,
-      element.clientHeight,
-      headerHeight,
-    )
-    element.scrollLeft = revealOffset(
-      { start: left, end: left + colWidths[cell.col] },
-      element.scrollLeft,
-      element.clientWidth,
-      rowHeaderWidth,
-    )
+  const selectAndReveal = useReveal({
+    gridRef: scrollRef,
+    selection,
+    selectRange,
+    totalRows,
+    totalColumns,
+    headerHeight,
+    rowHeaderWidth,
+    colStarts,
+    colWidths,
   })
-  const { row: focusRow, col: focusCol } = selection.focus
-  const focusStart = colStarts[focusCol]
-  const revealed = useRef<{ row: number; col: number; until: number } | null>(null)
-  useEffect(() => {
-    const previous = revealed.current
-    const moved = previous?.row !== focusRow || previous.col !== focusCol
-    const until = moved ? Date.now() + LATE_HEADERS_MS : (previous?.until ?? 0)
-    revealed.current = { row: focusRow, col: focusCol, until }
-    if (moved || Date.now() < until) {
-      reveal({ row: focusRow, col: focusCol })
-    }
-  }, [focusRow, focusCol, focusStart])
 
   // What the status region says. A new message replaces the node, so the same words said twice
   // are read twice.
@@ -328,6 +304,7 @@ export function Grid({
     },
     moveSelection: (direction) =>
       run({ type: "move", dir: direction, extend: false, jump: false }, 0),
+    selectRange: selectAndReveal,
     gridRef: scrollRef,
     focusGrid,
   })
