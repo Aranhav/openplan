@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use chrono::NaiveDate;
 use openplan_engine::{
     AxisSpec, Calendar, CellEdit, Command, CoordToken, EngineError, Format, InputChunk, ItemId,
@@ -801,9 +803,8 @@ fn damaged_chunks_are_refused() {
         let error = Model::from_parts(doc.clone(), vec![with(data)]).unwrap_err();
         assert_eq!(code(error), "structure.invalid", "{what}");
     }
-    if let Ok(model) = Model::from_parts(doc.clone(), vec![with(flipped)]) {
-        assert!(model.load_warnings() <= 144);
-    }
+    let error = Model::from_parts(doc.clone(), vec![with(flipped)]).unwrap_err();
+    assert_eq!(code(error), "structure.invalid", "a flipped byte");
 
     let stray = InputChunk {
         line_item: LineItemId::new(),
@@ -996,4 +997,269 @@ fn subsets_time_ranges_restricted_versions_and_scalars_round_trip() {
         vec![Value::Number(0.07)]
     );
     assert_eq!(read(&loaded, target, &every[..1]), vec![Value::Number(1.5)]);
+}
+
+#[test]
+fn no_flipped_byte_loads_as_other_values() {
+    let grid = grid();
+    let doc = grid.book.model.export_structure();
+    let good = grid.book.model.export_inputs_for(grid.units).remove(0);
+    let expected = read(&grid.book.model, grid.units, &grid.cells);
+
+    for at in 0..good.data.len() {
+        let mut data = good.data.clone();
+        data[at] ^= 0xff;
+        let chunk = InputChunk {
+            data,
+            ..good.clone()
+        };
+        if let Ok(loaded) = Model::from_parts(doc.clone(), vec![chunk]) {
+            assert_eq!(loaded.load_warnings(), 0, "byte {at}");
+            assert_eq!(
+                read(&loaded, grid.units, &grid.cells),
+                expected,
+                "byte {at}"
+            );
+        }
+    }
+}
+
+#[test]
+fn an_unsupported_chunk_format_is_not_called_damaged() {
+    let grid = grid();
+    let doc = grid.book.model.export_structure();
+    let good = grid.book.model.export_inputs_for(grid.units).remove(0);
+    let mut raw = zstd::bulk::decompress(&good.data, 1 << 20).unwrap();
+    raw[0] = 9;
+    let chunk = InputChunk {
+        data: zstd::bulk::compress(&raw, 3).unwrap(),
+        ..good
+    };
+
+    let error = Model::from_parts(doc, vec![chunk]).unwrap_err();
+
+    assert_eq!(error.code(), "structure.invalid");
+    assert_eq!(error.to_string(), "Chunk format 9 is not supported.");
+}
+
+/// Loads the stored cells of the grid into its structure after `change`, which makes some line
+/// item not what it was when its cells were stored.
+fn load_changed(grid: &Grid, change: impl FnOnce(&mut StructureDoc)) -> Model {
+    let mut doc = grid.book.model.export_structure();
+    change(&mut doc);
+    Model::from_parts(doc, grid.book.model.export_inputs()).unwrap()
+}
+
+fn line_item_of(doc: &mut StructureDoc, id: LineItemId) -> &mut LineItem {
+    doc.line_items.iter_mut().find(|li| li.id == id).unwrap()
+}
+
+/// What the three picks of the grid read.
+fn picks(model: &Model, grid: &Grid) -> Vec<Value> {
+    let cells: Vec<Vec<CoordToken>> = grid.products[..3].iter().map(|&p| vec![item(p)]).collect();
+    read(model, grid.pick, &cells)
+}
+
+#[test]
+fn month_cells_are_left_out_when_the_line_item_counts_quarters() {
+    let grid = grid();
+    let loaded = load_changed(&grid, |doc| {
+        line_item_of(doc, grid.units).time_scale = TimeScale::Level(TimeLevel::Quarter);
+    });
+
+    // The 144 cells of Units are left out, not read as the cells of other periods.
+    assert_eq!(loaded.load_warnings(), 144);
+    let versions = grid.book.version_ids();
+    let quarters: Vec<Vec<CoordToken>> = grid
+        .products
+        .iter()
+        .flat_map(|&product| {
+            let versions = &versions;
+            (1..=4).flat_map(move |quarter| {
+                versions.iter().map(move |&version| {
+                    vec![
+                        item(product),
+                        CoordToken::Period(format!("Q{quarter} FY26")),
+                        version_token(version),
+                    ]
+                })
+            })
+        })
+        .collect();
+    assert_eq!(quarters.len(), 48);
+    assert_eq!(
+        read(&loaded, grid.units, &quarters),
+        vec![Value::Number(0.0); 48]
+    );
+    assert_eq!(picks(&loaded, &grid), picks(&grid.book.model, &grid));
+}
+
+#[test]
+fn period_values_are_left_out_when_the_line_item_holds_other_periods() {
+    // Three years have twelve quarters, so month 7 is also quarter 7: nothing but the level
+    // tells the two apart.
+    let mut book = Book::new(3);
+    let plan = book.module("Plan", vec![month_axis()]);
+    let start = book.add(line_item(
+        plan,
+        "Start",
+        Format::TimePeriod {
+            level: TimeLevel::Month,
+        },
+        None,
+    ));
+    let cells: Vec<Vec<CoordToken>> = (0..3).map(|m| vec![month_token(m)]).collect();
+    book.set(
+        start,
+        cells
+            .iter()
+            .map(|coords| (coords.clone(), Value::Period(Some((TimeLevel::Month, 7)))))
+            .collect(),
+    );
+    let doc = book.model.export_structure();
+    let chunks = book.model.export_inputs();
+    let same = Model::from_parts(doc.clone(), chunks.clone()).unwrap();
+    assert_eq!(same.load_warnings(), 0);
+    assert_eq!(
+        read(&same, start, &cells[..1]),
+        vec![Value::Period(Some((TimeLevel::Month, 7)))]
+    );
+
+    let mut quarterly = doc;
+    line_item_of(&mut quarterly, start).format = Format::TimePeriod {
+        level: TimeLevel::Quarter,
+    };
+    let loaded = Model::from_parts(quarterly, chunks).unwrap();
+
+    assert_eq!(loaded.load_warnings(), 3);
+    assert_eq!(read(&loaded, start, &cells), vec![Value::Period(None); 3]);
+}
+
+#[test]
+fn cells_are_left_out_when_the_module_gets_a_time_range() {
+    let mut grid = grid();
+    let range = TimeRangeId::new();
+    grid.book.apply(Command::CreateTimeRange {
+        id: range,
+        name: "Plan".to_string(),
+        first_year: 2026,
+        years: 1,
+    });
+    let loaded = load_changed(&grid, |doc| {
+        let sales = doc.modules.iter_mut().find(|m| m.name == "Sales").unwrap();
+        for axis in &mut sales.axes {
+            if let AxisSpec::Time { range: used, .. } = axis {
+                *used = Some(range);
+            }
+        }
+    });
+
+    assert_eq!(loaded.load_warnings(), 144);
+    assert_eq!(
+        read(&loaded, grid.units, &grid.cells),
+        vec![Value::Number(0.0); 144]
+    );
+    assert_eq!(picks(&loaded, &grid), picks(&grid.book.model, &grid));
+}
+
+#[test]
+fn cells_in_months_are_left_out_when_the_fiscal_year_starts_in_another_month() {
+    let grid = grid();
+    let loaded = load_changed(&grid, |doc| doc.calendar.fiscal_year_start_month = 4);
+
+    // The index of Jan 26 was 0 and is 9 now, so the cells that were typed in for the months
+    // that Units has now are not the ones that were typed in for these months.
+    assert_eq!(loaded.load_warnings(), 144);
+    let versions = grid.book.version_ids();
+    let early: Vec<Vec<CoordToken>> = (0..3)
+        .map(|m| {
+            vec![
+                item(grid.products[0]),
+                month_token(m),
+                version_token(versions[1]),
+            ]
+        })
+        .collect();
+    assert_eq!(
+        read(&loaded, grid.units, &early),
+        vec![Value::Number(0.0); 3]
+    );
+    assert_eq!(
+        picks(&loaded, &grid),
+        picks(&grid.book.model, &grid),
+        "a line item without months does not care when the fiscal year starts"
+    );
+}
+
+#[test]
+fn cells_are_left_out_when_a_list_axis_becomes_a_subset_of_it() {
+    let mut grid = grid();
+    let subset = SubsetId::new();
+    let list = grid
+        .book
+        .model
+        .structure()
+        .list_by_name("Products")
+        .unwrap()
+        .id;
+    grid.book.apply(Command::CreateSubset {
+        id: subset,
+        list,
+        name: "All".to_string(),
+        items: grid.products.clone(),
+    });
+    let loaded = load_changed(&grid, |doc| {
+        let picks = doc.modules.iter_mut().find(|m| m.name == "Picks").unwrap();
+        picks.axes = vec![AxisSpec::Subset { subset }];
+    });
+
+    assert_eq!(loaded.load_warnings(), 3);
+    assert_eq!(
+        read(&loaded, grid.units, &grid.cells),
+        read(&grid.book.model, grid.units, &grid.cells)
+    );
+}
+
+#[test]
+fn large_text_is_split_into_chunks_that_can_be_read_back() {
+    const CELLS: usize = 5;
+    const LENGTH: usize = 14 << 20;
+    let mut book = Book::new(1);
+    let (list, items) = book.list(
+        "Notes",
+        None,
+        &[
+            ("A", None),
+            ("B", None),
+            ("C", None),
+            ("D", None),
+            ("E", None),
+        ],
+    );
+    let module = book.module("Notes", vec![list_axis(list)]);
+    let note = book.add(line_item(module, "Note", Format::Text, None));
+    let texts: Vec<Arc<str>> = (0..CELLS)
+        .map(|i| Arc::from(char::from(b'a' + i as u8).to_string().repeat(LENGTH)))
+        .collect();
+    book.set(
+        note,
+        items
+            .iter()
+            .zip(&texts)
+            .map(|(&id, text)| (vec![item(id)], Value::Text(Arc::clone(text))))
+            .collect(),
+    );
+
+    let chunks = book.model.export_inputs_for(note);
+
+    assert!(chunks.len() >= 2, "{} chunk(s) for 70 MiB", chunks.len());
+    assert_eq!(
+        chunks.iter().map(|chunk| chunk.chunk).collect::<Vec<_>>(),
+        (0..chunks.len() as u32).collect::<Vec<_>>()
+    );
+    let loaded = Model::from_parts(book.model.export_structure(), chunks).unwrap();
+    assert_eq!(loaded.load_warnings(), 0);
+    let cells: Vec<Vec<CoordToken>> = items.iter().map(|&id| vec![item(id)]).collect();
+    let expected: Vec<Value> = texts.into_iter().map(Value::Text).collect();
+    assert!(read(&loaded, note, &cells) == expected);
 }

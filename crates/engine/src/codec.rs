@@ -1,16 +1,25 @@
 //! Saving and loading a model (spec §6): its structure as a document, and the cells typed into
 //! input line items as compressed chunks.
 //!
-//! A chunk holds the non-blank cells of one input line item, at most [`CHUNK_CELLS`] of them,
-//! in the order of the line item's grid. A cell is addressed by what lies at each of its
-//! coordinates, the id of the item or version and the index of the period, and not by its
-//! position, so that chunks still load after items were reordered, added or deleted: the cells
-//! of items that are gone are left out and counted in [`Model::load_warnings`].
+//! A chunk holds the non-blank cells of one input line item, at most [`CHUNK_CELLS`] of them
+//! and at most [`CHUNK_BYTES`] before compression, in the order of the line item's grid. A cell
+//! is addressed by what lies at each of its coordinates, the id of the item or version and the
+//! index of the period, and not by its position, so that chunks still load after items were
+//! reordered, added or deleted: the cells of items that are gone are left out and counted in
+//! [`Model::load_warnings`].
 //!
-//! Before zstd compresses it, a chunk is, little-endian throughout:
+//! The keys of a Time axis are period indices, which mean nothing without the level of the
+//! axis, its time range and the month the fiscal year starts in, and period values mean nothing
+//! without their level. A chunk therefore says what its axes and values were, and is left out
+//! whole, with its cells counted, when the line item is not like that any more.
 //!
-//! - a byte for the format of the chunk, a byte for the kind of value, a byte for the number of
+//! Before zstd compresses it with a checksum, a chunk is, little-endian throughout:
+//!
+//! - a byte for the format of the chunk, a byte for the kind of value, a byte for the level of
+//!   period values, a byte for the month the fiscal year starts in, a byte for the number of
 //!   axes and a `u32` for the number of cells;
+//! - for each axis, 19 bytes that say what the axis is: a tag for lists, subsets, list tops,
+//!   time and versions, and for time the level and the time range, if there is one;
 //! - for each axis, a `u32` count and that many 16-byte keys: the ids or period indices that the
 //!   cells of the chunk lie on;
 //! - for each axis, the index into its keys for every cell, in 1, 2 or 4 bytes as the count of
@@ -19,13 +28,14 @@
 //!   bytes of the text, 4 for a date or a period, and the 16-byte id of the item.
 
 use std::collections::{HashMap, HashSet};
+use std::io::Read;
 
 use chrono::NaiveDate;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::calendar::{Calendar, TimeRange};
+use crate::calendar::{Calendar, TimeLevel, TimeRange};
 use crate::command::{Command, ItemSpec, LineItemPatch};
 use crate::error::EngineError;
 use crate::ids::{ItemId, LineItemId, ListId};
@@ -43,9 +53,19 @@ const CHUNK_FORMAT: u8 = 1;
 /// Most cells in a chunk.
 const CHUNK_CELLS: usize = 1_000_000;
 
-/// Most bytes a chunk may take once decompressed: room for the largest chunk of the widest
-/// cells, so that a damaged size cannot make a load allocate without bound.
-const MAX_DECODED_BYTES: u64 = 1 << 30;
+/// Most bytes a chunk takes before it is compressed. A chunk of more is split in halves until
+/// every part fits, or is a single cell.
+const CHUNK_BYTES: usize = 64 << 20;
+
+/// Most bytes a chunk may take once decompressed, whatever it says about itself, so that a
+/// damaged or crafted chunk cannot make a load use memory without bound. It leaves room for
+/// text, the only value of any length.
+const MAX_DECODED_BYTES: usize = 256 << 20;
+
+/// Bytes of a chunk that come before everything that depends on its size: the format, the kind
+/// of value, the level of period values, the first month of the fiscal year, the number of axes
+/// and the number of cells.
+const HEAD_BYTES: usize = 9;
 
 /// Stands for a cell that is left out, in place of its position.
 const LEFT_OUT: usize = usize::MAX;
@@ -160,28 +180,18 @@ impl Model {
         let Some(column) = self.input_cells(li) else {
             return Vec::new();
         };
-        let encoder = Encoder::new(structure, line_item, column);
-        let positions: Vec<usize> = (0..column.len())
-            .filter(|&position| !column.is_blank_at(position))
-            .collect();
-        positions
-            .par_chunks(CHUNK_CELLS)
-            .enumerate()
-            .map(|(number, positions)| InputChunk {
-                line_item: li,
-                chunk: number as u32,
-                data: encoder.encode(positions),
-            })
-            .collect()
+        Encoder::new(structure, line_item, column).chunks(li)
     }
 
     /// Builds a model from the structure and the stored cells of its input line items, and
     /// calculates the other line items.
     ///
     /// Cells of `chunks` that lie on items, versions or periods the structure does not have, or
-    /// belong to line items it does not have or that are calculated, or are of another kind
-    /// than their line item, are left out and counted by [`Model::load_warnings`]. A structure
-    /// that is not consistent, or a chunk that is damaged, is an error.
+    /// belong to line items it does not have or that are calculated, are left out and counted by
+    /// [`Model::load_warnings`]. So are all the cells of a chunk whose line item is not like it
+    /// was when the chunk was written: another kind of value, other axes, another level or time
+    /// range of a Time axis or of period values, or a fiscal year that starts in another month.
+    /// A structure that is not consistent, or a chunk that is damaged, is an error.
     pub fn from_parts(doc: StructureDoc, chunks: Vec<InputChunk>) -> Result<Model, EngineError> {
         let structure = rebuild(doc)?;
         let (inputs, left_out) = load_inputs(&structure, chunks)?;
@@ -373,6 +383,101 @@ impl Kind {
     }
 }
 
+/// The tag of the descriptor of a Time axis.
+const TIME_AXIS: u8 = 3;
+
+/// The bytes that say what an axis is: a tag, for time the level, and for time whether the axis
+/// has a time range (a byte) and which (16 bytes).
+const DESCRIPTOR_BYTES: usize = 19;
+
+fn describe(axis: &Axis) -> [u8; DESCRIPTOR_BYTES] {
+    let mut bytes = [0; DESCRIPTOR_BYTES];
+    match axis {
+        Axis::List(_) => bytes[0] = 0,
+        Axis::Subset(_) => bytes[0] = 1,
+        Axis::ListTop(_) => bytes[0] = 2,
+        Axis::Time { level, range } => {
+            bytes[0] = TIME_AXIS;
+            bytes[1] = level_code(*level);
+            if let Some(range) = range {
+                bytes[2] = 1;
+                bytes[3..].copy_from_slice(&range.0.as_u128().to_le_bytes());
+            }
+        }
+        Axis::Versions => bytes[0] = 4,
+    }
+    bytes
+}
+
+fn level_code(level: TimeLevel) -> u8 {
+    match level {
+        TimeLevel::Month => 0,
+        TimeLevel::Quarter => 1,
+        TimeLevel::HalfYear => 2,
+        TimeLevel::Year => 3,
+        TimeLevel::All => 4,
+    }
+}
+
+/// What a chunk says about the line item its cells were typed into. Cells written for a line
+/// item that is not like that any more are not where they were.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Identity {
+    kind: Kind,
+    /// The level of the periods of a period-valued line item, else 0.
+    level: u8,
+    /// The month the fiscal year starts in, which decides what month a month index is.
+    fiscal_start: u8,
+    axes: Vec<[u8; DESCRIPTOR_BYTES]>,
+}
+
+impl Identity {
+    fn of(structure: &Structure, ty: &ValueType, shape: &Shape) -> Identity {
+        Identity {
+            kind: Kind::of(ty),
+            level: match ty {
+                ValueType::Period(level) => level_code(*level),
+                _ => 0,
+            },
+            fiscal_start: structure.calendar.fiscal_year_start_month,
+            axes: shape.axes.iter().map(describe).collect(),
+        }
+    }
+
+    /// Whether cells written for a line item like `self` are cells of one like `now`. The month
+    /// the fiscal year starts in only matters to line items that hold months or periods.
+    fn fits(&self, now: &Identity) -> bool {
+        let in_months =
+            now.kind == Kind::Period || now.axes.iter().any(|axis| axis[0] == TIME_AXIS);
+        self.kind == now.kind
+            && self.level == now.level
+            && self.axes == now.axes
+            && (!in_months || self.fiscal_start == now.fiscal_start)
+    }
+}
+
+/// The most bytes that a chunk of `count` cells over `axes` axes can take once decompressed,
+/// not counting the bytes of its head: for each axis its descriptor, the count of its keys, at
+/// most one key for each cell and an index for each cell, and the value of each cell.
+fn decoded_limit(kind: Kind, axes: usize, count: usize) -> usize {
+    let values = match kind {
+        Kind::Number => 8,
+        Kind::Boolean => 1,
+        Kind::Date | Kind::Period => 4,
+        Kind::Item => 16,
+        Kind::Text => 4,
+    };
+    let text = if kind == Kind::Text {
+        MAX_DECODED_BYTES
+    } else {
+        0
+    };
+    axes.saturating_mul(DESCRIPTOR_BYTES + 4 + count * (16 + 4))
+        .saturating_add(count * values)
+        .saturating_add(text)
+        .min(MAX_DECODED_BYTES)
+}
+
 /// The width in bytes of an index into `keys` keys.
 fn index_width(keys: usize) -> usize {
     match keys {
@@ -384,7 +489,7 @@ fn index_width(keys: usize) -> usize {
 
 /// Turns the cells of one input line item into chunks.
 struct Encoder<'a> {
-    kind: Kind,
+    identity: Identity,
     column: &'a Column,
     shape: Shape,
     /// What lies at each position of each axis, `None` where an item was deleted.
@@ -418,7 +523,7 @@ impl<'a> Encoder<'a> {
             _ => Vec::new(),
         };
         Encoder {
-            kind: Kind::of(&ty),
+            identity: Identity::of(structure, &ty, &shape),
             column,
             shape,
             keys,
@@ -426,8 +531,55 @@ impl<'a> Encoder<'a> {
         }
     }
 
-    /// The compressed chunk of the cells at `positions`, which are in order.
-    fn encode(&self, positions: &[usize]) -> Vec<u8> {
+    /// The chunks of the line item, numbered from 0.
+    fn chunks(&self, line_item: LineItemId) -> Vec<InputChunk> {
+        let positions: Vec<usize> = (0..self.column.len())
+            .filter(|&position| !self.column.is_blank_at(position))
+            .collect();
+        let encoded: Vec<Vec<Vec<u8>>> = positions
+            .par_chunks(CHUNK_CELLS)
+            .map(|positions| self.encode(positions))
+            .collect();
+        encoded
+            .into_iter()
+            .flatten()
+            .enumerate()
+            .map(|(number, data)| InputChunk {
+                line_item,
+                chunk: number as u32,
+                data,
+            })
+            .collect()
+    }
+
+    /// The compressed chunks of the cells at `positions`, which are in order: one, unless it
+    /// would take more than [`CHUNK_BYTES`] and the cells can be split, and none if every cell is
+    /// left out.
+    fn encode(&self, positions: &[usize]) -> Vec<Vec<u8>> {
+        let Some(bytes) = self.layout(positions) else {
+            return Vec::new();
+        };
+        if bytes.len() > CHUNK_BYTES && positions.len() > 1 {
+            let (first, second) = positions.split_at(positions.len() / 2);
+            let mut chunks = self.encode(first);
+            chunks.extend(self.encode(second));
+            return chunks;
+        }
+        let mut compressor = zstd::bulk::Compressor::new(zstd::DEFAULT_COMPRESSION_LEVEL)
+            .expect("zstd sets up a compressor");
+        compressor
+            .set_parameter(zstd::zstd_safe::CParameter::ChecksumFlag(true))
+            .expect("zstd adds a checksum");
+        vec![
+            compressor
+                .compress(&bytes)
+                .expect("compressing into a buffer of the largest possible size cannot fail"),
+        ]
+    }
+
+    /// The chunk of the cells at `positions` before it is compressed, or `None` if every one of
+    /// them is left out.
+    fn layout(&self, positions: &[usize]) -> Option<Vec<u8>> {
         let axes = self.shape.lens.len();
         let mut slots: Vec<Vec<Option<u32>>> = self
             .shape
@@ -463,10 +615,21 @@ impl<'a> Encoder<'a> {
             }
             count += 1;
         }
+        if count == 0 {
+            return None;
+        }
 
+        let identity = &self.identity;
         let mut bytes = Vec::with_capacity(values.len() + positions.len() * axes * 2);
-        bytes.extend([CHUNK_FORMAT, self.kind as u8, axes as u8]);
+        bytes.extend([
+            CHUNK_FORMAT,
+            identity.kind as u8,
+            identity.level,
+            identity.fiscal_start,
+            axes as u8,
+        ]);
         bytes.extend(count.to_le_bytes());
+        bytes.extend(identity.axes.iter().flatten());
         for dictionary in &dictionaries {
             bytes.extend((dictionary.len() as u32).to_le_bytes());
             for key in dictionary {
@@ -485,8 +648,7 @@ impl<'a> Encoder<'a> {
             }
         }
         bytes.extend(values);
-        zstd::bulk::compress(&bytes, zstd::DEFAULT_COMPRESSION_LEVEL)
-            .expect("compressing into a buffer of the largest possible size cannot fail")
+        Some(bytes)
     }
 
     /// Appends the value of the cell at `position`. A cell whose value is the id of an item
@@ -529,10 +691,6 @@ impl<'a> Reader<'a> {
         Ok(&rest[..len])
     }
 
-    fn byte(&mut self) -> Result<u8, EngineError> {
-        Ok(self.take(1)?[0])
-    }
-
     fn u32(&mut self) -> Result<u32, EngineError> {
         let bytes = self.take(4)?;
         Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
@@ -545,7 +703,7 @@ fn le_u128(bytes: &[u8]) -> u128 {
 
 /// A chunk taken apart.
 struct Chunk {
-    kind: Kind,
+    identity: Identity,
     count: usize,
     /// For each axis, the keys the cells of the chunk lie on.
     dictionaries: Vec<Vec<u128>>,
@@ -557,28 +715,57 @@ struct Chunk {
 }
 
 impl Chunk {
+    /// Reads the head of a chunk from the decompressed data, then what the head allows at most
+    /// of the rest, so that a chunk cannot make this use more memory than its cells can need.
     fn parse(data: &[u8]) -> Result<Chunk, EngineError> {
-        let size = zstd::zstd_safe::get_frame_content_size(data)
-            .map_err(|_| damaged("it is not compressed data"))?
-            .filter(|&size| size <= MAX_DECODED_BYTES)
-            .ok_or_else(|| damaged("it does not say a size that can be read"))?;
-        let decompressed = zstd::bulk::decompress(data, size as usize)
-            .map_err(|_| damaged("it does not decompress"))?;
+        let mut decoder =
+            zstd::Decoder::with_buffer(data).map_err(|_| damaged("it is not compressed data"))?;
+        let short = || damaged("it does not decompress, or ends too soon");
+        let mut head = [0; HEAD_BYTES];
+        decoder.read_exact(&mut head[..1]).map_err(|_| short())?;
+        if head[0] != CHUNK_FORMAT {
+            return Err(invalid(format!(
+                "Chunk format {} is not supported.",
+                head[0]
+            )));
+        }
+        decoder.read_exact(&mut head[1..]).map_err(|_| short())?;
+        let kind = Kind::ALL
+            .get(usize::from(head[1]))
+            .copied()
+            .ok_or_else(|| damaged("it holds an unknown kind of value"))?;
+        let axes = usize::from(head[4]);
+        let count = u32::from_le_bytes([head[5], head[6], head[7], head[8]]) as usize;
+        if count > CHUNK_CELLS {
+            return Err(damaged("it has too many cells"));
+        }
+        let limit = decoded_limit(kind, axes, count);
+        // The size the frame says is only a hint to allocate once; the limit is what is trusted.
+        let hint = zstd::zstd_safe::get_frame_content_size(data)
+            .ok()
+            .flatten()
+            .map_or(0, |size| size.min(limit as u64) as usize);
+        let mut decompressed = Vec::with_capacity(hint.saturating_sub(HEAD_BYTES));
+        (&mut decoder)
+            .take(limit as u64 + 1)
+            .read_to_end(&mut decompressed)
+            .map_err(|_| damaged("it does not decompress, or does not match its checksum"))?;
+        if decompressed.len() > limit {
+            return Err(damaged("it holds more than its head allows"));
+        }
+
         let mut reader = Reader {
             bytes: &decompressed,
             read: 0,
         };
-        if reader.byte()? != CHUNK_FORMAT {
-            return Err(damaged("its format is not supported"));
-        }
-        let kind = Kind::ALL
-            .get(usize::from(reader.byte()?))
-            .copied()
-            .ok_or_else(|| damaged("it holds an unknown kind of value"))?;
-        let axes = usize::from(reader.byte()?);
-        let count = reader.u32()? as usize;
-        if count > CHUNK_CELLS {
-            return Err(damaged("it has too many cells"));
+        let mut descriptors = Vec::with_capacity(axes);
+        for _ in 0..axes {
+            let descriptor = reader.take(DESCRIPTOR_BYTES)?;
+            descriptors.push(
+                descriptor
+                    .try_into()
+                    .expect("a descriptor is DESCRIPTOR_BYTES long"),
+            );
         }
         let mut dictionaries = Vec::with_capacity(axes);
         for _ in 0..axes {
@@ -608,7 +795,12 @@ impl Chunk {
         }
         let values_at = reader.read;
         Ok(Chunk {
-            kind,
+            identity: Identity {
+                kind,
+                level: head[2],
+                fiscal_start: head[3],
+                axes: descriptors,
+            },
             count,
             dictionaries,
             indices,
@@ -633,7 +825,7 @@ impl Chunk {
 
 /// Where the cells of an input line item are, and what a stored cell must be to be one of them.
 struct Target<'a> {
-    kind: Kind,
+    identity: Identity,
     shape: Shape,
     /// For each axis, the position of what lies at it, by key.
     positions: Vec<HashMap<u128, u32>>,
@@ -664,7 +856,7 @@ impl<'a> Target<'a> {
             .collect::<Result<Vec<_>, EngineError>>()?;
         let ty = line_item.format.value_type();
         Ok(Target {
-            kind: Kind::of(&ty),
+            identity: Identity::of(structure, &ty, &shape),
             shape,
             positions,
             list: match ty {
@@ -681,7 +873,7 @@ impl<'a> Target<'a> {
     /// Writes the cells of `chunk` that belong here into `column` and returns how many it
     /// left out.
     fn load(&self, chunk: &Chunk, column: &mut Column) -> Result<usize, EngineError> {
-        if chunk.kind != self.kind || chunk.dictionaries.len() != self.positions.len() {
+        if !chunk.identity.fits(&self.identity) {
             return Ok(chunk.count);
         }
         let mut cells = vec![0usize; chunk.count];
@@ -836,4 +1028,89 @@ fn load_inputs(
         left_out += Chunk::parse(&chunk.data)?.count;
     }
     Ok((inputs, left_out))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::command::ItemSpec;
+    use crate::ids::ModuleId;
+    use crate::structure::{AxisSpec, TimeScale, VersionsScope};
+    use crate::value::Format;
+
+    #[test]
+    fn cells_under_deleted_items_make_no_chunk() {
+        let mut model = Model::new(Calendar {
+            fiscal_year_start_month: 1,
+            first_year: 2026,
+            years: 1,
+            current_month: None,
+        });
+        let (list, module, units) = (ListId::new(), ModuleId::new(), LineItemId::new());
+        let items: Vec<ItemId> = (0..3).map(|_| ItemId::new()).collect();
+        model
+            .apply_batch(vec![
+                Command::CreateList {
+                    id: list,
+                    name: "Products".to_string(),
+                    parent: None,
+                    top_level_name: None,
+                    numbered: false,
+                    production_data: false,
+                },
+                Command::UpsertListItems {
+                    list,
+                    items: items
+                        .iter()
+                        .enumerate()
+                        .map(|(position, id)| ItemSpec {
+                            id: *id,
+                            code: None,
+                            name: format!("P{position}"),
+                            parent: None,
+                        })
+                        .collect(),
+                },
+                Command::CreateModule {
+                    id: module,
+                    name: "Sales".to_string(),
+                    axes: vec![AxisSpec::List { list }],
+                    functional_area: String::new(),
+                },
+                Command::CreateLineItem(LineItem {
+                    id: units,
+                    module,
+                    name: "Units".to_string(),
+                    ordinal: 0,
+                    format: Format::number(),
+                    formula: None,
+                    summary: SummaryMethod::Sum,
+                    time_summary: None,
+                    applies_to: None,
+                    time_scale: TimeScale::Module,
+                    versions: VersionsScope::Module,
+                    notes: String::new(),
+                    code: None,
+                    read_access_driver: None,
+                    write_access_driver: None,
+                }),
+                Command::DeleteListItems {
+                    list,
+                    ids: vec![items[1]],
+                },
+            ])
+            .unwrap();
+        let line_item = model.structure().line_item(units).unwrap();
+
+        // The model blanks the cells of deleted items, so a column that holds one is made here.
+        let under_deleted = Column::Number(vec![0.0, 5.0, 0.0]);
+        let encoder = Encoder::new(model.structure(), line_item, &under_deleted);
+        assert!(encoder.chunks(units).is_empty());
+
+        let with_live = Column::Number(vec![0.0, 5.0, 7.0]);
+        let encoder = Encoder::new(model.structure(), line_item, &with_live);
+        let chunks = encoder.chunks(units);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(Chunk::parse(&chunks[0].data).unwrap().count, 1);
+    }
 }
