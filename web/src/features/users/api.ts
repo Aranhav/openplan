@@ -1,6 +1,6 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { api, unwrap } from "@/lib/api/client"
-import { queryKeys } from "@/lib/api/keys"
+import { isMembersKey, queryKeys } from "@/lib/api/keys"
 import type { components } from "@/lib/api/schema"
 
 type CreateUserRequest = components["schemas"]["CreateUserRequest"]
@@ -8,6 +8,11 @@ type UpdateUserRequest = components["schemas"]["UpdateUserRequest"]
 type UpdateProfileRequest = components["schemas"]["UpdateProfileRequest"]
 type ChangePasswordRequest = components["schemas"]["ChangePasswordRequest"]
 type MeResponse = components["schemas"]["MeResponse"]
+
+/** Members lists show a user's name, so a rename makes them out of date in every workspace. */
+function refreshMembers(queryClient: QueryClient) {
+  return queryClient.invalidateQueries({ predicate: ({ queryKey }) => isMembersKey(queryKey) })
+}
 
 export function useUsers() {
   return useQuery({
@@ -34,6 +39,7 @@ export function useUpdateUser() {
       const signedInId = queryClient.getQueryData<MeResponse>(queryKeys.me)?.user.id
       return Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.users }),
+        refreshMembers(queryClient),
         updated.id === signedInId && queryClient.invalidateQueries({ queryKey: queryKeys.me }),
       ])
     },
@@ -46,7 +52,10 @@ export function useUpdateProfile() {
     mutationFn: (body: UpdateProfileRequest) => unwrap(api.PATCH("/auth/me", { body })),
     onSuccess: (user) => {
       queryClient.setQueryData<MeResponse>(queryKeys.me, (me) => me && { ...me, user })
-      return queryClient.invalidateQueries({ queryKey: queryKeys.users })
+      return Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.users }),
+        refreshMembers(queryClient),
+      ])
     },
   })
 }
