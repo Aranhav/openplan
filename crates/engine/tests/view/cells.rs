@@ -1,7 +1,9 @@
 use crate::common::*;
+use openplan_engine::view::members;
 use openplan_engine::{
-    AxisSpec, CellFlag, Command, CoordToken, FilterOp, Format, LineItem, LineItemPatch, RowFilter,
-    SubsetId, SummaryMethod, TimeLevel, TimeScale, Value, VersionsScope, ViewDim,
+    AxisSpec, Calendar, CellFlag, Command, CoordToken, FilterOp, Format, LineItem, LineItemPatch,
+    Model, RowFilter, SubsetId, SummaryMethod, TimeLevel, TimeRangeId, TimeScale, Value,
+    VersionsScope, ViewDim,
 };
 
 #[test]
@@ -464,4 +466,173 @@ fn item_and_period_values_carry_their_text() {
         value: Some(Value::Text("de".into())),
     }];
     assert_eq!(labels(&run(&w.model, &q).rows, 0), vec!["US"]);
+}
+
+#[test]
+fn quarter_scale_line_items_switch_over_by_quarter() {
+    let mut w = world();
+    let budget = w.model.structure().version_by_name("Budget").unwrap().id;
+    // The first four months, April to July, show the actual version in the budget: Q1 is wholly
+    // before the switchover, Q2 straddles it.
+    w.model
+        .apply(Command::UpsertVersion {
+            id: budget,
+            name: "Budget".to_string(),
+            is_actual: false,
+            is_current: true,
+            switchover: Some(4),
+        })
+        .unwrap();
+    let quarterly = add(
+        &mut w.model,
+        LineItem {
+            time_scale: TimeScale::Level(TimeLevel::Quarter),
+            ..line_item(w.sales, "Quarterly", 2, Format::number(), None)
+        },
+    );
+    for (quarter, version, value) in [("Q1 FY27", "Actual", 7.0), ("Q2 FY27", "Budget", 2.0)] {
+        let at = vec![
+            CoordToken::Item(w.de),
+            period(quarter),
+            version_token(&w.model, version),
+        ];
+        set(&mut w.model, quarterly, at, num(value));
+    }
+    let mut q = query_of(
+        w.sales,
+        vec![ViewDim::Time],
+        vec![ViewDim::LineItems],
+        vec![page_at(w.countries(), &key(w.de)), page(ViewDim::Versions)],
+    );
+    q.line_items = Some(vec![quarterly]);
+
+    let result = run(&w.model, &q);
+
+    let quarters: Vec<&str> = labels(&result.rows, 0);
+    let at = |label: &str| quarters.iter().position(|found| *found == label).unwrap();
+    let q1 = &result.cells[at("Q1 FY27")][0];
+    assert_eq!(number(q1), 7.0);
+    assert_eq!(q1.flags, vec![CellFlag::Readonly, CellFlag::Switchover]);
+    let q2 = &result.cells[at("Q2 FY27")][0];
+    assert_eq!(number(q2), 2.0);
+    assert_eq!(q2.flags, vec![CellFlag::Input]);
+}
+
+#[test]
+fn time_range_module_shows_its_own_periods_and_switchover() {
+    let mut model = Model::new(Calendar {
+        fiscal_year_start_month: 4,
+        first_year: 2027,
+        years: 3,
+        current_month: None,
+    });
+    let range = TimeRangeId::new();
+    model
+        .apply(Command::CreateTimeRange {
+            id: range,
+            name: "Second year".to_string(),
+            first_year: 2028,
+            years: 1,
+        })
+        .unwrap();
+    let plan = new_module(
+        &mut model,
+        "Plan",
+        vec![
+            AxisSpec::Time {
+                level: TimeLevel::Month,
+                range: Some(range),
+            },
+            AxisSpec::Versions,
+        ],
+    );
+    let units = number_item(&mut model, plan, "Units", 1);
+    // The range starts twelve months into the calendar: its first two months are before June 27.
+    let budget = model.structure().version_by_name("Budget").unwrap().id;
+    model
+        .apply(Command::UpsertVersion {
+            id: budget,
+            name: "Budget".to_string(),
+            is_actual: false,
+            is_current: true,
+            switchover: Some(14),
+        })
+        .unwrap();
+    for (month, version, value) in [
+        ("Apr 27", "Actual", 5.0),
+        ("May 27", "Actual", 6.0),
+        ("Jun 27", "Budget", 7.0),
+    ] {
+        let at = vec![period(month), version_token(&model, version)];
+        set(&mut model, units, at, num(value));
+    }
+
+    let periods = members(&model, plan, &ViewDim::Time, true).unwrap();
+    assert_eq!(periods.len(), 20);
+    assert_eq!(
+        member_labels(&periods)[..4],
+        ["Apr 27", "May 27", "Jun 27", "Q1 FY28"]
+    );
+    assert_eq!(member_labels(&periods)[18..], ["FY28", "Total"]);
+
+    let q = query_of(
+        plan,
+        vec![ViewDim::Time],
+        vec![ViewDim::LineItems],
+        vec![page(ViewDim::Versions)],
+    );
+    let result = run(&model, &q);
+    let cell = |row: usize| &result.cells[row][0];
+    assert_eq!(number(cell(0)), 5.0);
+    assert_eq!(
+        cell(0).flags,
+        vec![CellFlag::Readonly, CellFlag::Switchover]
+    );
+    assert_eq!(number(cell(1)), 6.0);
+    assert_eq!(
+        cell(1).flags,
+        vec![CellFlag::Readonly, CellFlag::Switchover]
+    );
+    assert_eq!(number(cell(2)), 7.0);
+    assert_eq!(cell(2).flags, vec![CellFlag::Input]);
+    assert_eq!(number(cell(3)), 18.0);
+    assert_eq!(cell(3).flags, vec![CellFlag::Summary, CellFlag::Readonly]);
+    assert_eq!(number(cell(19)), 18.0);
+}
+
+#[test]
+fn line_item_without_list_axes_broadcasts_down_a_list() {
+    let mut w = world();
+    let fee = add(
+        &mut w.model,
+        LineItem {
+            applies_to: Some(Vec::new()),
+            ..line_item(w.sales, "Fee", 2, Format::number(), None)
+        },
+    );
+    let at = vec![period("Apr 26"), version_token(&w.model, "Budget")];
+    set(&mut w.model, fee, at, num(3.0));
+    let mut q = query_of(
+        w.sales,
+        vec![w.countries()],
+        vec![ViewDim::LineItems],
+        vec![page(ViewDim::Time), page(ViewDim::Versions)],
+    );
+    q.line_items = Some(vec![fee]);
+
+    let result = run(&w.model, &q);
+
+    // Every country and every total shows the one value, as an input.
+    assert_eq!(result.total_rows, 6);
+    assert!(result.cells.iter().all(|row| number(&row[0]) == 3.0));
+    assert!(
+        result
+            .cells
+            .iter()
+            .all(|row| row[0].flags == vec![CellFlag::Input])
+    );
+    assert_eq!(
+        result.line_items[0].dims,
+        vec![ViewDim::Time, ViewDim::Versions]
+    );
 }

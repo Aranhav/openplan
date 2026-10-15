@@ -1,7 +1,7 @@
 use crate::common::*;
 use openplan_engine::{
     AxisSpec, CellEdit, Command, CoordToken, FilterOp, Format, ItemId, LineItem, ListId, Model,
-    RowFilter, SummaryMethod, TimeScale, Value, VersionsScope, ViewDim,
+    RowFilter, SubsetId, SummaryMethod, TimeScale, Value, VersionsScope, ViewDim,
 };
 
 #[test]
@@ -186,6 +186,105 @@ fn filter_line_item_with_foreign_dim_rejected() {
         message,
         "Filter line item 'Stock level' has a dimension this view doesn't have."
     );
+}
+
+#[test]
+fn filters_read_column_dims_at_their_totals_and_the_current_version() {
+    let mut w = world();
+    w.put(w.us, "Apr 26", "Budget", 10.0);
+    w.put(w.ca, "Apr 26", "Budget", 5.0);
+    w.put(w.de, "Apr 26", "Budget", 1.0);
+    w.put(w.us, "May 26", "Budget", 20.0);
+    w.put(w.us, "Jun 26", "Forecast", 100.0);
+    let filter = |op, value| RowFilter {
+        line_item: w.units,
+        op,
+        value: Some(num(value)),
+    };
+    // Months on rows; the countries and the versions on columns are read at the total of the
+    // countries and in the current version, the budget: April adds up to 16, May to 20.
+    let mut q = query_of(
+        w.sales,
+        vec![ViewDim::Time],
+        vec![w.countries(), ViewDim::Versions],
+        vec![page(ViewDim::LineItems)],
+    );
+    q.show_summaries = false;
+    q.filters = vec![filter(FilterOp::Gt, 17.0)];
+    assert_eq!(labels(&run(&w.model, &q).rows, 0), vec!["May 26"]);
+    q.filters = vec![filter(FilterOp::Gt, 15.0)];
+    assert_eq!(labels(&run(&w.model, &q).rows, 0), vec!["Apr 26", "May 26"]);
+}
+
+#[test]
+fn filters_read_a_subset_column_at_its_total() {
+    let mut model = Model::new(calendar());
+    let products = ListId::new();
+    let [widget, gadget] = std::array::from_fn(|_| ItemId::new());
+    let picked = SubsetId::new();
+    model
+        .apply_batch(vec![
+            Command::CreateList {
+                id: products,
+                name: "Products".to_string(),
+                parent: None,
+                top_level_name: None,
+                numbered: false,
+                production_data: false,
+            },
+            Command::UpsertListItems {
+                list: products,
+                items: vec![spec(widget, "Widget", None), spec(gadget, "Gadget", None)],
+            },
+            Command::CreateSubset {
+                id: picked,
+                list: products,
+                name: "Picked".to_string(),
+                items: vec![gadget, widget],
+            },
+        ])
+        .unwrap();
+    let stock = new_module(
+        &mut model,
+        "Stock",
+        vec![AxisSpec::Subset { subset: picked }, AxisSpec::Versions],
+    );
+    let count = number_item(&mut model, stock, "Count", 1);
+    for (item, version, value) in [
+        (gadget, "Budget", 5.0),
+        (widget, "Budget", 7.0),
+        (gadget, "Forecast", 1.0),
+    ] {
+        let at = vec![CoordToken::Item(item), version_token(&model, version)];
+        set(&mut model, count, at, num(value));
+    }
+    let subset = ViewDim::Subset { subset: picked };
+    let filter = |value| RowFilter {
+        line_item: count,
+        op: FilterOp::Gt,
+        value: Some(num(value)),
+    };
+
+    // The versions on rows read the subset at the total of its list: 12 in the budget, 1 in the
+    // forecast.
+    let mut q = query_of(
+        stock,
+        vec![ViewDim::Versions],
+        vec![subset.clone()],
+        vec![page(ViewDim::LineItems)],
+    );
+    q.filters = vec![filter(10.0)];
+    assert_eq!(labels(&run(&model, &q).rows, 0), vec!["Budget"]);
+
+    // The subset on rows reads the current version.
+    let mut q = query_of(
+        stock,
+        vec![subset],
+        vec![ViewDim::Versions],
+        vec![page(ViewDim::LineItems)],
+    );
+    q.filters = vec![filter(6.0)];
+    assert_eq!(labels(&run(&model, &q).rows, 0), vec!["Widget"]);
 }
 
 #[test]

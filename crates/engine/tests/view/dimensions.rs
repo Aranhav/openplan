@@ -1,7 +1,8 @@
 use crate::common::*;
 use openplan_engine::view::members;
 use openplan_engine::{
-    AxisSpec, Command, Format, ItemId, ListId, Member, ModuleId, SubsetId, TimeLevel, ViewDim,
+    AxisSpec, Command, CoordToken, Format, ItemId, ListId, Member, MemberRef, Model, ModuleId,
+    SubsetId, TimeLevel, ViewDim,
 };
 
 #[test]
@@ -303,4 +304,161 @@ fn line_items_choose_and_order_the_line_item_members() {
     let mut q = w.grid(vec![w.countries()], vec![ViewDim::Time]);
     q.line_items = Some(vec![price, w.units]);
     assert_eq!(run(&w.model, &q).pages[0].member.label, "Price");
+}
+
+#[test]
+fn list_tree_of_three_levels() {
+    let mut model = Model::new(calendar());
+    let [regions, countries, cities] = std::array::from_fn(|_| ListId::new());
+    let [na, eu, us, ca, de, fr] = std::array::from_fn(|_| ItemId::new());
+    let [new_york, los_angeles, toronto, berlin] = std::array::from_fn(|_| ItemId::new());
+    let list = |id, name: &str, parent, top: Option<&str>| Command::CreateList {
+        id,
+        name: name.to_string(),
+        parent,
+        top_level_name: top.map(str::to_string),
+        numbered: false,
+        production_data: false,
+    };
+    model
+        .apply_batch(vec![
+            list(regions, "Regions", None, None),
+            list(countries, "Countries", Some(regions), None),
+            list(cities, "Cities", Some(countries), Some("All Cities")),
+            Command::UpsertListItems {
+                list: regions,
+                items: vec![spec(na, "North America", None), spec(eu, "Europe", None)],
+            },
+            Command::UpsertListItems {
+                list: countries,
+                items: vec![
+                    spec(us, "US", Some(na)),
+                    spec(ca, "CA", Some(na)),
+                    spec(de, "DE", Some(eu)),
+                    spec(fr, "FR", Some(eu)),
+                ],
+            },
+            Command::UpsertListItems {
+                list: cities,
+                items: vec![
+                    spec(new_york, "New York", Some(us)),
+                    spec(los_angeles, "Los Angeles", Some(us)),
+                    spec(toronto, "Toronto", Some(ca)),
+                    spec(berlin, "Berlin", Some(de)),
+                ],
+            },
+        ])
+        .unwrap();
+    let stores = new_module(&mut model, "Stores", vec![AxisSpec::List { list: cities }]);
+    let units = number_item(&mut model, stores, "Units", 1);
+    for (city, value) in [
+        (new_york, 1.0),
+        (los_angeles, 2.0),
+        (toronto, 4.0),
+        (berlin, 8.0),
+    ] {
+        set(&mut model, units, vec![CoordToken::Item(city)], num(value));
+    }
+    let dim = ViewDim::List { list: cities };
+
+    let tree = members(&model, stores, &dim, true).unwrap();
+
+    assert_eq!(
+        member_labels(&tree),
+        vec![
+            "All Cities",
+            "North America",
+            "US",
+            "New York",
+            "Los Angeles",
+            "CA",
+            "Toronto",
+            "Europe",
+            "DE",
+            "Berlin",
+            "FR",
+        ]
+    );
+    let depths: Vec<u8> = tree.iter().map(|member| member.depth).collect();
+    assert_eq!(depths, vec![0, 1, 2, 3, 3, 2, 3, 1, 2, 3, 2]);
+    // Everything above the cities is a summary; a country without cities has no children.
+    let summaries: Vec<bool> = tree.iter().map(|member| member.is_summary).collect();
+    assert_eq!(
+        summaries,
+        vec![
+            true, true, true, false, false, true, false, true, true, false, true
+        ]
+    );
+    let parents: Vec<bool> = tree.iter().map(|member| member.has_children).collect();
+    assert_eq!(
+        parents,
+        vec![
+            true, true, true, false, false, true, false, true, true, false, false
+        ]
+    );
+
+    // Each level adds up the one below.
+    let mut q = query_of(
+        stores,
+        vec![dim.clone()],
+        vec![ViewDim::LineItems],
+        Vec::new(),
+    );
+    let result = run(&model, &q);
+    let totals: Vec<f64> = result.cells.iter().map(|row| number(&row[0])).collect();
+    assert_eq!(
+        totals,
+        vec![15.0, 7.0, 3.0, 1.0, 2.0, 4.0, 4.0, 8.0, 8.0, 8.0, 0.0]
+    );
+
+    // Collapsing or hiding a middle level only touches its own branch.
+    q.collapsed = vec![MemberRef {
+        dim: dim.clone(),
+        key: key(us),
+    }];
+    let result = run(&model, &q);
+    assert_eq!(result.total_rows, 9);
+    assert!(!labels(&result.rows, 0).contains(&"New York"));
+    assert!(labels(&result.rows, 0).contains(&"Toronto"));
+    q.collapsed = Vec::new();
+    q.hidden = vec![MemberRef { dim, key: key(us) }];
+    let result = run(&model, &q);
+    assert_eq!(result.total_rows, 10);
+    assert_eq!(
+        labels(&result.rows, 0)[1..4],
+        ["North America", "New York", "Los Angeles"]
+    );
+}
+
+#[test]
+fn time_summaries_of_half_year_year_and_total_modules() {
+    let mut w = world();
+    for (level, expected, depths) in [
+        (
+            TimeLevel::HalfYear,
+            vec!["H1 FY27", "H2 FY27", "FY27", "Total"],
+            vec![0, 0, 1, 2],
+        ),
+        (TimeLevel::Year, vec!["FY27", "Total"], vec![0, 1]),
+        (TimeLevel::All, vec!["Total"], vec![0]),
+    ] {
+        let module = new_module(
+            &mut w.model,
+            &format!("{level:?} plan"),
+            vec![AxisSpec::Time { level, range: None }],
+        );
+
+        let all = members(&w.model, module, &ViewDim::Time, true).unwrap();
+
+        assert_eq!(member_labels(&all), expected, "{level:?}");
+        let found: Vec<u8> = all.iter().map(|member| member.depth).collect();
+        assert_eq!(found, depths, "{level:?}");
+        assert_eq!(all.last().unwrap().key, "Total");
+        // Without summaries only the periods of the module are left.
+        let periods = members(&w.model, module, &ViewDim::Time, false).unwrap();
+        assert_eq!(
+            periods.len(),
+            if level == TimeLevel::HalfYear { 2 } else { 1 }
+        );
+    }
 }

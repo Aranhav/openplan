@@ -267,3 +267,36 @@ fn a_page_without_members_makes_an_empty_view() {
     assert_eq!((result.total_rows, result.total_columns), (0, 0));
     assert_eq!(result.line_items.len(), 1);
 }
+
+#[test]
+fn hidden_and_collapsed_members_apply_together() {
+    let w = world();
+    let countries = w.countries();
+    let member = |key: String| MemberRef {
+        dim: countries.clone(),
+        key,
+    };
+    let mut q = w.grid(vec![w.countries()], vec![ViewDim::LineItems]);
+
+    // A hidden summary that is also collapsed still hides what is below it.
+    q.collapsed = vec![member(key(w.na))];
+    q.hidden = vec![member(key(w.na))];
+    assert_eq!(
+        labels(&run(&w.model, &q).rows, 0),
+        vec!["All Countries", "Europe", "DE"]
+    );
+
+    // A hidden member below a collapsed summary changes nothing.
+    q.hidden = vec![member(key(w.us))];
+    assert_eq!(
+        labels(&run(&w.model, &q).rows, 0),
+        vec!["All Countries", "North America", "Europe", "DE"]
+    );
+
+    // A hidden top leaves its children, which the collapsed top hides: nothing is left.
+    q.collapsed = vec![member("top".to_string())];
+    q.hidden = vec![member("top".to_string())];
+    let result = run(&w.model, &q);
+    assert_eq!(result.total_rows, 0);
+    assert!(result.rows.is_empty() && result.cells.is_empty());
+}
