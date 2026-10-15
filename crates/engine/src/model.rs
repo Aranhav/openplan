@@ -129,9 +129,9 @@ impl Model {
             .structure
             .line_item(li)
             .ok_or_else(|| missing_line_item(li))?;
-        let summary = self.summary_column(line_item, levels)?;
-        let (shape, column) = &*summary;
         let layout = self.structure.layout(line_item)?;
+        let summary = self.summary_column(line_item, &layout, levels)?;
+        let (shape, column) = &*summary;
         let target = Layout {
             axes: levels.0.clone(),
             restriction: layout.restriction,
@@ -147,18 +147,24 @@ impl Model {
         ))
     }
 
-    /// The cells of a line item rolled up to `levels`, from the cache when it is current.
+    /// The cells of a line item, laid out as `layout`, rolled up to `levels`, from the cache
+    /// when it is current. Levels that roll nothing up need no ratio parts.
     pub(crate) fn summary_column(
         &self,
         line_item: &LineItem,
+        layout: &Layout,
         levels: &LevelSpec,
     ) -> Result<Arc<Summary>, EngineError> {
-        let parts = ratio_parts(line_item)?;
+        let parts = if levels.0 == layout.axes {
+            None
+        } else {
+            ratio_parts(line_item)?
+        };
         let fingerprint = self.summaries.fingerprint(line_item.id, parts);
         if let Some(cached) = self.summaries.get(line_item.id, levels, &fingerprint) {
             return Ok(cached);
         }
-        let shape = self.structure.line_item_shape(line_item.id)?;
+        let shape = self.structure.shape_of(layout)?;
         let src = self.stored_column(line_item, &shape);
         let part_columns = parts
             .map(|(numerator, denominator)| {

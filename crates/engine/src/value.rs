@@ -123,13 +123,14 @@ impl Column {
     /// A column of `len` blank cells of type `ty`.
     pub fn new_blank(ty: &ValueType, len: usize) -> Column {
         match ty {
-            ValueType::Number => Column::Number(vec![0.0; len]),
-            ValueType::Boolean => Column::Boolean(vec![false; len]),
-            ValueType::Text => Column::Text(vec![Arc::from(""); len]),
-            ValueType::Date => Column::Date(vec![BLANK_DATE; len]),
-            ValueType::Item(_) => Column::Item(vec![BLANK_ITEM; len]),
-            ValueType::Period(_) => Column::Period(vec![BLANK_PERIOD; len]),
+            ValueType::Number => Column::Number(Vec::new()),
+            ValueType::Boolean => Column::Boolean(Vec::new()),
+            ValueType::Text => Column::Text(Vec::new()),
+            ValueType::Date => Column::Date(Vec::new()),
+            ValueType::Item(_) => Column::Item(Vec::new()),
+            ValueType::Period(_) => Column::Period(Vec::new()),
         }
+        .blank_like(len)
     }
 
     /// A column of `len` blank cells of the same kind as this one.

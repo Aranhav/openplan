@@ -856,6 +856,277 @@ fn subsets_summarize_to_top_and_ancestor_lists() {
     assert_eq!(error.code(), "structure.invalid");
 }
 
+fn new_products(model: &mut Model) -> (ListId, [ItemId; 3]) {
+    let products = ListId::new();
+    let items = std::array::from_fn(|_| ItemId::new());
+    model
+        .apply_batch(vec![
+            Command::CreateList {
+                id: products,
+                name: "Products".to_string(),
+                parent: None,
+                top_level_name: None,
+                numbered: false,
+                production_data: false,
+            },
+            Command::UpsertListItems {
+                list: products,
+                items: items
+                    .iter()
+                    .enumerate()
+                    .map(|(position, id)| item_spec(*id, &format!("P{position}"), None))
+                    .collect(),
+            },
+        ])
+        .unwrap();
+    (products, items)
+}
+
+fn new_subset(model: &mut Model, list: ListId, name: &str, items: &[ItemId]) -> SubsetId {
+    let id = SubsetId::new();
+    model
+        .apply(Command::CreateSubset {
+            id,
+            list,
+            name: name.to_string(),
+            items: items.to_vec(),
+        })
+        .unwrap();
+    id
+}
+
+#[test]
+fn kept_subset_axis_survives_a_list_axis_roll_up() {
+    let mut world = world();
+    let (products, products_items) = new_products(&mut world.model);
+    let base = |country: ItemId| {
+        if country == world.us {
+            1.0
+        } else if country == world.ca {
+            10.0
+        } else {
+            100.0
+        }
+    };
+    for (name, members) in [
+        ("Focus A", [world.de, world.us]),
+        ("Focus B", [world.ca, world.us]),
+    ] {
+        let subset = new_subset(&mut world.model, world.countries, name, &members);
+        let axes = vec![
+            AxisSpec::Subset { subset },
+            AxisSpec::List { list: products },
+        ];
+        let module = new_module(&mut world.model, name, axes);
+        let units = add_number(&mut world.model, module, "Units", SummaryMethod::Sum);
+        let mut cells = Vec::new();
+        for member in members {
+            for (number, product) in products_items.iter().enumerate() {
+                let value = base(member) * (number as f64 + 1.0);
+                cells.push((vec![item(member), item(*product)], num(value)));
+            }
+        }
+        set_many(&mut world.model, units, cells);
+
+        let target = levels(vec![Axis::Subset(subset), Axis::ListTop(products)]);
+        for member in members {
+            assert_eq!(
+                read(&world.model, units, vec![item(member), top()], &target),
+                num(base(member) * 6.0),
+                "{name}"
+            );
+        }
+    }
+}
+
+#[test]
+fn kept_subset_axis_survives_a_hierarchy_roll_up() {
+    let mut world = world();
+    let (products, [p1, p2, p3]) = new_products(&mut world.model);
+    let base = |country: ItemId| {
+        if country == world.us {
+            1.0
+        } else if country == world.ca {
+            10.0
+        } else {
+            100.0
+        }
+    };
+    for (name, picks) in [("Picks A", [p3, p1]), ("Picks B", [p2, p1])] {
+        let picks_subset = new_subset(&mut world.model, products, name, &picks);
+        let axes = vec![
+            AxisSpec::List {
+                list: world.countries,
+            },
+            AxisSpec::Subset {
+                subset: picks_subset,
+            },
+        ];
+        let module = new_module(&mut world.model, name, axes);
+        let units = add_number(&mut world.model, module, "Units", SummaryMethod::Sum);
+        let number_of =
+            |product: ItemId| [p1, p2, p3].iter().position(|p| *p == product).unwrap() as f64 + 1.0;
+        let mut cells = Vec::new();
+        for country in [world.us, world.ca, world.de] {
+            for product in picks {
+                let value = base(country) * number_of(product);
+                cells.push((vec![item(country), item(product)], num(value)));
+            }
+        }
+        set_many(&mut world.model, units, cells);
+
+        let target = levels(vec![Axis::List(world.regions), Axis::Subset(picks_subset)]);
+        for product in picks {
+            let number = number_of(product);
+            let at = |region| vec![item(region), item(product)];
+            assert_eq!(
+                read(&world.model, units, at(world.na), &target),
+                num(11.0 * number),
+                "{name}"
+            );
+            assert_eq!(
+                read(&world.model, units, at(world.eu), &target),
+                num(100.0 * number),
+                "{name}"
+            );
+        }
+    }
+}
+
+fn april_calendar() -> Calendar {
+    Calendar {
+        fiscal_year_start_month: 4,
+        first_year: 2027,
+        years: 2,
+        current_month: None,
+    }
+}
+
+#[test]
+fn non_january_fiscal_years_roll_up_by_fiscal_period() {
+    let calendar = april_calendar();
+    let mut model = Model::new(calendar);
+    let module = new_module(&mut model, "Cash", vec![month_axis()]);
+    let flow = add_number(&mut model, module, "Flow", SummaryMethod::Sum);
+    let cells = (0..24)
+        .map(|index| {
+            (
+                vec![period(&calendar.label(TimeLevel::Month, index))],
+                num(f64::from(index + 1)),
+            )
+        })
+        .collect();
+    set_many(&mut model, flow, cells);
+
+    let read_at = |level, label: &str| {
+        read(
+            &model,
+            flow,
+            vec![period(label)],
+            &levels(vec![time(level)]),
+        )
+    };
+    assert_eq!(read_at(TimeLevel::Month, "Apr 26"), num(1.0));
+    assert_eq!(read_at(TimeLevel::Quarter, "Q1 FY27"), num(6.0));
+    assert_eq!(read_at(TimeLevel::Quarter, "Q4 FY27"), num(33.0));
+    assert_eq!(read_at(TimeLevel::Quarter, "Q1 FY28"), num(42.0));
+    assert_eq!(read_at(TimeLevel::HalfYear, "H1 FY27"), num(21.0));
+    assert_eq!(read_at(TimeLevel::HalfYear, "H2 FY28"), num(129.0));
+    assert_eq!(read_at(TimeLevel::Year, "FY27"), num(78.0));
+    assert_eq!(read_at(TimeLevel::Year, "FY28"), num(222.0));
+    assert_eq!(read_at(TimeLevel::All, "Total"), num(300.0));
+}
+
+#[test]
+fn non_january_quarter_scaled_line_items_roll_up_period_by_period() {
+    let calendar = april_calendar();
+    let mut model = Model::new(calendar);
+    let module = new_module(&mut model, "Plan", vec![month_axis()]);
+    let mut quarterly = line_item(module, "Quarterly", Format::number(), SummaryMethod::Sum);
+    quarterly.time_scale = TimeScale::Level(TimeLevel::Quarter);
+    let quarterly = add(&mut model, quarterly);
+    let mut stock = line_item(module, "Stock", Format::number(), SummaryMethod::Closing);
+    stock.time_scale = TimeScale::Level(TimeLevel::Quarter);
+    let stock = add(&mut model, stock);
+    for line_item in [quarterly, stock] {
+        let cells = (0..8)
+            .map(|quarter| {
+                (
+                    vec![period(&calendar.label(TimeLevel::Quarter, quarter))],
+                    num(f64::from(quarter + 1)),
+                )
+            })
+            .collect();
+        set_many(&mut model, line_item, cells);
+    }
+
+    let half = levels(vec![time(TimeLevel::HalfYear)]);
+    let year = levels(vec![time(TimeLevel::Year)]);
+    assert_eq!(
+        read(&model, quarterly, vec![period("H2 FY27")], &half),
+        num(7.0)
+    );
+    assert_eq!(
+        read(&model, quarterly, vec![period("FY28")], &year),
+        num(26.0)
+    );
+    assert_eq!(
+        read(&model, stock, vec![period("H1 FY28")], &half),
+        num(6.0)
+    );
+    assert_eq!(read(&model, stock, vec![period("FY27")], &year), num(4.0));
+}
+
+#[test]
+fn non_january_time_ranges_roll_up_within_their_own_fiscal_years() {
+    let calendar = april_calendar();
+    let mut model = Model::new(calendar);
+    let range = TimeRangeId::new();
+    model
+        .apply(Command::CreateTimeRange {
+            id: range,
+            name: "Later".to_string(),
+            first_year: 2028,
+            years: 1,
+        })
+        .unwrap();
+    let module = new_module(
+        &mut model,
+        "Later plan",
+        vec![AxisSpec::Time {
+            level: TimeLevel::Month,
+            range: Some(range),
+        }],
+    );
+    let flow = add_number(&mut model, module, "Flow", SummaryMethod::Sum);
+    let range_calendar = Calendar {
+        first_year: 2028,
+        years: 1,
+        ..calendar
+    };
+    let cells = (0..12)
+        .map(|index| {
+            (
+                vec![period(&range_calendar.label(TimeLevel::Month, index))],
+                num(f64::from(index + 1)),
+            )
+        })
+        .collect();
+    set_many(&mut model, flow, cells);
+
+    let ranged = |level| {
+        levels(vec![Axis::Time {
+            level,
+            range: Some(range),
+        }])
+    };
+    let read_at = |level, label: &str| read(&model, flow, vec![period(label)], &ranged(level));
+    assert_eq!(read_at(TimeLevel::Month, "Apr 27"), num(1.0));
+    assert_eq!(read_at(TimeLevel::Quarter, "Q1 FY28"), num(6.0));
+    assert_eq!(read_at(TimeLevel::Quarter, "Q4 FY28"), num(33.0));
+    assert_eq!(read_at(TimeLevel::Year, "FY28"), num(78.0));
+}
+
 #[test]
 fn coarser_time_scale_rolls_up_period_by_period() {
     let mut model = Model::new(calendar());
@@ -1083,6 +1354,112 @@ fn formula_summaries_are_not_aggregated() {
     let by_region = levels(vec![Axis::List(world.regions)]);
     let error = read_error(&world.model, units, vec![item(world.na)], &by_region);
     assert_eq!(error.code(), "structure.invalid");
+}
+
+#[test]
+fn formula_summaries_are_rejected_for_every_column_type() {
+    let mut world = world();
+    let axes = vec![
+        AxisSpec::List {
+            list: world.countries,
+        },
+        month_axis(),
+    ];
+    let module = new_module(&mut world.model, "Details", axes);
+    let formats = [
+        Format::number(),
+        Format::Boolean,
+        Format::Text,
+        Format::Date,
+        Format::List {
+            list: world.countries,
+        },
+        Format::TimePeriod {
+            level: TimeLevel::Quarter,
+        },
+    ];
+    let by_region = levels(vec![Axis::List(world.regions), time(TimeLevel::Month)]);
+    let by_quarter = levels(vec![Axis::List(world.countries), time(TimeLevel::Quarter)]);
+    let leaves = levels(vec![Axis::List(world.countries), time(TimeLevel::Month)]);
+    for (position, format) in formats.into_iter().enumerate() {
+        let name = format!("Formula {position}");
+        let formula = add(
+            &mut world.model,
+            line_item(module, &name, format.clone(), SummaryMethod::Formula),
+        );
+        let mut formula_in_time = line_item(
+            module,
+            &format!("Time formula {position}"),
+            format,
+            SummaryMethod::Sum,
+        );
+        formula_in_time.time_summary = Some(SummaryMethod::Formula);
+        let formula_in_time = add(&mut world.model, formula_in_time);
+
+        let leaf = || vec![item(world.us), month(0)];
+        world.model.read_summary(formula, &leaf(), &leaves).unwrap();
+        let on_lists = vec![item(world.na), month(0)];
+        let error = read_error(&world.model, formula, on_lists, &by_region);
+        assert_eq!(error.code(), "structure.invalid", "{name}");
+        let on_time = vec![item(world.us), period("Q1 FY26")];
+        let error = read_error(&world.model, formula_in_time, on_time, &by_quarter);
+        assert_eq!(error.code(), "structure.invalid", "{name}");
+        let lists_only = vec![item(world.na), month(0)];
+        world
+            .model
+            .read_summary(formula_in_time, &lists_only, &by_region)
+            .unwrap();
+    }
+}
+
+#[test]
+fn identity_reads_ignore_ratio_parts() {
+    let mut world = world();
+    let regional = new_module(
+        &mut world.model,
+        "Regional",
+        vec![AxisSpec::List {
+            list: world.regions,
+        }],
+    );
+    let revenue = add_number(&mut world.model, regional, "Revenue", SummaryMethod::Sum);
+    let profit = add_number(&mut world.model, regional, "Profit", SummaryMethod::Sum);
+    let national = countries_module(&mut world, "National");
+    let margin = add_number(
+        &mut world.model,
+        national,
+        "Margin",
+        SummaryMethod::Ratio {
+            numerator: profit,
+            denominator: revenue,
+        },
+    );
+    let mut conflicting = line_item(
+        national,
+        "Conflicting",
+        Format::number(),
+        SummaryMethod::Ratio {
+            numerator: profit,
+            denominator: revenue,
+        },
+    );
+    conflicting.time_summary = Some(SummaryMethod::Ratio {
+        numerator: revenue,
+        denominator: profit,
+    });
+    let conflicting = add(&mut world.model, conflicting);
+    set_countries(&mut world, margin, 0.2, 0.1, 0.5);
+    set_countries(&mut world, conflicting, 0.3, 0.4, 0.6);
+
+    let leaves = levels(vec![Axis::List(world.countries)]);
+    let us = || vec![item(world.us)];
+    assert_eq!(read(&world.model, margin, us(), &leaves), num(0.2));
+    assert_eq!(read(&world.model, conflicting, us(), &leaves), num(0.3));
+    let by_region = levels(vec![Axis::List(world.regions)]);
+    for line_item in [margin, conflicting] {
+        let error = read_error(&world.model, line_item, vec![item(world.na)], &by_region);
+        assert_eq!(error.code(), "structure.invalid");
+    }
 }
 
 #[test]

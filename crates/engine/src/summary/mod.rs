@@ -1,18 +1,16 @@
-//! Summaries: rolling a grid of cells up to coarser hierarchy and time levels, and the cache
-//! of the rolled-up columns that a model serves reads from.
+//! Summaries: rolling a grid of cells up to coarser hierarchy and time levels.
 
 use std::borrow::Cow;
-use std::collections::HashMap;
-use std::fmt;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use crate::command::ChangeSet;
 use crate::error::EngineError;
 use crate::ids::{LineItemId, ListId};
 use crate::shape::{Axis, Shape};
 use crate::structure::{LineItem, List, Structure, SummaryMethod, level_name};
 use crate::value::Column;
+
+mod cache;
+
+pub(crate) use cache::{Summary, SummaryCache};
 
 /// The levels a grid is summarized to: one axis per axis of the source shape, in the same
 /// order.
@@ -42,7 +40,8 @@ pub struct LevelSpec(pub Vec<Axis>);
 ///   add up along list axes.
 /// - `None` makes every rolled-up cell blank.
 ///
-/// `Formula` summaries are evaluated by the formula engine and are rejected here. Number
+/// `Formula` summaries are evaluated by the formula engine and are rejected here, for a column
+/// of any type, as soon as a roll-up step uses one. Number
 /// columns take every method but `Any` and `All`, which, like `None`, make them blank; boolean
 /// columns take `Any`, `All` and the positional methods along Time, and other methods make
 /// them blank; text, date, list and period columns are always blank once rolled up.
@@ -80,26 +79,28 @@ pub fn aggregate(
         return Ok((out_shape, src.clone()));
     }
 
-    let (values, boolean) = match src {
-        Column::Number(cells) => (Cow::Borrowed(cells.as_slice()), false),
-        Column::Boolean(cells) => (
-            Cow::Owned(
-                cells
-                    .iter()
-                    .map(|&cell| f64::from(u8::from(cell)))
-                    .collect(),
-            ),
-            true,
-        ),
-        _ => return Ok(blank(out_shape, src)),
-    };
-    let steps = steps
+    let boolean = matches!(src, Column::Boolean(_));
+    let reducers = steps
         .into_iter()
         .map(|(phase, method)| Ok((phase, reducer_for(method, phase == Phase::Time, boolean)?)))
         .collect::<Result<Vec<_>, EngineError>>()?;
-    if steps.iter().any(|(_, reducer)| *reducer == Reducer::Blank) {
+    let numbers = match src {
+        Column::Number(cells) => Some(Cow::Borrowed(cells.as_slice())),
+        Column::Boolean(cells) => Some(Cow::Owned(
+            cells
+                .iter()
+                .map(|&cell| f64::from(u8::from(cell)))
+                .collect(),
+        )),
+        _ => None,
+    };
+    let steps: Option<Vec<(Phase, Reducer)>> = reducers
+        .into_iter()
+        .map(|(phase, reducer)| reducer.map(|reducer| (phase, reducer)))
+        .collect();
+    let (Some(values), Some(steps)) = (numbers, steps) else {
         return Ok(blank(out_shape, src));
-    }
+    };
     let parts = if steps.iter().any(|(_, reducer)| *reducer == Reducer::Ratio) {
         Some(number_parts(src, ratio_parts)?)
     } else {
@@ -196,47 +197,56 @@ impl Phase {
     }
 }
 
-/// How the cells that land in one target cell combine.
+/// How the cells that land in one target cell combine into a value of their own.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Reducer {
+enum Fold {
     Sum,
     Average,
     Min,
     Max,
     First,
     Last,
+}
+
+/// How the cells that land in one target cell combine.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reducer {
+    Fold(Fold),
+    /// The sum of the numerators over the sum of the denominators.
     Ratio,
-    Blank,
 }
 
 /// The reducer of a summary method over a number column, or over a boolean column held as
-/// zeros and ones.
+/// zeros and ones; `None` when the method leaves every rolled-up cell blank.
 fn reducer_for(
     method: &SummaryMethod,
     along_time: bool,
     boolean: bool,
-) -> Result<Reducer, EngineError> {
+) -> Result<Option<Reducer>, EngineError> {
     use SummaryMethod as M;
-    let positional = |along: Reducer, otherwise: Reducer| {
-        if along_time { along } else { otherwise }
+    let positional = |along: Fold| {
+        if along_time {
+            Some(along)
+        } else {
+            (!boolean).then_some(Fold::Sum)
+        }
     };
-    Ok(match (method, boolean) {
+    let fold = match (method, boolean) {
         (M::Formula, _) => {
             return Err(invalid(
                 "Formula summaries are evaluated by the formula engine and cannot be aggregated.",
             ));
         }
-        (M::Sum, false) => Reducer::Sum,
-        (M::Average, false) => Reducer::Average,
-        (M::Min, false) | (M::All, true) => Reducer::Min,
-        (M::Max, false) | (M::Any, true) => Reducer::Max,
-        (M::Ratio { .. }, false) => Reducer::Ratio,
-        (M::First | M::Opening, false) => positional(Reducer::First, Reducer::Sum),
-        (M::Last | M::Closing, false) => positional(Reducer::Last, Reducer::Sum),
-        (M::First | M::Opening, true) => positional(Reducer::First, Reducer::Blank),
-        (M::Last | M::Closing, true) => positional(Reducer::Last, Reducer::Blank),
-        _ => Reducer::Blank,
-    })
+        (M::Ratio { .. }, false) => return Ok(Some(Reducer::Ratio)),
+        (M::Sum, false) => Some(Fold::Sum),
+        (M::Average, false) => Some(Fold::Average),
+        (M::Min, false) | (M::All, true) => Some(Fold::Min),
+        (M::Max, false) | (M::Any, true) => Some(Fold::Max),
+        (M::First | M::Opening, _) => positional(Fold::First),
+        (M::Last | M::Closing, _) => positional(Fold::Last),
+        _ => None,
+    };
+    Ok(fold.map(Reducer::Fold))
 }
 
 /// The numerator and denominator cells of a ratio.
@@ -273,48 +283,6 @@ fn reduce<'a>(
         })
         .collect();
     let size = to.size();
-    let values: &[f64] = &input.values;
-    let mut out = vec![0.0; size];
-    let mut counts = vec![0u32; size];
-    match reducer {
-        Reducer::Sum => walk(&from.lens, &offsets, &mut |src, dst| {
-            out[dst] += values[src];
-        }),
-        Reducer::Average => {
-            walk(&from.lens, &offsets, &mut |src, dst| {
-                out[dst] += values[src];
-                counts[dst] += 1;
-            });
-            for (cell, &count) in out.iter_mut().zip(&counts) {
-                if count > 0 {
-                    *cell /= f64::from(count);
-                }
-            }
-        }
-        Reducer::Min => walk(&from.lens, &offsets, &mut |src, dst| {
-            if counts[dst] == 0 || values[src] < out[dst] {
-                out[dst] = values[src];
-            }
-            counts[dst] += 1;
-        }),
-        Reducer::Max => walk(&from.lens, &offsets, &mut |src, dst| {
-            if counts[dst] == 0 || values[src] > out[dst] {
-                out[dst] = values[src];
-            }
-            counts[dst] += 1;
-        }),
-        Reducer::First => walk(&from.lens, &offsets, &mut |src, dst| {
-            if counts[dst] == 0 {
-                out[dst] = values[src];
-            }
-            counts[dst] += 1;
-        }),
-        Reducer::Last => walk(&from.lens, &offsets, &mut |src, dst| {
-            out[dst] = values[src];
-        }),
-        Reducer::Ratio | Reducer::Blank => {}
-    }
-
     let sums = input
         .parts
         .as_ref()
@@ -328,23 +296,76 @@ fn reduce<'a>(
             });
             (numerators, denominators)
         });
-    if reducer == Reducer::Ratio
-        && let Some((numerators, denominators)) = &sums
-    {
-        for ((cell, &numerator), &denominator) in out.iter_mut().zip(numerators).zip(denominators) {
-            *cell = if denominator == 0.0 {
-                0.0
-            } else {
-                numerator / denominator
-            };
+    let values = match (reducer, &sums) {
+        (Reducer::Fold(fold), _) => fold_cells(fold, &from.lens, &offsets, &input.values, size),
+        (Reducer::Ratio, Some((numerators, denominators))) => numerators
+            .iter()
+            .zip(denominators)
+            .map(|(&numerator, &denominator)| {
+                if denominator == 0.0 {
+                    0.0
+                } else {
+                    numerator / denominator
+                }
+            })
+            .collect(),
+        (Reducer::Ratio, None) => {
+            unreachable!("a ratio step is only planned together with its ratio parts")
         }
-    }
+    };
     Series {
-        values: Cow::Owned(out),
+        values: Cow::Owned(values),
         parts: sums
             .filter(|_| keep_parts)
             .map(|(numerators, denominators)| (Cow::Owned(numerators), Cow::Owned(denominators))),
     }
+}
+
+/// Combines the cells of `values` that land in one target cell with `fold`; target cells that
+/// no cell lands in come out as 0.
+fn fold_cells(
+    fold: Fold,
+    lens: &[u32],
+    offsets: &[Vec<Option<usize>>],
+    values: &[f64],
+    size: usize,
+) -> Vec<f64> {
+    let mut out = vec![0.0; size];
+    let mut counts = vec![0u32; size];
+    match fold {
+        Fold::Sum => walk(lens, offsets, &mut |src, dst| out[dst] += values[src]),
+        Fold::Average => {
+            walk(lens, offsets, &mut |src, dst| {
+                out[dst] += values[src];
+                counts[dst] += 1;
+            });
+            for (cell, &count) in out.iter_mut().zip(&counts) {
+                if count > 0 {
+                    *cell /= f64::from(count);
+                }
+            }
+        }
+        Fold::Min => walk(lens, offsets, &mut |src, dst| {
+            if counts[dst] == 0 || values[src] < out[dst] {
+                out[dst] = values[src];
+            }
+            counts[dst] += 1;
+        }),
+        Fold::Max => walk(lens, offsets, &mut |src, dst| {
+            if counts[dst] == 0 || values[src] > out[dst] {
+                out[dst] = values[src];
+            }
+            counts[dst] += 1;
+        }),
+        Fold::First => walk(lens, offsets, &mut |src, dst| {
+            if counts[dst] == 0 {
+                out[dst] = values[src];
+            }
+            counts[dst] += 1;
+        }),
+        Fold::Last => walk(lens, offsets, &mut |src, dst| out[dst] = values[src]),
+    }
+    out
 }
 
 /// Calls `visit(source index, target index)` for every source cell that is not dropped, in
@@ -553,7 +574,14 @@ fn plan_list_axis(
         Axis::List(to) if matches!(source, Axis::List(_)) && *to == list => {
             Ok(planned(start, len, false))
         }
-        Axis::Subset(_) if wanted == source => Ok(planned(start, len, false)),
+        Axis::Subset(_) if wanted == source => {
+            let positions = start
+                .iter()
+                .enumerate()
+                .map(|(position, member)| member.map(|_| position as u32))
+                .collect();
+            Ok(planned(positions, len, false))
+        }
         Axis::List(to) if chain[1..].contains(to) => {
             let positions = lift(structure, list, *to, start)?;
             let out_len = list_of(structure, *to)?.len_dense();
@@ -652,337 +680,5 @@ fn not_found(what: &'static str, id: uuid::Uuid) -> EngineError {
     EngineError::NotFound {
         what,
         id: id.to_string(),
-    }
-}
-
-/// A rolled-up grid: its shape and cells.
-pub(crate) type Summary = (Shape, Column);
-
-/// What a cached summary was computed from. The summary is current exactly while this equals
-/// the model's present fingerprint.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Fingerprint {
-    structure: u64,
-    line_item: u64,
-    ratio_parts: Option<(u64, u64)>,
-}
-
-#[derive(Clone)]
-struct CacheEntry {
-    fingerprint: Fingerprint,
-    summary: Arc<Summary>,
-}
-
-type Entries = HashMap<LineItemId, HashMap<LevelSpec, CacheEntry>>;
-
-/// Source of the stamps that mark a change of the structure or of a line item's cells.
-///
-/// Stamps are unique across the whole process and not just within one model. Models that
-/// share a cache through `Clone` and then diverge therefore never mistake each other's
-/// summaries for their own.
-static NEXT_STAMP: AtomicU64 = AtomicU64::new(1);
-
-fn fresh_stamp() -> u64 {
-    NEXT_STAMP.fetch_add(1, Ordering::Relaxed)
-}
-
-/// The cached summaries of a model, and the stamps that tell whether they are still current.
-///
-/// Cloning is cheap: clones share the cached entries, which are keyed by line item and levels
-/// and checked against a [`Fingerprint`] on every read, and copy the stamps.
-#[derive(Clone, Default)]
-pub(crate) struct SummaryCache {
-    entries: Arc<Mutex<Entries>>,
-    /// Stamp of the latest structural change; summaries depend on hierarchies, calendars and
-    /// summary methods.
-    structure: u64,
-    /// Stamp of the latest change of each line item's cells.
-    line_items: HashMap<LineItemId, u64>,
-}
-
-impl SummaryCache {
-    /// Takes note of an applied change: a structural change invalidates every summary, and
-    /// a change of a line item's cells those of the line item and of the ratios that divide
-    /// it, whose fingerprints include its stamp.
-    pub(crate) fn record(&mut self, structure: &Structure, changes: &ChangeSet) {
-        if changes.structure_changed {
-            self.structure = fresh_stamp();
-            self.lock().clear();
-        }
-        for id in &changes.changed_line_items {
-            if structure.line_item(*id).is_some() {
-                self.line_items.insert(*id, fresh_stamp());
-            } else {
-                self.line_items.remove(id);
-            }
-        }
-    }
-
-    pub(crate) fn fingerprint(
-        &self,
-        line_item: LineItemId,
-        ratio_parts: Option<(LineItemId, LineItemId)>,
-    ) -> Fingerprint {
-        let stamp = |id: &LineItemId| self.line_items.get(id).copied().unwrap_or(0);
-        Fingerprint {
-            structure: self.structure,
-            line_item: stamp(&line_item),
-            ratio_parts: ratio_parts
-                .map(|(numerator, denominator)| (stamp(&numerator), stamp(&denominator))),
-        }
-    }
-
-    /// The cached summary of `line_item` at `levels`, if it was computed from `fingerprint`.
-    pub(crate) fn get(
-        &self,
-        line_item: LineItemId,
-        levels: &LevelSpec,
-        fingerprint: &Fingerprint,
-    ) -> Option<Arc<Summary>> {
-        let entries = self.lock();
-        let entry = entries.get(&line_item)?.get(levels)?;
-        (entry.fingerprint == *fingerprint).then(|| Arc::clone(&entry.summary))
-    }
-
-    pub(crate) fn insert(
-        &self,
-        line_item: LineItemId,
-        levels: &LevelSpec,
-        fingerprint: Fingerprint,
-        summary: Arc<Summary>,
-    ) {
-        self.lock().entry(line_item).or_default().insert(
-            levels.clone(),
-            CacheEntry {
-                fingerprint,
-                summary,
-            },
-        );
-    }
-
-    /// The entries, which stay consistent even if a thread panicked while holding the lock.
-    fn lock(&self) -> MutexGuard<'_, Entries> {
-        self.entries.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-}
-
-impl fmt::Debug for SummaryCache {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let entries: usize = self.lock().values().map(HashMap::len).sum();
-        f.debug_struct("SummaryCache")
-            .field("entries", &entries)
-            .finish_non_exhaustive()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::calendar::Calendar;
-    use crate::command::{CellEdit, Command, CoordToken, ItemSpec};
-    use crate::ids::{ItemId, ModuleId};
-    use crate::model::Model;
-    use crate::structure::{AxisSpec, TimeScale, VersionsScope};
-    use crate::value::{Format, Value};
-
-    struct Fixture {
-        model: Model,
-        list: ListId,
-        items: Vec<ItemId>,
-        units: LineItemId,
-        other: LineItemId,
-    }
-
-    fn fixture() -> Fixture {
-        let mut model = Model::new(Calendar {
-            fiscal_year_start_month: 1,
-            first_year: 2026,
-            years: 1,
-            current_month: None,
-        });
-        let list = ListId::new();
-        let module = ModuleId::new();
-        let items: Vec<ItemId> = (0..2).map(|_| ItemId::new()).collect();
-        let [units, other] = std::array::from_fn(|_| LineItemId::new());
-        let line_item = |id, name: &str| LineItem {
-            id,
-            module,
-            name: name.to_string(),
-            ordinal: 0,
-            format: Format::number(),
-            formula: None,
-            summary: SummaryMethod::Sum,
-            time_summary: None,
-            applies_to: None,
-            time_scale: TimeScale::Module,
-            versions: VersionsScope::Module,
-            notes: String::new(),
-            code: None,
-            read_access_driver: None,
-            write_access_driver: None,
-        };
-        model
-            .apply_batch(vec![
-                Command::CreateList {
-                    id: list,
-                    name: "Products".to_string(),
-                    parent: None,
-                    top_level_name: None,
-                    numbered: false,
-                    production_data: false,
-                },
-                Command::UpsertListItems {
-                    list,
-                    items: items
-                        .iter()
-                        .enumerate()
-                        .map(|(position, id)| ItemSpec {
-                            id: *id,
-                            code: None,
-                            name: format!("P{position}"),
-                            parent: None,
-                        })
-                        .collect(),
-                },
-                Command::CreateModule {
-                    id: module,
-                    name: "Sales".to_string(),
-                    axes: vec![AxisSpec::List { list }],
-                    functional_area: String::new(),
-                },
-                Command::CreateLineItem(line_item(units, "Units")),
-                Command::CreateLineItem(line_item(other, "Other")),
-            ])
-            .unwrap();
-        Fixture {
-            model,
-            list,
-            items,
-            units,
-            other,
-        }
-    }
-
-    fn summary_of(model: &Model, id: LineItemId, list: ListId) -> Arc<Summary> {
-        let line_item = model.structure().line_item(id).unwrap();
-        model
-            .summary_column(line_item, &LevelSpec(vec![Axis::ListTop(list)]))
-            .unwrap()
-    }
-
-    fn write(model: &mut Model, line_item: LineItemId, item: ItemId, value: f64) {
-        model
-            .apply(Command::SetCells {
-                line_item,
-                edits: vec![CellEdit {
-                    coords: vec![CoordToken::Item(item)],
-                    value: Value::Number(value),
-                }],
-            })
-            .unwrap();
-    }
-
-    #[test]
-    fn repeated_reads_share_the_cached_summary() {
-        let Fixture {
-            model, list, units, ..
-        } = fixture();
-        let first = summary_of(&model, units, list);
-        let second = summary_of(&model, units, list);
-        assert!(Arc::ptr_eq(&first, &second));
-    }
-
-    #[test]
-    fn an_edit_replaces_only_the_summary_of_its_line_item() {
-        let Fixture {
-            mut model,
-            list,
-            items,
-            units,
-            other,
-        } = fixture();
-        let before = summary_of(&model, units, list);
-        let untouched = summary_of(&model, other, list);
-
-        write(&mut model, units, items[0], 5.0);
-        let after = summary_of(&model, units, list);
-        assert!(!Arc::ptr_eq(&before, &after));
-        assert_eq!(after.1, Column::Number(vec![5.0]));
-        assert!(Arc::ptr_eq(&untouched, &summary_of(&model, other, list)));
-        assert!(Arc::ptr_eq(&after, &summary_of(&model, units, list)));
-    }
-
-    #[test]
-    fn a_structural_change_replaces_every_summary() {
-        let Fixture {
-            mut model,
-            list,
-            units,
-            other,
-            ..
-        } = fixture();
-        let units_before = summary_of(&model, units, list);
-        let other_before = summary_of(&model, other, list);
-        model
-            .apply(Command::CreateList {
-                id: ListId::new(),
-                name: "Regions".to_string(),
-                parent: None,
-                top_level_name: None,
-                numbered: false,
-                production_data: false,
-            })
-            .unwrap();
-        assert!(!Arc::ptr_eq(
-            &units_before,
-            &summary_of(&model, units, list)
-        ));
-        assert!(!Arc::ptr_eq(
-            &other_before,
-            &summary_of(&model, other, list)
-        ));
-    }
-
-    #[test]
-    fn rejected_changes_keep_the_cached_summaries() {
-        let Fixture {
-            mut model,
-            list,
-            items,
-            units,
-            ..
-        } = fixture();
-        let cached = summary_of(&model, units, list);
-        let rejected = vec![
-            Command::SetCells {
-                line_item: units,
-                edits: vec![CellEdit {
-                    coords: vec![CoordToken::Item(items[0])],
-                    value: Value::Number(9.0),
-                }],
-            },
-            Command::DeleteList { id: list },
-        ];
-        model.apply_batch(rejected).unwrap_err();
-        model.apply(Command::DeleteList { id: list }).unwrap_err();
-        assert!(Arc::ptr_eq(&cached, &summary_of(&model, units, list)));
-    }
-
-    #[test]
-    fn clones_share_the_cache_until_they_change() {
-        let Fixture {
-            model,
-            list,
-            items,
-            units,
-            ..
-        } = fixture();
-        let cached = summary_of(&model, units, list);
-        let mut clone = model.clone();
-        assert!(Arc::ptr_eq(&cached, &summary_of(&clone, units, list)));
-
-        write(&mut clone, units, items[0], 3.0);
-        assert_eq!(summary_of(&clone, units, list).1, Column::Number(vec![3.0]));
-        assert_eq!(summary_of(&model, units, list).1, Column::Number(vec![0.0]));
     }
 }
