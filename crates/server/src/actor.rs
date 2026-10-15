@@ -136,6 +136,28 @@ impl ModelHandle {
         outcome.await.map_err(|_| self.stopped())?
     }
 
+    /// Applies the commands that `build` makes from the model, as `apply_with` does, and returns
+    /// the answer that `build` made along with them: what the change did, such as the item as it
+    /// is now. Both come from the model the batch is applied to, so the answer is what this change
+    /// made whatever else is applied meanwhile.
+    pub async fn apply_with_answer<T: Send + 'static>(
+        &self,
+        user_id: Uuid,
+        build: impl FnOnce(&Model) -> AppResult<(Vec<Command>, T)> + Send + 'static,
+    ) -> AppResult<T> {
+        let (send, receive) = oneshot::channel();
+        self.apply_with(user_id, move |model| {
+            let (commands, answer) = build(model)?;
+            // Nobody waiting for the answer is no reason not to apply the batch.
+            let _ = send.send(answer);
+            Ok(commands)
+        })
+        .await?;
+        receive
+            .await
+            .map_err(|_| AppError::Internal(anyhow!("the change was applied without an answer")))
+    }
+
     /// The model as of the last batch applied.
     pub fn snapshot(&self) -> Arc<Model> {
         Arc::clone(&self.published.borrow().model)

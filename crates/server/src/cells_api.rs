@@ -11,7 +11,8 @@ use std::collections::HashMap;
 
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, State},
+    extract::{DefaultBodyLimit, FromRequestParts, State},
+    http::request::Parts,
     routing::{get, post},
 };
 use chrono::{DateTime, NaiveDate, Utc};
@@ -27,11 +28,11 @@ use crate::{
     actor::ModelHandle,
     app::AppState,
     auth::CurrentUser,
-    authz::{WorkspaceRole, require_workspace_role},
+    authz::WorkspaceRole,
     engine_store::{self, CellHistory, cell_key},
     error::{AppError, AppResult, FieldError},
     extract::{ApiJson, ApiPath, ApiQuery},
-    structure_api::{model_row, read_handle},
+    structure_api::{ProdLock, handle_for},
     structure_dto::TimeLevelDto,
 };
 
@@ -44,8 +45,8 @@ const HISTORY_LIMIT: i64 = 100;
 /// The most problems of a request that an error lists.
 const MAX_PROBLEMS: usize = 100;
 /// How large the body of a write may be. The 2 MiB that other requests are limited to would stop
-/// a write well short of its 100,000 edits.
-const WRITE_BODY_LIMIT: usize = 64 << 20;
+/// a write well short of its 100,000 edits, which come to about 30 MiB.
+const WRITE_BODY_LIMIT: usize = 32 << 20;
 /// How large the body of a read may be. Ten thousand cells of five dimensions come to about the
 /// 2 MiB that other requests are limited to.
 const READ_BODY_LIMIT: usize = 8 << 20;
@@ -195,15 +196,30 @@ impl From<CellHistory> for CellChangeDto {
     }
 }
 
-/// The model's actor, for a caller who may plan in the model, whatever its mode.
-async fn planner_handle(
-    state: &AppState,
-    user: &CurrentUser,
-    model_id: Uuid,
-) -> AppResult<ModelHandle> {
-    let (workspace_id, _) = model_row(&state.db, model_id).await?;
-    require_workspace_role(&state.db, user, workspace_id, WorkspaceRole::Planner).await?;
-    state.models.get(model_id).await
+/// The caller and the actor of the model, for a caller who may plan in the model, whatever its
+/// mode. It is taken from the head of the request, ahead of the body, so that a caller who may
+/// not plan is refused without the body, which may be 32 MiB, being read.
+pub(crate) struct Planner {
+    user: CurrentUser,
+    handle: ModelHandle,
+}
+
+impl FromRequestParts<AppState> for Planner {
+    type Rejection = AppError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> AppResult<Planner> {
+        let user = CurrentUser::from_request_parts(parts, state).await?;
+        let ApiPath(model_id) = ApiPath::<Uuid>::from_request_parts(parts, state).await?;
+        let handle = handle_for(
+            state,
+            &user,
+            model_id,
+            WorkspaceRole::Planner,
+            ProdLock::Ignore,
+        )
+        .await?;
+        Ok(Planner { user, handle })
+    }
 }
 
 fn too_many(field: &str, message: &str) -> AppError {
@@ -356,12 +372,9 @@ fn renumbered(message: &str, request: impl Fn(usize) -> usize) -> String {
     )
 )]
 pub(crate) async fn write_cells(
-    State(state): State<AppState>,
-    user: CurrentUser,
-    ApiPath(model_id): ApiPath<Uuid>,
+    Planner { user, handle }: Planner,
     ApiJson(body): ApiJson<WriteCellsRequest>,
 ) -> AppResult<Json<WriteCellsResponse>> {
-    let handle = planner_handle(&state, &user, model_id).await?;
     if body.edits.len() > MAX_EDITS {
         return Err(too_many("edits", "Send at most 100,000 edits at a time."));
     }
@@ -400,7 +413,14 @@ pub(crate) async fn read_cells(
     ApiPath(model_id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<ReadCellsRequest>,
 ) -> AppResult<Json<ReadCellsResponse>> {
-    let handle = read_handle(&state, &user, model_id).await?;
+    let handle = handle_for(
+        &state,
+        &user,
+        model_id,
+        WorkspaceRole::Viewer,
+        ProdLock::Ignore,
+    )
+    .await?;
     if body.cells.len() > MAX_CELLS {
         return Err(too_many("cells", "Send at most 10,000 cells at a time."));
     }
@@ -463,7 +483,14 @@ pub(crate) async fn cell_history(
     ApiPath(model_id): ApiPath<Uuid>,
     ApiQuery(query): ApiQuery<HistoryQuery>,
 ) -> AppResult<Json<Vec<CellChangeDto>>> {
-    let handle = read_handle(&state, &user, model_id).await?;
+    let handle = handle_for(
+        &state,
+        &user,
+        model_id,
+        WorkspaceRole::Viewer,
+        ProdLock::Ignore,
+    )
+    .await?;
     let model = handle.snapshot();
     let line_item = LineItemId(query.line_item_id);
     if model.structure().line_item(line_item).is_none() {

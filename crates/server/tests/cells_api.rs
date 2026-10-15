@@ -1684,13 +1684,60 @@ async fn body_limits_belong_to_their_routes(pool: PgPool) {
         "payload_too_large",
     );
 
-    // A write takes 64 MiB.
-    let write = admin.post(&url(&id, "/cells"), Some(write_body(60))).await;
+    // A write takes 32 MiB.
+    let write = admin.post(&url(&id, "/cells"), Some(write_body(30))).await;
     assert_eq!(write.status, StatusCode::OK, "{}", write.text);
-    let too_large = admin.post(&url(&id, "/cells"), Some(write_body(65))).await;
+    let too_large = admin.post(&url(&id, "/cells"), Some(write_body(33))).await;
     assert_problem(
         &too_large,
         StatusCode::PAYLOAD_TOO_LARGE,
         "payload_too_large",
     );
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn a_write_is_refused_to_who_may_not_plan_before_its_body_is_read(pool: PgPool) {
+    let (mut admin, workspace, id) = plan(&pool).await;
+    create_member(
+        &mut admin,
+        &workspace,
+        "vera@acme.com",
+        "Vera Viewer",
+        "viewer",
+    )
+    .await;
+    create_user(&mut admin, "olga@acme.com", "Olga Outsider").await;
+    let mut viewer = sign_in_beside(&admin, "vera@acme.com").await;
+    let mut outsider = sign_in_beside(&admin, "olga@acme.com").await;
+    // Each of these is refused by the body once it is read.
+    let too_large = format!(r#"{{"edits":[],"padding":"{}"}}"#, "x".repeat(33 << 20));
+    let bodies = [
+        (
+            too_large.as_str(),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "payload_too_large",
+        ),
+        (
+            r#"{"edits":[],"note":"a\u0000"}"#,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "validation",
+        ),
+        ("{oops", StatusCode::BAD_REQUEST, "bad_request"),
+    ];
+
+    for (body, status, code) in bodies {
+        let read = admin
+            .post_raw(&url(&id, "/cells"), Some("application/json"), body)
+            .await;
+        assert_problem(&read, status, code);
+
+        let refused = outsider
+            .post_raw(&url(&id, "/cells"), Some("application/json"), body)
+            .await;
+        assert_problem(&refused, StatusCode::NOT_FOUND, "not_found");
+        let refused = viewer
+            .post_raw(&url(&id, "/cells"), Some("application/json"), body)
+            .await;
+        assert_problem(&refused, StatusCode::FORBIDDEN, "auth.forbidden");
+    }
 }
