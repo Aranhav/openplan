@@ -104,7 +104,7 @@ function timesHundred(plain: string): string {
 
 function numberWriter({ decimals, thousands_sep, unit }: NumberFormat): NumberWriter {
   // A format from the server is valid, but a cell must show something whatever it holds.
-  const digits = Number.isNaN(decimals) ? 0 : clamp(Math.trunc(decimals), 0, MAX_DECIMALS)
+  const digits = clamp(Math.trunc(Number(decimals) || 0), 0, MAX_DECIMALS)
   const unitKey = unit.type === "currency" ? `currency:${unit.code}` : unit.type
   const key = `${digits}|${thousands_sep}|${unitKey}`
   let writer = numberWriters.get(key)

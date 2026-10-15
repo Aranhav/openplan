@@ -121,6 +121,22 @@ describe("parseInput numbers", () => {
       expect(messageOf("1e400", plain)).toBe("'1e400' isn't a number.")
       expect(messageOf("1e99999999999999999999", plain)).toMatch(/isn't a number\.$/)
     })
+
+    it.each([20, 21, 22, 40])("treats an exponent of %i digits the same way", (digits) => {
+      const exponent = "9".repeat(digits)
+      expect(parseInput(`1e${exponent}`, plain, ctx).ok).toBe(false)
+      expect(parseInput(`1e+${exponent}`, plain, ctx).ok).toBe(false)
+      expect(parseInput(`1e${exponent}%`, plain, ctx).ok).toBe(false)
+      // Too small to store is not a number, but zero, whatever the length of the exponent.
+      expect(numberOf(`1e-${exponent}`)).toEqual({ t: "number", v: 0 })
+      expect(numberOf(`5e-${exponent}%`)).toEqual({ t: "number", v: 0 })
+      expect(numberOf(`(1e-${exponent})`)).toEqual({ t: "number", v: 0 })
+    })
+
+    it("keeps the exact percent shift for a long exponent that still fits", () => {
+      expect(numberOf("33.3e0000000000000000000000%")).toEqual({ t: "number", v: 0.333 })
+      expect(numberOf("1e0000000000000000000002")).toEqual({ t: "number", v: 100 })
+    })
   })
 
   it("reads parentheses as a negative number", () => {

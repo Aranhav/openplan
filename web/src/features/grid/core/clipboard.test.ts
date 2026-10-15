@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { parseTsv, planFillDown, planPaste, toTsv } from "./clipboard"
+import { parseTsv, pasteArea, planFillDown, planPaste, toTsv } from "./clipboard"
 import type { Selection } from "./selection"
 
 const bounds = { rows: 10, cols: 5 }
@@ -320,6 +320,38 @@ describe("planPaste", () => {
       { row: 9, col: 3 },
       { row: 9, col: 4 },
     ])
+  })
+})
+
+describe("pasteArea", () => {
+  const block = [
+    ["a", "b"],
+    ["c", "d"],
+  ]
+
+  it.each([
+    ["a block at a cell", block, cell(2, 1)],
+    ["a block tiled over a selection", block, range([0, 0], [3, 3])],
+    ["a block that does not tile", block, range([0, 0], [2, 2])],
+    ["a block clipped by the grid", block, cell(9, 4)],
+    ["a single value over a selection", [["7"]], range([1, 1], [5, 3])],
+    ["a single value clipped by the grid", [["7"]], range([8, 3], [12, 8])],
+    ["an empty clipboard", [], cell(0, 0)],
+  ])("counts the cells of %s as planPaste places them", (_name, grid, selection) => {
+    expect(pasteArea(grid, selection, bounds)).toBe(planPaste(grid, selection, bounds).length)
+  })
+
+  it("counts without planning, so a selection of millions of cells is cheap to refuse", () => {
+    const huge = range([0, 0], [9_999, 399])
+    expect(pasteArea([["7"]], huge, { rows: 10_000, cols: 400 })).toBe(4_000_000)
+  })
+
+  it("counts the rectangle, whatever the rows of a ragged block hold", () => {
+    expect(pasteArea([["a", "b", "c"], ["d"]], cell(0, 0), bounds)).toBe(6)
+  })
+
+  it("is zero when the grid has no cells", () => {
+    expect(pasteArea([["a"]], cell(0, 0), { rows: 0, cols: 0 })).toBe(0)
   })
 })
 

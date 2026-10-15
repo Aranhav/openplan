@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { resolveKey, type GridCommand, type KeyInput, type KeyMode } from "./keymap"
+import { keyInput, resolveKey, type GridCommand, type KeyInput, type KeyMode } from "./keymap"
 
 type Mods = Partial<Omit<KeyInput, "key">>
 
@@ -342,5 +342,38 @@ describe("resolveKey in edit mode", () => {
     ]) {
       expect(edit(key)).toEqual(none)
     }
+  })
+})
+
+describe("keyInput", () => {
+  function event(init: Partial<KeyboardEvent> & { keyCode?: number } = {}) {
+    return { key: "a", shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, ...init }
+  }
+
+  it("copies the keys the grid reads", () => {
+    expect(keyInput(event({ key: "Enter", shiftKey: true }))).toEqual({
+      key: "Enter",
+      shiftKey: true,
+      ctrlKey: false,
+      metaKey: false,
+      altKey: false,
+      isComposing: false,
+    })
+  })
+
+  it("is composing while the input method says so", () => {
+    expect(keyInput(event({ isComposing: true })).isComposing).toBe(true)
+  })
+
+  it("is composing for the keyCode 229 that Safari sends after the composition has ended", () => {
+    const safari = keyInput(event({ key: "Enter", isComposing: false, keyCode: 229 }))
+    expect(safari.isComposing).toBe(true)
+    expect(resolveKey(safari, "edit")).toEqual(none)
+    expect(resolveKey(safari, "navigate")).toEqual(none)
+  })
+
+  it("is not composing for any other keyCode", () => {
+    expect(keyInput(event({ key: "Enter", keyCode: 13 })).isComposing).toBe(false)
+    expect(keyInput(event({ key: "Enter" })).isComposing).toBe(false)
   })
 })

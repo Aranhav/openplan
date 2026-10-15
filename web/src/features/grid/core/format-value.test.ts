@@ -148,6 +148,14 @@ describe("formatValue never throws", () => {
       expect(formatValue(num(1234.5), numberFormat({ decimals: NaN }))).toBe("1,235")
     })
 
+    it("counts a missing number of decimals as none", () => {
+      const missing = numberFormat({ decimals: undefined as unknown as number })
+      expect(formatValue(num(1234.5), missing)).toBe("1,235")
+      expect(formatValue(num(-0.5), { ...missing, negative: "parens" })).toBe("(1)")
+      const percent = { ...missing, unit: { type: "percent" } } as const
+      expect(formatValue(num(0.25), percent)).toBe("25%")
+    })
+
     it("drops a fraction of a decimal place", () => {
       expect(formatValue(num(1.23456), numberFormat({ decimals: 2.9 }))).toBe("1.23")
     })
@@ -162,7 +170,7 @@ describe("formatValue never throws", () => {
 
   it("does not throw for any function with any format of the number kinds", () => {
     const ctx = { itemsByName: new Map(), itemsByCode: new Map(), periodsByLabel: new Map() }
-    const decimals = [-1, 0, 2, 10, 101, NaN, Infinity]
+    const decimals = [-1, 0, 2, 10, 101, NaN, Infinity, undefined as unknown as number]
     const units = [
       { type: "none" },
       { type: "percent" },

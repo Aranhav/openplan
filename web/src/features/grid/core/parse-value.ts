@@ -146,8 +146,10 @@ function readNumber(
   }
   const [mantissa, exponent = "0"] = text.replaceAll(",", "").split(/e/i)
   // Shifting the decimal point in the text keeps 33.3% exactly 0.333; dividing by 100 would not.
-  const shift = percent || percentPoints ? 2 : 0
-  const magnitude = Number(`${mantissa}e${Number(exponent) - shift}`)
+  // The exponent is counted in whole numbers of any length: as a float, one of 21 digits or more
+  // would print as 1e+21 and break the number, while a shorter one would not.
+  const shift = percent || percentPoints ? 2n : 0n
+  const magnitude = Number(`${mantissa}e${BigInt(exponent) - shift}`)
   if (!Number.isFinite(magnitude)) {
     return undefined
   }

@@ -81,6 +81,37 @@ export function parseTsv(text: string): string[][] {
   return rows
 }
 
+/** Where a pasted block lands: the rectangle it covers, tiled or not, before it is clipped. */
+function placement(grid: string[][], selection: Selection) {
+  const height = grid.length
+  const width = grid.reduce((widest, row) => Math.max(widest, row.length), 0)
+  const range = rangeOf(selection)
+  const rows = range.rowEnd - range.rowStart + 1
+  const cols = range.colEnd - range.colStart + 1
+  const repeat = rows % height === 0 && cols % width === 0
+  return {
+    height,
+    width,
+    range,
+    lastRow: range.rowStart + (repeat ? rows : height) - 1,
+    lastCol: range.colStart + (repeat ? cols : width) - 1,
+  }
+}
+
+/**
+ * How many cells `planPaste` goes over, counted without planning, so that a selection of millions
+ * of cells can be refused cheaply. A ragged block counts as a full rectangle.
+ */
+export function pasteArea(grid: string[][], selection: Selection, bounds: Bounds): number {
+  if (grid.length === 0 || grid.every((row) => row.length === 0)) {
+    return 0
+  }
+  const { range, lastRow, lastCol } = placement(grid, selection)
+  const rows = Math.min(lastRow, bounds.rows - 1) - range.rowStart + 1
+  const cols = Math.min(lastCol, bounds.cols - 1) - range.colStart + 1
+  return Math.max(rows, 0) * Math.max(cols, 0)
+}
+
 /**
  * Where each pasted value goes. The block is placed with its top left cell at the selection's
  * top left. When the selection is a whole number of blocks tall and wide (a single value over
@@ -88,17 +119,10 @@ export function parseTsv(text: string): string[][] {
  * once. Nothing is placed past the grid's last row or column.
  */
 export function planPaste(grid: string[][], selection: Selection, bounds: Bounds): PasteEdit[] {
-  const height = grid.length
-  const width = grid.reduce((widest, row) => Math.max(widest, row.length), 0)
-  if (height === 0 || width === 0) {
+  if (grid.length === 0 || grid.every((row) => row.length === 0)) {
     return []
   }
-  const range = rangeOf(selection)
-  const rows = range.rowEnd - range.rowStart + 1
-  const cols = range.colEnd - range.colStart + 1
-  const repeat = rows % height === 0 && cols % width === 0
-  const lastRow = range.rowStart + (repeat ? rows : height) - 1
-  const lastCol = range.colStart + (repeat ? cols : width) - 1
+  const { height, width, range, lastRow, lastCol } = placement(grid, selection)
 
   const edits: PasteEdit[] = []
   for (let row = range.rowStart; row <= lastRow && row < bounds.rows; row++) {

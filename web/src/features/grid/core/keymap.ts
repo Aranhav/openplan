@@ -11,6 +11,22 @@ export type KeyInput = {
   isComposing?: boolean
 }
 
+/**
+ * The keys of a real keyboard event, for `resolveKey`. Safari ends a composition before the
+ * keydown of the key that confirmed it, which then reports `isComposing: false` and the keyCode
+ * 229 of the input method, so that is composing too.
+ */
+export function keyInput(event: KeyInput & { keyCode?: number }): KeyInput {
+  return {
+    key: event.key,
+    shiftKey: event.shiftKey,
+    ctrlKey: event.ctrlKey,
+    metaKey: event.metaKey,
+    altKey: event.altKey,
+    isComposing: event.isComposing === true || event.keyCode === 229,
+  }
+}
+
 /** `navigate` while cells are selected, `edit` while a cell editor has focus. */
 export type KeyMode = "navigate" | "edit"
 
