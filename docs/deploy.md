@@ -24,7 +24,7 @@ The browser only talks to the Vercel origin. Vercel rewrites `/api/*` to the Ren
 2. When Render asks for the variables marked `sync: false`, set:
    - `DATABASE_URL`: the URI from step 1.
    - `OPENPLAN_PUBLIC_URL`: a placeholder such as `https://placeholder.example`. It must start with `https://` so cookies are marked `Secure`. The Vercel domain is not known until step 3, so update this variable in step 3.
-3. Check the deploy with `https://openplan-api.onrender.com/api/health`. It returns `{"status":"ok",...}`.
+3. Check the deploy with `https://openplan-api-qmsm.onrender.com/api/health` (Render adds a suffix when the name is taken; use your service's URL). It returns `{"status":"ok",...}`.
 4. In Supabase, open Advisors → Security Advisor and run it after this first deploy. It should report no `RLS Disabled in Public` errors for `users`, `sessions`, `workspaces`, `workspace_members`, `models` or `_sqlx_migrations`.
 
 `render.yaml` also sets `OPENPLAN_LOG=info` and `OPENPLAN_TRUSTED_PROXY_HOPS=2` (see [Trusted proxy hops](#trusted-proxy-hops)).
@@ -32,7 +32,7 @@ The browser only talks to the Vercel origin. Vercel rewrites `/api/*` to the Ren
 ### 3. Vercel (web)
 
 1. Import this repository as a Vercel project and set the root directory to `web`. The framework, install, build and output settings come from `web/vercel.json`.
-2. `web/vercel.json` rewrites `/api/*` to `https://openplan-api.onrender.com/api/*`. If your Render service has a different URL, change the rewrite destination to match it, then redeploy.
+2. `web/vercel.json` rewrites `/api/*` to `https://openplan-api-qmsm.onrender.com/api/*`. If your Render service has a different URL, change the rewrite destination to match it, then redeploy.
 3. Deploy and note the Vercel domain. Then open `openplan-api` → Environment in Render, set `OPENPLAN_PUBLIC_URL` to `https://<vercel-domain>`, and save. Render redeploys.
 4. Open `https://<vercel-domain>` and complete setup immediately after the first deploy. The first visitor to the setup screen becomes the instance admin, and until that happens anyone who finds the URL can take the instance.
 
@@ -52,6 +52,7 @@ The browser only talks to the Vercel origin. Vercel rewrites `/api/*` to the Ren
 | `OPENPLAN_LOG` | `info` | Log filter. |
 | `OPENPLAN_TRUSTED_PROXY_HOPS` | `0` | Number of proxies in front of the server. See below. |
 | `OPENPLAN_DB_POOL_SIZE` | `10` | Most database connections the server holds open. A request that finds none free waits up to 10 seconds, then fails with a 500. Keep it below your database's connection limit. |
+| `OPENPLAN_MODEL_IDLE_MINUTES` | `30` | Minutes a model may go unused before it is saved as a checkpoint and unloaded from memory. Its next use loads it again. |
 
 ### Trusted proxy hops
 

@@ -5,7 +5,8 @@ OpenPlan is an open-source, Anaplan-style connected planning platform: a Rust (a
 ## Layout
 
 ```
-Cargo.toml          Cargo workspace (members = ["crates/server"])
+Cargo.toml          Cargo workspace (members = ["crates/engine", "crates/server"])
+crates/engine/      package openplan-engine, the calculation engine (structure, formulas, recalculation, summaries, cell storage codec); no I/O, no database
 crates/server/      package openplan-server, binary `openplan` (HTTP API, migrations, embedded web UI)
 web/                Vite + React + TypeScript app (served by the server from web/dist)
 e2e/                Playwright end-to-end tests that drive the real server
@@ -20,12 +21,13 @@ Server (from the repo root):
 ```
 cargo run -p openplan-server -- serve      # needs DATABASE_URL and OPENPLAN_PUBLIC_URL
 cargo run -p openplan-server -- openapi    # print the OpenAPI document; needs no env or DB
+cargo test -p openplan-engine              # the engine needs no database
 cargo test -p openplan-server              # export DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres first
 cargo clippy --all-targets -- -D warnings
 cargo fmt --all --check
 ```
 
-Server configuration comes from `DATABASE_URL`, `OPENPLAN_PUBLIC_URL`, `OPENPLAN_BIND` (default `0.0.0.0:8080`; `PORT` is used on all interfaces when `OPENPLAN_BIND` is unset), `OPENPLAN_LOG` (default `info`), `OPENPLAN_TRUSTED_PROXY_HOPS` (default `0`; see `docs/deploy.md`) and `OPENPLAN_DB_POOL_SIZE` (default `10`; the most database connections held open, and a request waits up to 10 seconds for a free one).
+Server configuration comes from `DATABASE_URL`, `OPENPLAN_PUBLIC_URL`, `OPENPLAN_BIND` (default `0.0.0.0:8080`; `PORT` is used on all interfaces when `OPENPLAN_BIND` is unset), `OPENPLAN_LOG` (default `info`), `OPENPLAN_TRUSTED_PROXY_HOPS` (default `0`; see `docs/deploy.md`), `OPENPLAN_DB_POOL_SIZE` (default `10`; the most database connections held open, and a request waits up to 10 seconds for a free one) and `OPENPLAN_MODEL_IDLE_MINUTES` (default `30`; how long an unused model stays loaded in memory before it is checkpointed and unloaded).
 
 Web:
 
@@ -82,7 +84,7 @@ docker compose up --build   # OpenPlan on http://localhost:8080 with Postgres
 - Every new table enables row level security in the migration that creates it (Supabase exposes `public` through its Data API).
 - JSON fields are `snake_case`. Timestamps RFC 3339 UTC (`chrono::DateTime<Utc>`). IDs are UUID v7 generated in Rust (`Uuid::now_v7()`).
 - All API routes live under `/api/v1` except `GET /api/health`, `GET /api/openapi.json`, `GET /api/docs`.
-- Errors are `application/problem+json`: `{"type":"about:blank","title":..,"status":..,"code":..,"detail":..,"errors":[{"field":..,"message":..}]?}`. Stable codes used in M1: `auth.unauthenticated` 401, `auth.invalid_credentials` 401, `auth.forbidden` 403, `auth.csrf` 403, `auth.rate_limited` 429, `setup.already_done` 409, `validation` 422, `not_found` 404, `user.email_taken` 409, `user.not_found` 404, `user.last_instance_admin` 409, `workspace.last_admin` 409, `workspace.member_exists` 409, `model.name_taken` 409, `internal` 500.
+- Errors are `application/problem+json`: `{"type":"about:blank","title":..,"status":..,"code":..,"detail":..,"errors":[{"field":..,"message":..}]?,"formula_errors":[{"code":..,"message":..,"start":..,"end":..,"suggestion":..}]?}`. Stable codes: `auth.unauthenticated` 401, `auth.invalid_credentials` 401, `auth.forbidden` 403, `auth.csrf` 403, `auth.rate_limited` 429, `setup.already_done` 409, `validation` 422, `not_found` 404, `user.email_taken` 409, `user.not_found` 404, `user.last_instance_admin` 409, `workspace.last_admin` 409, `workspace.member_exists` 409, `model.name_taken` 409, `model.production_locked` 409 (a structure change to a model in production mode), `formula.syntax`, `formula.unknown_name`, `formula.unknown_function`, `formula.arity`, `formula.type_mismatch`, `formula.dimension`, `formula.ambiguous_name` and `formula.cycle` 422 (the code of the first problem in a formula; `errors` lists every problem as `"{start}-{end}: {message}"` and `formula_errors` has them in full), `structure.name_taken` 409, `structure.invalid` 422, `structure.in_use` 409, `cells.invalid_value` 422 (`errors` has one entry per rejected cell, `cells[<index>]`), `cells.not_input` 422, `cells.invalid_coordinate` 422, `internal` 500.
 - Validation limits: email trimmed + lowercased, must contain one `@` with non-empty parts, ≤ 254 chars; person name trimmed 1–100 chars; password 10–256 chars; workspace and model names trimmed 1–80 chars; model description ≤ 500 chars.
 - Frontend: TypeScript strict; Tailwind v4 via `@tailwindcss/vite`; shadcn/ui style `new-york`, base color `neutral`, CSS variables; icons from `lucide-react`. Any UI element that exists in shadcn/ui must use that component. Never edit files in `web/src/components/ui/` by hand except via the shadcn CLI.
 - UX rules: every mutation button is disabled and shows `Loader2` spinner while pending; forms use react-hook-form + zod + shadcn `Form` with inline field errors; success and failure feedback via `sonner` toasts; every data view has a `Skeleton` loading state, an empty state (icon, one sentence, primary action) and an error state (`Alert variant="destructive"` with Retry). Copy is sentence case; buttons start with a verb.

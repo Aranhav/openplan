@@ -8,7 +8,9 @@ use axum::{
     http::{HeaderValue, StatusCode, header},
     middleware,
 };
-use common::{TestApp, TestResponse};
+use common::{
+    ADMIN_EMAIL, PASSWORD, TestApp, TestResponse, assert_problem, post_setup, setup_body,
+};
 use openplan_server::{
     app::{AppState, build_router},
     auth::session,
@@ -17,24 +19,6 @@ use openplan_server::{
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use uuid::Uuid;
-
-const EMAIL: &str = "admin@acme.com";
-const PASSWORD: &str = "correct horse battery";
-
-fn setup_body() -> Value {
-    json!({
-        "email": EMAIL,
-        "name": "Ada Admin",
-        "password": PASSWORD,
-        "workspace_name": "Acme",
-    })
-}
-
-async fn setup_admin(app: &mut TestApp) -> TestResponse {
-    let response = app.post("/api/v1/setup", Some(setup_body())).await;
-    assert_eq!(response.status, StatusCode::CREATED, "{}", response.text);
-    response
-}
 
 async fn login(app: &mut TestApp, email: &str, password: &str) -> TestResponse {
     app.post(
@@ -57,16 +41,6 @@ fn set_cookie<'a>(response: &'a TestResponse, name: &str) -> &'a str {
 fn cookie_value(set_cookie: &str) -> &str {
     let (_, rest) = set_cookie.split_once('=').unwrap();
     rest.split(';').next().unwrap()
-}
-
-fn assert_problem(response: &TestResponse, status: StatusCode, code: &str) {
-    assert_eq!(response.status, status, "{}", response.text);
-    let content_type = response.headers[header::CONTENT_TYPE].to_str().unwrap();
-    assert!(
-        content_type.starts_with("application/problem+json"),
-        "{content_type}"
-    );
-    assert_eq!(response.json["code"], code);
 }
 
 fn assert_no_store(response: &TestResponse) {
@@ -134,10 +108,10 @@ async fn setup_status_true_on_empty_db(pool: PgPool) {
 async fn setup_creates_admin_workspace_and_session(pool: PgPool) {
     let mut app = TestApp::new(pool.clone());
 
-    let created = setup_admin(&mut app).await;
+    let created = post_setup(&mut app).await;
 
     let user = &created.json["user"];
-    assert_eq!(user["email"], EMAIL);
+    assert_eq!(user["email"], ADMIN_EMAIL);
     assert_eq!(user["name"], "Ada Admin");
     assert_eq!(user["is_instance_admin"], true);
     assert!(Uuid::parse_str(user["id"].as_str().unwrap()).is_ok());
@@ -158,7 +132,7 @@ async fn setup_creates_admin_workspace_and_session(pool: PgPool) {
 
     let me = app.get("/api/v1/auth/me").await;
     assert_eq!(me.status, StatusCode::OK);
-    assert_eq!(me.json["user"]["email"], EMAIL);
+    assert_eq!(me.json["user"]["email"], ADMIN_EMAIL);
     let workspaces = me.json["workspaces"].as_array().unwrap();
     assert_eq!(workspaces.len(), 1);
     assert_eq!(workspaces[0]["id"], created.json["workspace"]["id"]);
@@ -183,7 +157,7 @@ async fn setup_creates_admin_workspace_and_session(pool: PgPool) {
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn setup_twice_conflicts(pool: PgPool) {
     let mut app = TestApp::new(pool.clone());
-    setup_admin(&mut app).await;
+    post_setup(&mut app).await;
 
     let mut second = setup_body();
     second["email"] = json!("other@acme.com");
@@ -303,7 +277,7 @@ async fn cookies_are_secure_when_public_url_is_https(pool: PgPool) {
     let mut app = TestApp::new(pool.clone());
     app.router = build_router(AppState::new(pool, config));
 
-    let created = setup_admin(&mut app).await;
+    let created = post_setup(&mut app).await;
     assert!(set_cookie(&created, "op_session").contains("Secure"));
     assert!(set_cookie(&created, "op_csrf").contains("Secure"));
 
@@ -315,12 +289,12 @@ async fn cookies_are_secure_when_public_url_is_https(pool: PgPool) {
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn login_with_mixed_case_email(pool: PgPool) {
     let mut app = TestApp::new(pool);
-    setup_admin(&mut app).await;
+    post_setup(&mut app).await;
 
     let response = login(&mut app, " Admin@Acme.COM ", PASSWORD).await;
 
     assert_eq!(response.status, StatusCode::OK, "{}", response.text);
-    assert_eq!(response.json["user"]["email"], EMAIL);
+    assert_eq!(response.json["user"]["email"], ADMIN_EMAIL);
     set_cookie(&response, "op_session");
     set_cookie(&response, "op_csrf");
     assert_eq!(app.get("/api/v1/auth/me").await.status, StatusCode::OK);
@@ -329,9 +303,9 @@ async fn login_with_mixed_case_email(pool: PgPool) {
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn login_wrong_password_401(pool: PgPool) {
     let mut app = TestApp::new(pool);
-    setup_admin(&mut app).await;
+    post_setup(&mut app).await;
 
-    let response = login(&mut app, EMAIL, "not the password").await;
+    let response = login(&mut app, ADMIN_EMAIL, "not the password").await;
 
     assert_eq!(response.status, StatusCode::UNAUTHORIZED);
     assert_eq!(response.json["code"], "auth.invalid_credentials");
@@ -341,9 +315,9 @@ async fn login_wrong_password_401(pool: PgPool) {
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn login_unknown_email_same_error(pool: PgPool) {
     let mut app = TestApp::new(pool);
-    setup_admin(&mut app).await;
+    post_setup(&mut app).await;
 
-    let wrong_password = login(&mut app, EMAIL, "not the password").await;
+    let wrong_password = login(&mut app, ADMIN_EMAIL, "not the password").await;
     let unknown_email = login(&mut app, "nobody@acme.com", PASSWORD).await;
     let malformed_email = login(&mut app, "nobody", PASSWORD).await;
     let overlong_email = login(&mut app, &format!("{}@acme.com", "a".repeat(300)), PASSWORD).await;
@@ -359,14 +333,14 @@ async fn login_unknown_email_same_error(pool: PgPool) {
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn login_disabled_user_same_error(pool: PgPool) {
     let mut app = TestApp::new(pool.clone());
-    setup_admin(&mut app).await;
-    let wrong_password = login(&mut app, EMAIL, "not the password").await;
+    post_setup(&mut app).await;
+    let wrong_password = login(&mut app, ADMIN_EMAIL, "not the password").await;
     sqlx::query("UPDATE users SET disabled = true")
         .execute(&pool)
         .await
         .unwrap();
 
-    let response = login(&mut app, EMAIL, PASSWORD).await;
+    let response = login(&mut app, ADMIN_EMAIL, PASSWORD).await;
 
     assert_eq!(response.status, StatusCode::UNAUTHORIZED);
     assert_eq!(response.json, wrong_password.json);
@@ -375,14 +349,14 @@ async fn login_disabled_user_same_error(pool: PgPool) {
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn login_user_without_password_same_error(pool: PgPool) {
     let mut app = TestApp::new(pool.clone());
-    setup_admin(&mut app).await;
-    let wrong_password = login(&mut app, EMAIL, "not the password").await;
+    post_setup(&mut app).await;
+    let wrong_password = login(&mut app, ADMIN_EMAIL, "not the password").await;
     sqlx::query("UPDATE users SET password_hash = NULL")
         .execute(&pool)
         .await
         .unwrap();
 
-    let response = login(&mut app, EMAIL, PASSWORD).await;
+    let response = login(&mut app, ADMIN_EMAIL, PASSWORD).await;
 
     assert_eq!(response.status, StatusCode::UNAUTHORIZED);
     assert_eq!(response.json, wrong_password.json);
@@ -391,17 +365,17 @@ async fn login_user_without_password_same_error(pool: PgPool) {
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn login_rate_limited_after_10_failures(pool: PgPool) {
     let mut app = TestApp::new(pool);
-    setup_admin(&mut app).await;
+    post_setup(&mut app).await;
 
     for attempt in 1..=10 {
-        let response = login(&mut app, EMAIL, "not the password").await;
+        let response = login(&mut app, ADMIN_EMAIL, "not the password").await;
         assert_eq!(
             response.status,
             StatusCode::UNAUTHORIZED,
             "attempt {attempt}"
         );
     }
-    let blocked = login(&mut app, EMAIL, PASSWORD).await;
+    let blocked = login(&mut app, ADMIN_EMAIL, PASSWORD).await;
 
     assert_eq!(blocked.status, StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(blocked.json["code"], "auth.rate_limited");
@@ -419,7 +393,7 @@ async fn login_rate_limited_after_10_failures(pool: PgPool) {
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn login_rate_limit_is_per_client_ip(pool: PgPool) {
     let mut app = TestApp::new(pool);
-    setup_admin(&mut app).await;
+    post_setup(&mut app).await;
     let router = app.router.clone();
     let from = |addr: &str| {
         let addr: SocketAddr = addr.parse().unwrap();
@@ -428,17 +402,17 @@ async fn login_rate_limit_is_per_client_ip(pool: PgPool) {
 
     app.router = from("10.0.0.1:50000");
     for _ in 0..10 {
-        login(&mut app, EMAIL, "not the password").await;
+        login(&mut app, ADMIN_EMAIL, "not the password").await;
     }
-    let blocked = login(&mut app, EMAIL, PASSWORD).await;
+    let blocked = login(&mut app, ADMIN_EMAIL, PASSWORD).await;
     assert_eq!(blocked.status, StatusCode::TOO_MANY_REQUESTS);
 
     app.router = from("10.0.0.1:50001");
-    let same_ip_new_port = login(&mut app, EMAIL, PASSWORD).await;
+    let same_ip_new_port = login(&mut app, ADMIN_EMAIL, PASSWORD).await;
     assert_eq!(same_ip_new_port.status, StatusCode::TOO_MANY_REQUESTS);
 
     app.router = from("10.0.0.2:50000");
-    let other_ip = login(&mut app, EMAIL, PASSWORD).await;
+    let other_ip = login(&mut app, ADMIN_EMAIL, PASSWORD).await;
     assert_eq!(other_ip.status, StatusCode::OK, "{}", other_ip.text);
 }
 
@@ -476,31 +450,31 @@ fn forwarded(address: &str) -> HeaderValue {
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn login_rate_limit_keys_on_the_forwarded_client_behind_a_proxy(pool: PgPool) {
     let mut app = TestApp::new(pool.clone());
-    setup_admin(&mut app).await;
+    post_setup(&mut app).await;
     let router = build_router(AppState::new(pool, one_trusted_proxy_config()));
 
     app.router = behind_proxy(&router, forwarded("203.0.113.9"));
     for _ in 0..10 {
-        login(&mut app, EMAIL, "not the password").await;
+        login(&mut app, ADMIN_EMAIL, "not the password").await;
     }
-    let blocked = login(&mut app, EMAIL, PASSWORD).await;
+    let blocked = login(&mut app, ADMIN_EMAIL, PASSWORD).await;
     assert_eq!(blocked.status, StatusCode::TOO_MANY_REQUESTS);
 
     app.router = behind_proxy(&router, forwarded("203.0.113.10"));
-    let other_client = login(&mut app, EMAIL, PASSWORD).await;
+    let other_client = login(&mut app, ADMIN_EMAIL, PASSWORD).await;
     assert_eq!(other_client.status, StatusCode::OK, "{}", other_client.text);
 }
 
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn login_email_ceiling_applies_across_forwarded_clients(pool: PgPool) {
     let mut app = TestApp::new(pool.clone());
-    setup_admin(&mut app).await;
+    post_setup(&mut app).await;
     let router = build_router(AppState::new(pool, one_trusted_proxy_config()));
 
     // Each guess arrives from a new address, so only the per-email ceiling can stop them.
     for client in 1..=50 {
         app.router = behind_proxy(&router, forwarded(&format!("203.0.113.{client}")));
-        let response = login(&mut app, EMAIL, "not the password").await;
+        let response = login(&mut app, ADMIN_EMAIL, "not the password").await;
         assert_eq!(
             response.status,
             StatusCode::UNAUTHORIZED,
@@ -508,31 +482,31 @@ async fn login_email_ceiling_applies_across_forwarded_clients(pool: PgPool) {
         );
     }
     app.router = behind_proxy(&router, forwarded("203.0.113.51"));
-    let blocked = login(&mut app, EMAIL, "not the password").await;
+    let blocked = login(&mut app, ADMIN_EMAIL, "not the password").await;
     assert_eq!(blocked.status, StatusCode::TOO_MANY_REQUESTS);
 
     app.router = behind_proxy(&router, forwarded("203.0.113.52"));
-    let correct_password = login(&mut app, EMAIL, PASSWORD).await;
+    let correct_password = login(&mut app, ADMIN_EMAIL, PASSWORD).await;
     assert_eq!(correct_password.status, StatusCode::TOO_MANY_REQUESTS);
 }
 
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn successful_login_resets_the_email_ceiling(pool: PgPool) {
     let mut app = TestApp::new(pool.clone());
-    setup_admin(&mut app).await;
+    post_setup(&mut app).await;
     let router = build_router(AppState::new(pool, one_trusted_proxy_config()));
 
     for client in 1..=49 {
         app.router = behind_proxy(&router, forwarded(&format!("203.0.113.{client}")));
-        login(&mut app, EMAIL, "not the password").await;
+        login(&mut app, ADMIN_EMAIL, "not the password").await;
     }
     app.router = behind_proxy(&router, forwarded("203.0.113.50"));
-    let success = login(&mut app, EMAIL, PASSWORD).await;
+    let success = login(&mut app, ADMIN_EMAIL, PASSWORD).await;
     assert_eq!(success.status, StatusCode::OK, "{}", success.text);
 
     for client in 51..=100 {
         app.router = behind_proxy(&router, forwarded(&format!("203.0.113.{client}")));
-        let response = login(&mut app, EMAIL, "not the password").await;
+        let response = login(&mut app, ADMIN_EMAIL, "not the password").await;
         assert_eq!(
             response.status,
             StatusCode::UNAUTHORIZED,
@@ -544,27 +518,27 @@ async fn successful_login_resets_the_email_ceiling(pool: PgPool) {
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn successful_login_resets_failure_count(pool: PgPool) {
     let mut app = TestApp::new(pool);
-    setup_admin(&mut app).await;
+    post_setup(&mut app).await;
 
     for _ in 0..9 {
-        login(&mut app, EMAIL, "not the password").await;
+        login(&mut app, ADMIN_EMAIL, "not the password").await;
     }
     assert_eq!(
-        login(&mut app, EMAIL, PASSWORD).await.status,
+        login(&mut app, ADMIN_EMAIL, PASSWORD).await.status,
         StatusCode::OK
     );
     for _ in 0..9 {
-        login(&mut app, EMAIL, "not the password").await;
+        login(&mut app, ADMIN_EMAIL, "not the password").await;
     }
 
-    let response = login(&mut app, EMAIL, "not the password").await;
+    let response = login(&mut app, ADMIN_EMAIL, "not the password").await;
     assert_eq!(response.status, StatusCode::UNAUTHORIZED);
 }
 
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn logout_invalidates_session(pool: PgPool) {
     let mut app = TestApp::new(pool.clone());
-    setup_admin(&mut app).await;
+    post_setup(&mut app).await;
     assert_eq!(app.get("/api/v1/auth/me").await.status, StatusCode::OK);
 
     let response = app.post("/api/v1/auth/logout", None).await;
@@ -591,7 +565,7 @@ async fn logout_without_session_is_no_content(pool: PgPool) {
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn logout_with_stale_session_is_no_content(pool: PgPool) {
     let mut app = TestApp::new(pool.clone());
-    setup_admin(&mut app).await;
+    post_setup(&mut app).await;
     sqlx::query("DELETE FROM sessions")
         .execute(&pool)
         .await
@@ -616,8 +590,8 @@ async fn me_requires_session(pool: PgPool) {
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn csrf_required_for_cookie_mutations(pool: PgPool) {
     let mut app = TestApp::new(pool);
-    setup_admin(&mut app).await;
-    login(&mut app, EMAIL, PASSWORD).await;
+    post_setup(&mut app).await;
+    login(&mut app, ADMIN_EMAIL, PASSWORD).await;
 
     let rejected = app
         .request_without_csrf(
@@ -642,10 +616,10 @@ async fn csrf_required_for_cookie_mutations(pool: PgPool) {
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn sign_in_and_sign_out_work_after_the_csrf_cookie_is_lost(pool: PgPool) {
     let mut app = TestApp::new(pool.clone());
-    setup_admin(&mut app).await;
+    post_setup(&mut app).await;
     app.forget_cookie("op_csrf");
 
-    let signed_in = login(&mut app, EMAIL, PASSWORD).await;
+    let signed_in = login(&mut app, ADMIN_EMAIL, PASSWORD).await;
 
     assert_eq!(signed_in.status, StatusCode::OK, "{}", signed_in.text);
     assert!(!cookie_value(set_cookie(&signed_in, "op_csrf")).is_empty());
@@ -676,7 +650,7 @@ async fn setup_works_with_a_leftover_session_cookie(pool: PgPool) {
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn csrf_exempt_routes_still_require_a_json_body(pool: PgPool) {
     let mut app = TestApp::new(pool);
-    setup_admin(&mut app).await;
+    post_setup(&mut app).await;
     app.forget_cookie("op_csrf");
 
     for path in ["/api/v1/auth/login", "/api/v1/setup"] {
@@ -684,7 +658,7 @@ async fn csrf_exempt_routes_still_require_a_json_body(pool: PgPool) {
             .post_raw(
                 path,
                 Some("application/x-www-form-urlencoded"),
-                format!("email={EMAIL}&password={PASSWORD}"),
+                format!("email={ADMIN_EMAIL}&password={PASSWORD}"),
             )
             .await;
         assert_problem(
@@ -698,7 +672,7 @@ async fn csrf_exempt_routes_still_require_a_json_body(pool: PgPool) {
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn me_reissues_the_csrf_cookie_when_it_is_missing(pool: PgPool) {
     let mut app = TestApp::new(pool);
-    let created = setup_admin(&mut app).await;
+    let created = post_setup(&mut app).await;
     let session_token = cookie_value(set_cookie(&created, "op_session")).to_string();
     app.forget_cookie("op_csrf");
 
@@ -723,7 +697,7 @@ async fn me_reissues_the_csrf_cookie_when_it_is_missing(pool: PgPool) {
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn expired_session_rejected(pool: PgPool) {
     let mut app = TestApp::new(pool.clone());
-    setup_admin(&mut app).await;
+    post_setup(&mut app).await;
     sqlx::query("UPDATE sessions SET expires_at = now() - interval '1 minute'")
         .execute(&pool)
         .await
@@ -738,7 +712,7 @@ async fn expired_session_rejected(pool: PgPool) {
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn session_renewed_when_near_expiry(pool: PgPool) {
     let mut app = TestApp::new(pool.clone());
-    let created = setup_admin(&mut app).await;
+    let created = post_setup(&mut app).await;
     let session_before = cookie_value(set_cookie(&created, "op_session")).to_string();
     let csrf_before = cookie_value(set_cookie(&created, "op_csrf")).to_string();
     sqlx::query("UPDATE sessions SET expires_at = now() + interval '1 day'")
@@ -772,7 +746,7 @@ async fn session_renewed_when_near_expiry(pool: PgPool) {
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn session_not_renewed_with_plenty_of_time_left(pool: PgPool) {
     let mut app = TestApp::new(pool.clone());
-    setup_admin(&mut app).await;
+    post_setup(&mut app).await;
     sqlx::query("UPDATE sessions SET expires_at = now() + interval '10 days'")
         .execute(&pool)
         .await
@@ -793,7 +767,7 @@ async fn session_not_renewed_with_plenty_of_time_left(pool: PgPool) {
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn session_of_disabled_user_rejected(pool: PgPool) {
     let mut app = TestApp::new(pool.clone());
-    setup_admin(&mut app).await;
+    post_setup(&mut app).await;
     sqlx::query("UPDATE users SET disabled = true")
         .execute(&pool)
         .await
@@ -808,7 +782,7 @@ async fn session_of_disabled_user_rejected(pool: PgPool) {
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn session_of_disabled_user_is_not_renewed(pool: PgPool) {
     let mut app = TestApp::new(pool.clone());
-    setup_admin(&mut app).await;
+    post_setup(&mut app).await;
     sqlx::query("UPDATE sessions SET expires_at = now() + interval '1 day'")
         .execute(&pool)
         .await
@@ -833,7 +807,7 @@ async fn session_of_disabled_user_is_not_renewed(pool: PgPool) {
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn me_lists_workspaces_by_name_with_roles(pool: PgPool) {
     let mut app = TestApp::new(pool.clone());
-    setup_admin(&mut app).await;
+    post_setup(&mut app).await;
     let member_id = insert_member(&pool, "member@acme.com").await;
     for (name, role) in [
         ("Zeta", Some("viewer")),
@@ -893,7 +867,7 @@ async fn me_lists_workspaces_by_name_with_roles(pool: PgPool) {
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn session_token_is_stored_only_as_a_hash(pool: PgPool) {
     let mut app = TestApp::new(pool.clone());
-    setup_admin(&mut app).await;
+    post_setup(&mut app).await;
     let user_id: Uuid = sqlx::query_scalar("SELECT id FROM users")
         .fetch_one(&pool)
         .await
@@ -933,7 +907,7 @@ async fn session_token_is_stored_only_as_a_hash(pool: PgPool) {
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn session_lookup_and_delete(pool: PgPool) {
     let mut app = TestApp::new(pool.clone());
-    setup_admin(&mut app).await;
+    post_setup(&mut app).await;
     let user_id: Uuid = sqlx::query_scalar("SELECT id FROM users")
         .fetch_one(&pool)
         .await
@@ -952,7 +926,7 @@ async fn session_lookup_and_delete(pool: PgPool) {
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn session_lookup_returns_the_user_and_skips_disabled_ones(pool: PgPool) {
     let mut app = TestApp::new(pool.clone());
-    setup_admin(&mut app).await;
+    post_setup(&mut app).await;
     let user_id: Uuid = sqlx::query_scalar("SELECT id FROM users")
         .fetch_one(&pool)
         .await
@@ -961,7 +935,7 @@ async fn session_lookup_returns_the_user_and_skips_disabled_ones(pool: PgPool) {
 
     let found = session::lookup(&pool, &token).await.unwrap().unwrap();
     assert_eq!(found.user.id, user_id);
-    assert_eq!(found.user.email, EMAIL);
+    assert_eq!(found.user.email, ADMIN_EMAIL);
     assert_eq!(found.user.name, "Ada Admin");
     assert!(found.user.is_instance_admin);
 
@@ -975,7 +949,7 @@ async fn session_lookup_returns_the_user_and_skips_disabled_ones(pool: PgPool) {
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn session_lookup_reports_when_it_renewed(pool: PgPool) {
     let mut app = TestApp::new(pool.clone());
-    setup_admin(&mut app).await;
+    post_setup(&mut app).await;
     let user_id: Uuid = sqlx::query_scalar("SELECT id FROM users")
         .fetch_one(&pool)
         .await
@@ -1012,7 +986,7 @@ async fn insert_session_expiring(pool: &PgPool, user_id: Uuid, expiry_sql: &str)
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn purge_deletes_only_expired_sessions(pool: PgPool) {
     let mut app = TestApp::new(pool.clone());
-    setup_admin(&mut app).await;
+    post_setup(&mut app).await;
     let user_id: Uuid = sqlx::query_scalar("SELECT id FROM users")
         .fetch_one(&pool)
         .await
@@ -1033,7 +1007,7 @@ async fn purge_deletes_only_expired_sessions(pool: PgPool) {
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn purge_task_clears_expired_sessions_as_soon_as_it_starts(pool: PgPool) {
     let mut app = TestApp::new(pool.clone());
-    setup_admin(&mut app).await;
+    post_setup(&mut app).await;
     let user_id: Uuid = sqlx::query_scalar("SELECT id FROM users")
         .fetch_one(&pool)
         .await
@@ -1057,7 +1031,7 @@ async fn purge_task_clears_expired_sessions_as_soon_as_it_starts(pool: PgPool) {
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn delete_all_for_user_keeps_other_users_sessions(pool: PgPool) {
     let mut app = TestApp::new(pool.clone());
-    setup_admin(&mut app).await;
+    post_setup(&mut app).await;
     let admin_id: Uuid = sqlx::query_scalar("SELECT id FROM users")
         .fetch_one(&pool)
         .await
@@ -1143,12 +1117,16 @@ async fn openapi_documents_the_auth_routes(pool: PgPool) {
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn parallel_wrong_password_logins_share_one_failure_budget(pool: PgPool) {
     let mut app = TestApp::new(pool);
-    setup_admin(&mut app).await;
+    post_setup(&mut app).await;
 
     let mut attempts = tokio::task::JoinSet::new();
     for _ in 0..20 {
         let mut client = app.fork();
-        attempts.spawn(async move { login(&mut client, EMAIL, "not the password").await.status });
+        attempts.spawn(async move {
+            login(&mut client, ADMIN_EMAIL, "not the password")
+                .await
+                .status
+        });
     }
     let (mut unauthorized, mut limited) = (0, 0);
     while let Some(status) = attempts.join_next().await {
@@ -1167,9 +1145,9 @@ async fn auth_responses_are_not_cacheable(pool: PgPool) {
     let mut app = TestApp::new(pool);
 
     assert_no_store(&app.get("/api/v1/setup/status").await);
-    assert_no_store(&setup_admin(&mut app).await);
-    assert_no_store(&login(&mut app, EMAIL, PASSWORD).await);
-    assert_no_store(&login(&mut app, EMAIL, "not the password").await);
+    assert_no_store(&post_setup(&mut app).await);
+    assert_no_store(&login(&mut app, ADMIN_EMAIL, PASSWORD).await);
+    assert_no_store(&login(&mut app, ADMIN_EMAIL, "not the password").await);
     assert_no_store(&app.get("/api/v1/auth/me").await);
     assert_no_store(&app.post("/api/v1/auth/logout", None).await);
 }
@@ -1179,7 +1157,7 @@ async fn missing_json_field_is_a_validation_error(pool: PgPool) {
     let mut app = TestApp::new(pool);
 
     let login = app
-        .post("/api/v1/auth/login", Some(json!({ "email": EMAIL })))
+        .post("/api/v1/auth/login", Some(json!({ "email": ADMIN_EMAIL })))
         .await;
     assert_problem(&login, StatusCode::UNPROCESSABLE_ENTITY, "validation");
     assert_eq!(login.json["errors"][0]["field"], "password");

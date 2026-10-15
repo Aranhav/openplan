@@ -3,6 +3,7 @@ use std::{io::Write, net::SocketAddr};
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use openplan_server::{
+    actor,
     app::{AppState, build_router},
     auth::session,
     config::Config,
@@ -49,18 +50,23 @@ async fn serve() -> anyhow::Result<()> {
     tokio::spawn(session::purge_expired_periodically(db.clone()));
 
     let bind = config.bind;
-    let app = build_router(AppState::new(db, config));
+    let state = AppState::new(db, config);
+    let models = state.models.clone();
+    tokio::spawn(actor::evict_idle_periodically(models.clone()));
+    let app = build_router(state);
     let listener = tokio::net::TcpListener::bind(bind)
         .await
         .with_context(|| format!("failed to bind {bind}"))?;
     tracing::info!(%bind, "openplan listening");
-    axum::serve(
+    let served = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(shutdown_signal())
     .await
-    .context("server error")
+    .context("server error");
+    models.shutdown().await;
+    served
 }
 
 async fn shutdown_signal() {

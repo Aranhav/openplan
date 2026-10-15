@@ -21,12 +21,14 @@ use utoipa_scalar::{Scalar, Servable};
 use uuid::Uuid;
 
 use crate::{
+    actor::ModelRegistry,
     auth::{self, csrf, rate_limit::LoginLimiter, renewal},
+    cells_api,
     config::Config,
     error::AppError,
-    models,
+    models, modules_api,
     openapi::ApiDoc,
-    static_files, users, workspaces,
+    static_files, structure_api, users, workspaces,
 };
 
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
@@ -43,11 +45,15 @@ pub struct AppState {
     pub login_limiter: Arc<LoginLimiter>,
     /// Per email, whatever the client address.
     pub login_email_limiter: Arc<LoginLimiter>,
+    /// The models held in memory, one actor each.
+    pub models: ModelRegistry,
 }
 
 impl AppState {
     pub fn new(db: PgPool, config: Config) -> AppState {
+        let model_idle = Duration::from_secs(u64::from(config.model_idle_minutes) * 60);
         AppState {
+            models: ModelRegistry::new(db.clone(), model_idle),
             db,
             config: Arc::new(config),
             login_limiter: Arc::new(LoginLimiter::new(LOGIN_MAX_FAILURES, LOGIN_FAILURE_WINDOW)),
@@ -124,6 +130,9 @@ pub fn build_router(state: AppState) -> Router {
         .merge(users::router())
         .merge(workspaces::router())
         .merge(models::router())
+        .merge(structure_api::router())
+        .merge(modules_api::router())
+        .merge(cells_api::router())
         .layer(middleware::from_fn(csrf::require_csrf));
     let api_v1: Router<AppState> = csrf_protected
         .merge(auth::routes::session_router())

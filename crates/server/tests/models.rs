@@ -2,82 +2,15 @@ mod common;
 
 use axum::http::{StatusCode, header};
 use chrono::{DateTime, Datelike, FixedOffset, Utc};
-use common::{TestApp, TestResponse};
+use common::{
+    TestApp, TestResponse, assert_problem, create_member, create_model, create_user, setup_admin,
+    sign_in,
+};
 use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-const ADMIN_EMAIL: &str = "admin@acme.com";
-const PASSWORD: &str = "correct horse battery";
 const NAME_TAKEN_DETAIL: &str = "A model with this name already exists in this workspace.";
-
-/// Completes first-run setup and returns the id of the "Acme" workspace it creates.
-async fn setup_admin(app: &mut TestApp) -> String {
-    let response = app
-        .post(
-            "/api/v1/setup",
-            Some(json!({
-                "email": ADMIN_EMAIL,
-                "name": "Ada Admin",
-                "password": PASSWORD,
-                "workspace_name": "Acme",
-            })),
-        )
-        .await;
-    assert_eq!(response.status, StatusCode::CREATED, "{}", response.text);
-    response.json["workspace"]["id"]
-        .as_str()
-        .unwrap()
-        .to_string()
-}
-
-async fn create_user(admin: &mut TestApp, email: &str, name: &str) -> String {
-    let response = admin
-        .post(
-            "/api/v1/users",
-            Some(json!({
-                "email": email,
-                "name": name,
-                "password": PASSWORD,
-                "is_instance_admin": false,
-            })),
-        )
-        .await;
-    assert_eq!(response.status, StatusCode::CREATED, "{}", response.text);
-    response.json["id"].as_str().unwrap().to_string()
-}
-
-async fn sign_in(pool: &PgPool, email: &str) -> TestApp {
-    let mut app = TestApp::new(pool.clone());
-    let response = app
-        .post(
-            "/api/v1/auth/login",
-            Some(json!({ "email": email, "password": PASSWORD })),
-        )
-        .await;
-    assert_eq!(response.status, StatusCode::OK, "{}", response.text);
-    app
-}
-
-/// Creates a user and adds them to `workspace_id` with `role`, as the signed-in
-/// `admin`. Returns the new user's id.
-async fn create_member(
-    admin: &mut TestApp,
-    workspace_id: &str,
-    email: &str,
-    name: &str,
-    role: &str,
-) -> String {
-    let user_id = create_user(admin, email, name).await;
-    let added = admin
-        .post(
-            &format!("/api/v1/workspaces/{workspace_id}/members"),
-            Some(json!({ "email": email, "role": role })),
-        )
-        .await;
-    assert_eq!(added.status, StatusCode::CREATED, "{}", added.text);
-    user_id
-}
 
 fn models_path(workspace_id: &str) -> String {
     format!("/api/v1/workspaces/{workspace_id}/models")
@@ -87,16 +20,9 @@ fn model_path(model_id: &str) -> String {
     format!("/api/v1/models/{model_id}")
 }
 
-async fn create_model(app: &mut TestApp, workspace_id: &str, name: &str) -> TestResponse {
+async fn try_create_model(app: &mut TestApp, workspace_id: &str, name: &str) -> TestResponse {
     app.post(&models_path(workspace_id), Some(json!({ "name": name })))
         .await
-}
-
-/// Creates a model named `name` and returns its id.
-async fn create_model_id(app: &mut TestApp, workspace_id: &str, name: &str) -> String {
-    let created = create_model(app, workspace_id, name).await;
-    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text);
-    created.json["id"].as_str().unwrap().to_string()
 }
 
 async fn stored_name(pool: &PgPool, model_id: &str) -> String {
@@ -112,16 +38,6 @@ async fn model_count(pool: &PgPool) -> i64 {
         .fetch_one(pool)
         .await
         .unwrap()
-}
-
-fn assert_problem(response: &TestResponse, status: StatusCode, code: &str) {
-    assert_eq!(response.status, status, "{}", response.text);
-    let content_type = response.headers[header::CONTENT_TYPE].to_str().unwrap();
-    assert!(
-        content_type.starts_with("application/problem+json"),
-        "{content_type}"
-    );
-    assert_eq!(response.json["code"], code);
 }
 
 fn assert_no_store(response: &TestResponse) {
@@ -177,7 +93,7 @@ async fn planner_cannot_create_model(pool: PgPool) {
     create_member(&mut admin, &workspace_id, "pat@acme.com", "Pat", "planner").await;
     let mut pat = sign_in(&pool, "pat@acme.com").await;
 
-    let created = create_model(&mut pat, &workspace_id, "Plan").await;
+    let created = try_create_model(&mut pat, &workspace_id, "Plan").await;
 
     assert_problem(&created, StatusCode::FORBIDDEN, "auth.forbidden");
     assert_eq!(model_count(&pool).await, 0);
@@ -187,8 +103,8 @@ async fn planner_cannot_create_model(pool: PgPool) {
 async fn viewer_can_list_and_get(pool: PgPool) {
     let mut admin = TestApp::new(pool.clone());
     let workspace_id = setup_admin(&mut admin).await;
-    let alpha = create_model_id(&mut admin, &workspace_id, "Alpha").await;
-    let beta = create_model_id(&mut admin, &workspace_id, "Beta").await;
+    let alpha = create_model(&mut admin, &workspace_id, "Alpha").await;
+    let beta = create_model(&mut admin, &workspace_id, "Beta").await;
     create_member(&mut admin, &workspace_id, "vi@acme.com", "Vi", "viewer").await;
     let mut viewer = sign_in(&pool, "vi@acme.com").await;
 
@@ -218,7 +134,7 @@ async fn viewer_can_list_and_get(pool: PgPool) {
 async fn non_member_404_on_get_model(pool: PgPool) {
     let mut admin = TestApp::new(pool.clone());
     let workspace_id = setup_admin(&mut admin).await;
-    let model_id = create_model_id(&mut admin, &workspace_id, "Plan").await;
+    let model_id = create_model(&mut admin, &workspace_id, "Plan").await;
     create_user(&mut admin, "olly@acme.com", "Olly Outsider").await;
     let mut outsider = sign_in(&pool, "olly@acme.com").await;
     let path = model_path(&model_id);
@@ -242,9 +158,9 @@ async fn non_member_404_on_get_model(pool: PgPool) {
 async fn duplicate_name_case_insensitive_409(pool: PgPool) {
     let mut admin = TestApp::new(pool.clone());
     let workspace_id = setup_admin(&mut admin).await;
-    create_model_id(&mut admin, &workspace_id, "Plan").await;
+    create_model(&mut admin, &workspace_id, "Plan").await;
 
-    let duplicate = create_model(&mut admin, &workspace_id, "  pLAN ").await;
+    let duplicate = try_create_model(&mut admin, &workspace_id, "  pLAN ").await;
 
     assert_problem(&duplicate, StatusCode::CONFLICT, "model.name_taken");
     assert_eq!(duplicate.json["detail"], NAME_TAKEN_DETAIL);
@@ -263,8 +179,8 @@ async fn same_name_allowed_in_other_workspace(pool: PgPool) {
         .unwrap()
         .to_string();
 
-    let in_acme = create_model(&mut admin, &acme, "Plan").await;
-    let in_zeta = create_model(&mut admin, &zeta, "Plan").await;
+    let in_acme = try_create_model(&mut admin, &acme, "Plan").await;
+    let in_zeta = try_create_model(&mut admin, &zeta, "Plan").await;
 
     assert_eq!(in_acme.status, StatusCode::CREATED, "{}", in_acme.text);
     assert_eq!(in_zeta.status, StatusCode::CREATED, "{}", in_zeta.text);
@@ -275,7 +191,7 @@ async fn same_name_allowed_in_other_workspace(pool: PgPool) {
 async fn patch_updates_fields_and_timestamp(pool: PgPool) {
     let mut admin = TestApp::new(pool.clone());
     let workspace_id = setup_admin(&mut admin).await;
-    let created = create_model(&mut admin, &workspace_id, "Plan").await;
+    let created = try_create_model(&mut admin, &workspace_id, "Plan").await;
     let path = model_path(created.json["id"].as_str().unwrap());
 
     let patched = admin
@@ -307,10 +223,10 @@ async fn patch_updates_fields_and_timestamp(pool: PgPool) {
 async fn invalid_name_422(pool: PgPool) {
     let mut admin = TestApp::new(pool.clone());
     let workspace_id = setup_admin(&mut admin).await;
-    let model_id = create_model_id(&mut admin, &workspace_id, "Plan").await;
+    let model_id = create_model(&mut admin, &workspace_id, "Plan").await;
 
     for name in ["   ".to_string(), "a".repeat(81)] {
-        let created = create_model(&mut admin, &workspace_id, &name).await;
+        let created = try_create_model(&mut admin, &workspace_id, &name).await;
         assert_problem(&created, StatusCode::UNPROCESSABLE_ENTITY, "validation");
         assert_eq!(created.json["errors"][0]["field"], "name");
 
@@ -328,7 +244,7 @@ async fn invalid_name_422(pool: PgPool) {
 async fn description_too_long_422(pool: PgPool) {
     let mut admin = TestApp::new(pool.clone());
     let workspace_id = setup_admin(&mut admin).await;
-    let model_id = create_model_id(&mut admin, &workspace_id, "Plan").await;
+    let model_id = create_model(&mut admin, &workspace_id, "Plan").await;
     let too_long = "a".repeat(501);
 
     let created = admin
@@ -362,7 +278,7 @@ async fn description_too_long_422(pool: PgPool) {
 async fn delete_model(pool: PgPool) {
     let mut admin = TestApp::new(pool.clone());
     let workspace_id = setup_admin(&mut admin).await;
-    let model_id = create_model_id(&mut admin, &workspace_id, "Plan").await;
+    let model_id = create_model(&mut admin, &workspace_id, "Plan").await;
     let path = model_path(&model_id);
 
     let deleted = admin.delete(&path).await;
@@ -382,7 +298,7 @@ async fn delete_model(pool: PgPool) {
 async fn only_builders_change_or_delete_models(pool: PgPool) {
     let mut admin = TestApp::new(pool.clone());
     let workspace_id = setup_admin(&mut admin).await;
-    let model_id = create_model_id(&mut admin, &workspace_id, "Plan").await;
+    let model_id = create_model(&mut admin, &workspace_id, "Plan").await;
     let path = model_path(&model_id);
     create_member(&mut admin, &workspace_id, "pat@acme.com", "Pat", "planner").await;
     create_member(&mut admin, &workspace_id, "vi@acme.com", "Vi", "viewer").await;
@@ -428,8 +344,8 @@ async fn unknown_or_malformed_model_id_is_404(pool: PgPool) {
 async fn rename_to_an_existing_name_409(pool: PgPool) {
     let mut admin = TestApp::new(pool.clone());
     let workspace_id = setup_admin(&mut admin).await;
-    let plan = create_model_id(&mut admin, &workspace_id, "Plan").await;
-    let other = create_model_id(&mut admin, &workspace_id, "Other").await;
+    let plan = create_model(&mut admin, &workspace_id, "Plan").await;
+    let other = create_model(&mut admin, &workspace_id, "Other").await;
 
     let renamed = admin
         .patch(&model_path(&other), Some(json!({ "name": " pLAN " })))
@@ -449,7 +365,7 @@ async fn rename_to_an_existing_name_409(pool: PgPool) {
 async fn patch_rejects_unknown_mode(pool: PgPool) {
     let mut admin = TestApp::new(pool.clone());
     let workspace_id = setup_admin(&mut admin).await;
-    let model_id = create_model_id(&mut admin, &workspace_id, "Plan").await;
+    let model_id = create_model(&mut admin, &workspace_id, "Plan").await;
 
     let patched = admin
         .patch(&model_path(&model_id), Some(json!({ "mode": "staging" })))
