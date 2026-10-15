@@ -2,11 +2,12 @@ use std::error::Error as _;
 
 use axum::{
     Json,
+    body::Bytes,
     extract::{
         FromRequest, FromRequestParts, Path, Query, Request,
-        rejection::{JsonRejection, QueryRejection},
+        rejection::{BytesRejection, JsonRejection, QueryRejection},
     },
-    http::{StatusCode, request::Parts},
+    http::{HeaderMap, StatusCode, header::CONTENT_TYPE, request::Parts},
 };
 use serde::{Deserialize, Deserializer, de::DeserializeOwned};
 
@@ -16,7 +17,8 @@ use crate::{
 };
 
 /// A JSON request body whose rejections are `application/problem+json`
-/// instead of axum's plain-text defaults.
+/// instead of axum's plain-text defaults. A text in it with the NUL character, which the
+/// database cannot store, is a 422 that names the field.
 pub struct ApiJson<T>(pub T);
 
 impl<S, T> FromRequest<S> for ApiJson<T>
@@ -27,8 +29,89 @@ where
     type Rejection = AppError;
 
     async fn from_request(req: Request, state: &S) -> Result<Self, AppError> {
-        let Json(value) = Json::<T>::from_request(req, state).await?;
+        if !has_json_content_type(req.headers()) {
+            return Err(AppError::UnsupportedMediaType);
+        }
+        let body = Bytes::from_request(req, state).await?;
+        if let Some(field) = nul_in_json(&body) {
+            return Err(nul_error(&field));
+        }
+        let Json(value) = Json::<T>::from_bytes(&body)?;
         Ok(ApiJson(value))
+    }
+}
+
+/// Whether the request says its body is JSON: `application/json` or a `+json` type, with any
+/// parameters.
+fn has_json_content_type(headers: &HeaderMap) -> bool {
+    headers
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            let essence = value
+                .split(';')
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase();
+            essence == "application/json"
+                || (essence.starts_with("application/") && essence.ends_with("+json"))
+        })
+}
+
+fn nul_error(field: &str) -> AppError {
+    AppError::Validation(vec![FieldError {
+        field: field.to_string(),
+        message: "Text can't contain the NUL character.".to_string(),
+    }])
+}
+
+/// The field of a JSON body whose text has the NUL character, or `body` when it is not a field
+/// of an object. Nothing for a body that is not JSON, which the parser refuses.
+fn nul_in_json(body: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(body).ok()?;
+    if !has_nul_escape(text) {
+        return None;
+    }
+    let document: serde_json::Value = serde_json::from_str(text).ok()?;
+    nul_path(&document, "").map(|path| if path.is_empty() { "body".into() } else { path })
+}
+
+/// Whether a JSON document spells the NUL character, `\u0000`, in a text. A backslash that is
+/// itself escaped, as in `\\u0000`, does not start the escape.
+fn has_nul_escape(text: &str) -> bool {
+    text.match_indices("\\u0000").any(|(at, _)| {
+        let backslashes = text.as_bytes()[..at]
+            .iter()
+            .rev()
+            .take_while(|byte| **byte == b'\\')
+            .count();
+        backslashes % 2 == 0
+    })
+}
+
+/// The path of the first text in `value` with the NUL character, `path` being that of `value`.
+/// A key that has it is reported as the object it is in.
+fn nul_path(value: &serde_json::Value, path: &str) -> Option<String> {
+    use serde_json::Value;
+    match value {
+        Value::String(text) => text.contains('\0').then(|| path.to_string()),
+        Value::Array(items) => items
+            .iter()
+            .enumerate()
+            .find_map(|(index, item)| nul_path(item, &format!("{path}[{index}]"))),
+        Value::Object(fields) => fields.iter().find_map(|(key, field)| {
+            if key.contains('\0') {
+                return Some(path.to_string());
+            }
+            let at = if path.is_empty() {
+                key.clone()
+            } else {
+                format!("{path}.{key}")
+            };
+            nul_path(field, &at)
+        }),
+        _ => None,
     }
 }
 
@@ -62,7 +145,7 @@ where
 }
 
 /// A query string whose rejections are `application/problem+json` 422s that name the missing
-/// field.
+/// field. A value with the NUL character, which the database cannot store, is a 422 too.
 pub struct ApiQuery<T>(pub T);
 
 impl<S, T> FromRequestParts<S> for ApiQuery<T>
@@ -73,8 +156,57 @@ where
     type Rejection = AppError;
 
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, AppError> {
+        if let Some(field) = parts.uri.query().and_then(nul_in_query) {
+            return Err(nul_error(&field));
+        }
         let Query(value) = Query::<T>::from_request_parts(parts, state).await?;
         Ok(ApiQuery(value))
+    }
+}
+
+/// The name of the first parameter of a query string whose name or value has the NUL character
+/// percent-encoded, or `query` when the name cannot be told.
+fn nul_in_query(query: &str) -> Option<String> {
+    query.split('&').find_map(|pair| {
+        let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+        (decodes_to_nul(name) || decodes_to_nul(value)).then(|| {
+            if name.is_empty() || name.contains(['%', '+']) {
+                "query".to_string()
+            } else {
+                name.to_string()
+            }
+        })
+    })
+}
+
+/// Whether the percent-encoded `text` decodes to a text with the NUL character. `%2500` is a
+/// percent sign and two zeros.
+fn decodes_to_nul(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] == b'%'
+            && let Some(digits) = bytes.get(at + 1..at + 3)
+            && digits.iter().all(u8::is_ascii_hexdigit)
+        {
+            if digits == b"00" {
+                return true;
+            }
+            at += 3;
+        } else {
+            at += 1;
+        }
+    }
+    false
+}
+
+impl From<BytesRejection> for AppError {
+    fn from(rejection: BytesRejection) -> Self {
+        if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE {
+            AppError::PayloadTooLarge
+        } else {
+            AppError::BadRequest("The request body could not be read.".into())
+        }
     }
 }
 
@@ -263,6 +395,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn text_with_the_nul_character_is_refused_before_it_is_read() {
+        let (status, json) = send(
+            Some("application/json"),
+            r#"{"name":"a\u0000b","inner":{"count":"not a number"}}"#,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(json["code"], "validation");
+        assert_eq!(json["errors"][0]["field"], "name");
+        assert_eq!(
+            json["errors"][0]["message"],
+            "Text can't contain the NUL character."
+        );
+    }
+
+    #[test]
+    fn a_nul_escape_is_found_unless_its_backslash_is_escaped() {
+        assert!(has_nul_escape(r#"{"a":"x\u0000y"}"#));
+        assert!(!has_nul_escape(r#"{"a":"x\\u0000y"}"#));
+        assert!(has_nul_escape(r#"{"a":"x\\\u0000y"}"#));
+        assert!(!has_nul_escape(r#"{"a":"x\u0001y"}"#));
+        assert!(!has_nul_escape(r#"{"a":"x"}"#));
+    }
+
+    #[test]
+    fn the_text_with_a_nul_is_named_by_its_path() {
+        let field = |body: &str| nul_in_json(body.as_bytes());
+
+        assert_eq!(field(r#"{"notes":"a\u0000"}"#).unwrap(), "notes");
+        assert_eq!(
+            field(r#"{"edits":[{},{"value":{"v":"\u0000"}}]}"#).unwrap(),
+            "edits[1].value.v"
+        );
+        assert_eq!(field(r#"{"a":{"b\u0000":1}}"#).unwrap(), "a");
+        assert_eq!(field(r#"{"b\u0000":1}"#).unwrap(), "body");
+        assert_eq!(field(r#""\u0000""#).unwrap(), "body");
+        assert_eq!(field(r#"{"notes":"\\u0000"}"#), None);
+        assert_eq!(field(r#"{"notes":"a\u0000""#), None, "not JSON");
+        assert_eq!(field(r#"{"notes":"fine"}"#), None);
+    }
+
+    #[tokio::test]
     async fn invalid_syntax_is_a_bad_request() {
         let (status, json) = send(Some("application/json"), "{oops").await;
 
@@ -357,6 +532,39 @@ mod tests {
 
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body, Value::String(format!("{id}:Re v")));
+    }
+
+    #[tokio::test]
+    async fn a_query_value_with_the_nul_character_is_refused() {
+        let id = Uuid::now_v7();
+
+        let (status, json) = get_query(&format!("/?line_item_id={id}&prefix=a%00b")).await;
+
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(json["code"], "validation");
+        assert_eq!(json["errors"][0]["field"], "prefix");
+        assert_eq!(
+            json["errors"][0]["message"],
+            "Text can't contain the NUL character."
+        );
+    }
+
+    #[test]
+    fn the_parameter_with_an_encoded_nul_is_named() {
+        assert_eq!(nul_in_query("a=1&cell_key=%00").unwrap(), "cell_key");
+        assert_eq!(nul_in_query("a=x%2Fy%00").unwrap(), "a");
+        assert_eq!(nul_in_query("%00=1").unwrap(), "query");
+        assert_eq!(nul_in_query("a=1&%00").unwrap(), "query");
+        assert_eq!(
+            nul_in_query("a=%2500"),
+            None,
+            "a percent sign and two zeros"
+        );
+        assert_eq!(nul_in_query("a=%25%00").unwrap(), "a");
+        assert_eq!(nul_in_query("a=%0"), None);
+        assert_eq!(nul_in_query("a=%zz00"), None);
+        assert_eq!(nul_in_query("a=100%"), None);
+        assert_eq!(nul_in_query("a=1&b=%20"), None);
     }
 
     #[tokio::test]

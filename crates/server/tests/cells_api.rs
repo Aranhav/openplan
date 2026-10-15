@@ -1458,11 +1458,8 @@ async fn text_values_are_limited_and_cannot_contain_nul(pool: PgPool) {
         vec![edit(&note, at([]), text("before\u{0}after"))],
     )
     .await;
-    assert_problem(
-        &nul,
-        StatusCode::UNPROCESSABLE_ENTITY,
-        "cells.invalid_value",
-    );
+    assert_problem(&nul, StatusCode::UNPROCESSABLE_ENTITY, "validation");
+    assert_eq!(nul.json["errors"][0]["field"], "edits[0].value.v");
     assert_eq!(
         nul.json["errors"][0]["message"],
         "Text can't contain the NUL character."
@@ -1477,21 +1474,6 @@ async fn text_values_are_limited_and_cannot_contain_nul(pool: PgPool) {
     .await;
     let found = read_values(&mut admin, &id, &note, vec![at([])]).await;
     assert_eq!(found[0], text(&"x".repeat(10_000)));
-}
-
-#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
-async fn names_with_nul_are_422(pool: PgPool) {
-    let (mut admin, _, id) = plan(&pool).await;
-
-    let response = admin
-        .post(&url(&id, "/lists"), Some(json!({ "name": "Bad\u{0}name" })))
-        .await;
-
-    assert_problem(
-        &response,
-        StatusCode::UNPROCESSABLE_ENTITY,
-        "structure.invalid",
-    );
 }
 
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
@@ -1652,5 +1634,76 @@ async fn the_cells_routes_are_in_the_openapi_document(pool: PgPool) {
     ] {
         assert!(schemas.contains_key(name), "{name}");
     }
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn nul_in_a_request_is_422_wherever_it_is(pool: PgPool) {
+    let (mut admin, _, id) = plan(&pool).await;
+    let module = create_module(&mut admin, &id, "Plan", vec![month()]).await;
+    let units = create_line_item(&mut admin, &id, &module, json!({ "name": "Units" })).await;
+    let rows = change_rows(&pool, &id).await;
+    let nul = "Text can't contain the NUL character.";
+
+    // A field of a route that has nothing to do with cells.
+    let notes = admin
+        .post(
+            &url(&id, &format!("/modules/{module}/line-items")),
+            Some(json!({ "name": "Costs", "notes": "a\u{0}b" })),
+        )
+        .await;
+    assert_problem(&notes, StatusCode::UNPROCESSABLE_ENTITY, "validation");
+    assert_eq!(notes.json["errors"][0]["field"], "notes");
+    assert_eq!(notes.json["errors"][0]["message"], nul);
+
+    // Deeper in the body, in a key as well as in a value.
+    let list = create_list(&mut admin, &id, json!({ "name": "Products" })).await;
+    let items = admin
+        .post(
+            &url(&id, &format!("/lists/{list}/items")),
+            Some(json!({ "items": [{ "name": "Fine" }, { "name": "x\u{0}" }] })),
+        )
+        .await;
+    assert_problem(&items, StatusCode::UNPROCESSABLE_ENTITY, "validation");
+    assert_eq!(items.json["errors"][0]["field"], "items[1].name");
+    let key = admin
+        .post_raw(
+            &url(&id, "/lists"),
+            Some("application/json"),
+            r#"{"name":"Fine","a\u0000":1}"#,
+        )
+        .await;
+    assert_problem(&key, StatusCode::UNPROCESSABLE_ENTITY, "validation");
+    assert_eq!(key.json["errors"][0]["field"], "body");
+
+    // A backslash followed by the text u0000 is not a NUL.
+    let literal = admin
+        .post(
+            &url(&id, "/lists"),
+            Some(json!({ "name": "back\\u0000slash" })),
+        )
+        .await;
+    assert_eq!(literal.status, StatusCode::CREATED, "{}", literal.text);
+
+    // A query value, however it is spelled; %2500 is a percent sign and the digits 00.
+    let history = |cell_key: &str| {
+        format!(
+            "{}?line_item_id={units}&cell_key={cell_key}",
+            url(&id, "/cells/history")
+        )
+    };
+    for cell_key in ["%00", "a%00b", "%2500%00"] {
+        let response = admin.get(&history(cell_key)).await;
+        assert_problem(&response, StatusCode::UNPROCESSABLE_ENTITY, "validation");
+        assert_eq!(
+            response.json["errors"][0]["field"], "cell_key",
+            "{cell_key}"
+        );
+        assert_eq!(response.json["errors"][0]["message"], nul);
+    }
+    let escaped = admin.get(&history("%2500")).await;
+    assert_eq!(escaped.status, StatusCode::OK, "{}", escaped.text);
+
+    // Only the list that was created and the literal one were stored.
+    assert_eq!(change_rows(&pool, &id).await, rows + 2);
 }
 
