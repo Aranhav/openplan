@@ -125,7 +125,7 @@ fn relate<T: PartialOrd>(op: BinOp, left: &[T], right: &[T]) -> Option<Vec<bool>
     })
 }
 
-/// An operand of `&`, read cell by cell as text.
+/// An operand of `&` or `TEXT`, read cell by cell as text.
 enum Part<'a> {
     Text(&'a [Arc<str>]),
     Number(&'a [f64]),
@@ -141,6 +141,15 @@ impl<'a> Part<'a> {
             (Column::Date(cells), _) => Ok(Part::Date(cells)),
             (Column::Item(cells), ValueType::Item(list)) => Ok(Part::Item(cells, list)),
             _ => Err(mismatch()),
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Part::Text(cells) => cells.len(),
+            Part::Number(cells) => cells.len(),
+            Part::Date(cells) => cells.len(),
+            Part::Item(cells, _) => cells.len(),
         }
     }
 
@@ -190,22 +199,38 @@ fn concat(
 ) -> Result<Column, EngineError> {
     let left = Part::of(&left.0, left.1)?;
     let right = Part::of(&right.0, right.1)?;
-    let len = match &left {
-        Part::Text(cells) => cells.len(),
-        Part::Number(cells) => cells.len(),
-        Part::Date(cells) => cells.len(),
-        Part::Item(cells, _) => cells.len(),
-    };
+    Ok(text_cells(left.len(), |i, out| {
+        left.write(structure, i, out);
+        right.write(structure, i, out);
+    }))
+}
+
+/// A column of `column` as text, the way `&` writes its operands: numbers as the shortest text
+/// that reads back as the same number, dates as `YYYY-MM-DD`, items by name; a blank date or
+/// item as nothing. `ty` tells apart the columns that hold items of different lists.
+pub(crate) fn to_text(
+    structure: &Structure,
+    column: &Column,
+    ty: ValueType,
+) -> Result<Column, EngineError> {
+    let part = Part::of(column, ty)?;
+    Ok(text_cells(part.len(), |i, out| {
+        part.write(structure, i, out);
+    }))
+}
+
+/// A column of `len` texts, the `i`th of which `write` writes into the empty buffer it is given.
+fn text_cells(len: usize, mut write: impl FnMut(usize, &mut String)) -> Column {
     let mut buffer = String::new();
-    let cells = (0..len)
-        .map(|i| {
-            buffer.clear();
-            left.write(structure, i, &mut buffer);
-            right.write(structure, i, &mut buffer);
-            Arc::from(buffer.as_str())
-        })
-        .collect();
-    Ok(Column::Text(cells))
+    Column::Text(
+        (0..len)
+            .map(|i| {
+                buffer.clear();
+                write(i, &mut buffer);
+                Arc::from(buffer.as_str())
+            })
+            .collect(),
+    )
 }
 
 /// The cells of `then` where `mask` is true and those of `els` elsewhere.

@@ -23,14 +23,7 @@ fn item_axis(structure: &Structure, target: &Shape, args: &[TExpr]) -> Result<us
         [TExpr::ListRef { list, span }] if *list == ListId::VERSIONS => {
             (target.axis_pos(&Axis::Versions), "Versions", *span)
         }
-        [TExpr::ListRef { list, span }] => (
-            target
-                .axes
-                .iter()
-                .position(|axis| list_of_axis(structure, axis) == Some(*list)),
-            structure.list_name(*list),
-            *span,
-        ),
+        [TExpr::ListRef { list, span }] => return list_axis(structure, target, *list, *span),
         [TExpr::TimeRef { span, .. }] => (target.time_pos(), "Time", *span),
         _ => {
             return Err(EngineError::Invalid {
@@ -39,6 +32,21 @@ fn item_axis(structure: &Structure, target: &Shape, args: &[TExpr]) -> Result<us
         }
     };
     axis.ok_or_else(|| missing_dimension(name, span))
+}
+
+/// The position on `target` of the axis made of the items of `list`, or the error that the line
+/// item has no such dimension. `span` is the name of the list in the formula.
+pub(super) fn list_axis(
+    structure: &Structure,
+    target: &Shape,
+    list: ListId,
+    span: Span,
+) -> Result<usize, EngineError> {
+    target
+        .axes
+        .iter()
+        .position(|axis| list_of_axis(structure, axis) == Some(list))
+        .ok_or_else(|| missing_dimension(structure.list_name(list), span))
 }
 
 /// `ITEM(dimension)`: the item, version or period the target cell sits at on that axis.

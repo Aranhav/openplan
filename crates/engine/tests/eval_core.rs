@@ -1454,7 +1454,7 @@ fn functions_are_reported_as_not_available_yet() {
     let mut fx = Fx::new(1);
     let module = fx.module("Sales", vec![month_axis()]);
     let units = fx.number(module, "Units");
-    let wrapped = fx.calc_number(module, "Wrapped", "1 + ABS(Units)");
+    let wrapped = fx.calc_number(module, "Wrapped", "1 + CUMULATE(Units)");
     fx.set_number(units, vec![period("Jan 26")], -4.0);
 
     fx.recalc();
@@ -1462,8 +1462,8 @@ fn functions_are_reported_as_not_available_yet() {
     // The problem is a formula problem, located at the call.
     let errors = fx.errors(wrapped);
     assert_eq!(errors[0].code, "formula.unknown_function");
-    assert_eq!(errors[0].message, "Function ABS is not available yet.");
-    assert_eq!((errors[0].start, errors[0].end), (4, 14));
+    assert_eq!(errors[0].message, "Function CUMULATE is not available yet.");
+    assert_eq!((errors[0].start, errors[0].end), (4, 19));
     assert_eq!(fx.number_at(wrapped, vec![period("Jan 26")]), 0.0);
 }
 

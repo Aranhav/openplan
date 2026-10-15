@@ -7,10 +7,16 @@ use crate::shape::Shape;
 use crate::structure::same_name;
 use crate::value::Column;
 
+use super::eval::eval;
 use super::{EvalCtx, TExpr};
 
+mod date;
 mod dimension;
+mod list;
+mod logic;
+mod math;
 mod rules;
+mod text;
 
 pub use rules::Word;
 pub(crate) use rules::{ArgType, check};
@@ -624,12 +630,17 @@ pub(crate) fn check_fn(
 ) -> Result<(), EngineError> {
     match func {
         FuncId::Item => dimension::check_item(ctx, target, args),
+        FuncId::IsFirstOccurrence => logic::check_is_first_occurrence(ctx, target, args),
         _ => Ok(()),
     }
 }
 
 /// Evaluates a call of `func` with the argument expressions `args` for the target cells at the
 /// linear indices `idx` of `target`.
+///
+/// Most functions work on their arguments cell by cell: the arguments are evaluated first and the
+/// function maps over the columns. Those that need more than the values, such as the list an
+/// item belongs to or the cells around the one being calculated, get the expressions.
 pub(crate) fn eval_fn(
     func: FuncId,
     ctx: &EvalCtx,
@@ -637,8 +648,54 @@ pub(crate) fn eval_fn(
     args: &[TExpr],
     idx: &[usize],
 ) -> Result<Column, EngineError> {
+    let cellwise =
+        |f: fn(&[Column]) -> Result<Column, EngineError>| f(&eval_args(ctx, target, args, idx)?);
     match func {
+        FuncId::Abs => cellwise(math::eval_abs),
+        FuncId::Round => math::eval_round(ctx, target, args, idx),
+        FuncId::Min => cellwise(math::eval_min),
+        FuncId::Max => cellwise(math::eval_max),
+        FuncId::Power => cellwise(math::eval_power),
+        FuncId::Sqrt => cellwise(math::eval_sqrt),
+        FuncId::Exp => cellwise(math::eval_exp),
+        FuncId::Ln => cellwise(math::eval_ln),
+        FuncId::Log => cellwise(math::eval_log),
+        FuncId::Mod => cellwise(math::eval_mod),
+        FuncId::Divide => cellwise(math::eval_divide),
+        FuncId::Sign => cellwise(math::eval_sign),
+
+        FuncId::IsBlank => cellwise(logic::eval_is_blank),
+        FuncId::IsNotBlank => cellwise(logic::eval_is_not_blank),
+        FuncId::IsAncestor => logic::eval_is_ancestor(ctx, target, args, idx),
+        FuncId::IsFirstOccurrence => logic::eval_is_first_occurrence(ctx, target, args, idx),
+
+        FuncId::Left => cellwise(text::eval_left),
+        FuncId::Right => cellwise(text::eval_right),
+        FuncId::Mid => cellwise(text::eval_mid),
+        FuncId::Len => cellwise(text::eval_len),
+        FuncId::Find => cellwise(text::eval_find),
+        FuncId::Upper => cellwise(text::eval_upper),
+        FuncId::Lower => cellwise(text::eval_lower),
+        FuncId::Trim => cellwise(text::eval_trim),
+        FuncId::Substitute => cellwise(text::eval_substitute),
+        FuncId::Text => text::eval_text(ctx, target, args, idx),
+        FuncId::Value => cellwise(text::eval_value),
+
         FuncId::Item => dimension::eval_item(ctx, target, args, idx),
+        FuncId::Parent => list::eval_parent(ctx, target, args, idx),
+        FuncId::Name => list::eval_name(ctx, target, args, idx),
+        FuncId::Code => list::eval_code(ctx, target, args, idx),
+        FuncId::FindItem => list::eval_find_item(ctx, target, args, idx),
+
+        FuncId::Date => cellwise(date::eval_date),
+        FuncId::Day => cellwise(date::eval_day),
+        FuncId::Month => cellwise(date::eval_month),
+        FuncId::Year => cellwise(date::eval_year),
+        FuncId::Weekday => cellwise(date::eval_weekday),
+        FuncId::AddMonths => cellwise(date::eval_add_months),
+        FuncId::AddYears => cellwise(date::eval_add_years),
+        FuncId::Days => cellwise(date::eval_days),
+
         other => Err(EngineError::Formula(vec![FormulaError {
             code: "formula.unknown_function",
             message: format!("Function {} is not available yet.", other.def().name),
@@ -646,5 +703,33 @@ pub(crate) fn eval_fn(
             end: 0,
             suggestion: None,
         }])),
+    }
+}
+
+/// The values of the arguments `args` for the target cells at `idx`, one column each.
+fn eval_args<'a>(
+    ctx: &EvalCtx,
+    target: &Shape,
+    args: impl IntoIterator<Item = &'a TExpr>,
+    idx: &[usize],
+) -> Result<Vec<Column>, EngineError> {
+    args.into_iter()
+        .map(|arg| eval(ctx, target, arg, idx))
+        .collect()
+}
+
+/// The error for a column that is not of the type its function takes, which the type check of
+/// the formula rules out.
+fn mismatch() -> EngineError {
+    EngineError::Invalid {
+        message: "A function was given a value of a type it does not take.".to_string(),
+    }
+}
+
+/// The dense item indices of a column of list items.
+fn items_of(column: Column) -> Result<Vec<u32>, EngineError> {
+    match column {
+        Column::Item(items) => Ok(items),
+        _ => Err(mismatch()),
     }
 }

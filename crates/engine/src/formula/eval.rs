@@ -24,7 +24,7 @@ use super::align::{Reader, build_reader};
 use super::functions::{check_fn, eval_fn};
 use super::{DIMENSION, Span, TExpr, TModifier, UnOp, parse, resolve};
 
-mod ops;
+pub(super) mod ops;
 
 /// Target cells evaluated together; also the unit of parallel work.
 const CHUNK: usize = 4096;
