@@ -83,10 +83,24 @@ describe("resolveKey in navigate mode", () => {
   })
 
   describe("editing keys", () => {
-    it("starts editing on Enter, Shift+Enter and F2", () => {
+    it("starts editing on Enter and F2", () => {
       expect(navigate("Enter")).toEqual({ type: "edit" })
-      expect(navigate("Enter", { shiftKey: true })).toEqual({ type: "edit" })
       expect(navigate("F2")).toEqual({ type: "edit" })
+    })
+
+    it("moves up on Shift+Enter, as Excel does", () => {
+      expect(navigate("Enter", { shiftKey: true })).toEqual({
+        type: "move",
+        dir: "up",
+        extend: false,
+        jump: false,
+      })
+    })
+
+    it("leaves Enter with Ctrl, Command or Alt alone", () => {
+      expect(navigate("Enter", { ctrlKey: true })).toEqual(none)
+      expect(navigate("Enter", { metaKey: true, shiftKey: true })).toEqual(none)
+      expect(navigate("Enter", { altKey: true })).toEqual(none)
     })
 
     it("cancels on Escape", () => {

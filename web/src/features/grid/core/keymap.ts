@@ -86,6 +86,13 @@ function resolveNavigateKey(event: KeyInput): GridCommand {
         ? { type: "move", dir: event.shiftKey ? "left" : "right", extend: false, jump: false }
         : NONE
     case "Enter":
+      if (!plain) {
+        return NONE
+      }
+      // Shift+Enter moves up, the way Enter moves down after an edit.
+      return event.shiftKey
+        ? { type: "move", dir: "up", extend: false, jump: false }
+        : { type: "edit" }
     case "F2":
       return plain ? { type: "edit" } : NONE
     case " ":

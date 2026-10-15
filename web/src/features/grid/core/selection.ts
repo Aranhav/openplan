@@ -1,8 +1,9 @@
 export type Pos = { row: number; col: number }
 
 /**
- * One rectangular range. The focus is the active cell: keys move it, Enter and typing act
- * on it, and it is the corner that grows or shrinks when the range is extended.
+ * One rectangular range, as in Excel. The anchor is the active cell: Enter, F2 and typing act
+ * on it, and a plain arrow key moves from it and collapses the range to the new cell. The
+ * focus is the opposite corner, the end that Shift+arrow keys grow and shrink the range from.
  */
 export type Selection = { anchor: Pos; focus: Pos }
 
@@ -16,7 +17,7 @@ export type Direction = "up" | "down" | "left" | "right"
 export type Edge = "home" | "end"
 
 export type MoveOptions = {
-  /** Keep the anchor and move only the focus (Shift). */
+  /** Keep the anchor and move the focus end of the range (Shift). */
   extend: boolean
   /** Go to the edge of the grid instead of one step (Ctrl or Command). */
   jump: boolean
@@ -58,10 +59,12 @@ export function move(
   if (isEmpty(bounds)) {
     return sel
   }
-  return land(sel, stepTarget(sel.focus, dir, jump, bounds), extend, bounds)
+  return land(sel, stepTarget(startOf(sel, extend), dir, jump, bounds), extend, bounds)
 }
 
-/** Home and End go to the first and last column of the row; with `jump`, to the grid's corners. */
+/**
+ * Home and End go to the first and last column of the row; with `jump`, to the grid's corners.
+ */
 export function moveToEdge(
   sel: Selection,
   edge: Edge,
@@ -72,7 +75,7 @@ export function moveToEdge(
     return sel
   }
   const first = edge === "home"
-  const row = jump ? (first ? 0 : bounds.rows - 1) : sel.focus.row
+  const row = jump ? (first ? 0 : bounds.rows - 1) : startOf(sel, extend).row
   return land(sel, { row, col: first ? 0 : bounds.cols - 1 }, extend, bounds)
 }
 
@@ -88,8 +91,14 @@ export function movePage(
     return sel
   }
   const rows = Math.max(pageRows, 1)
-  const row = sel.focus.row + (dir === "down" ? rows : -rows)
-  return land(sel, { row, col: sel.focus.col }, extend, bounds)
+  const start = startOf(sel, extend)
+  const row = start.row + (dir === "down" ? rows : -rows)
+  return land(sel, { row, col: start.col }, extend, bounds)
+}
+
+/** Where a move starts: the focus end when extending, else the active cell, the anchor. */
+function startOf(sel: Selection, extend: boolean): Pos {
+  return extend ? sel.focus : sel.anchor
 }
 
 function isEmpty(bounds: Bounds): boolean {

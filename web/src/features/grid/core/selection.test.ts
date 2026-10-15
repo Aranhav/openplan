@@ -84,10 +84,44 @@ describe("move", () => {
     expect(move(cell(3, 4), "right", plain, bounds)).toEqual(cell(3, 4))
   })
 
-  it("moves from the focus and collapses a range when not extending", () => {
+  it("moves from the anchor, the active cell, and collapses a range when not extending", () => {
     const range = { anchor: { row: 1, col: 1 }, focus: { row: 4, col: 3 } }
+    expect(move(range, "down", plain, bounds)).toEqual(cell(2, 1))
+    expect(move(range, "up", plain, bounds)).toEqual(cell(0, 1))
+    expect(move(range, "left", plain, bounds)).toEqual(cell(1, 0))
+    expect(move(range, "right", plain, bounds)).toEqual(cell(1, 2))
+  })
+
+  it("moves from the anchor when the range was dragged upward and leftward", () => {
+    const range = { anchor: { row: 4, col: 3 }, focus: { row: 1, col: 1 } }
     expect(move(range, "down", plain, bounds)).toEqual(cell(5, 3))
-    expect(move(range, "left", plain, bounds)).toEqual(cell(4, 2))
+    expect(move(range, "right", plain, bounds)).toEqual(cell(4, 4))
+  })
+
+  it("extends by moving the focus end of a range, whichever corner the anchor is", () => {
+    const range = { anchor: { row: 1, col: 1 }, focus: { row: 4, col: 3 } }
+    expect(move(range, "right", { extend: true, jump: false }, bounds)).toEqual({
+      anchor: { row: 1, col: 1 },
+      focus: { row: 4, col: 4 },
+    })
+    expect(move(range, "up", { extend: true, jump: false }, bounds)).toEqual({
+      anchor: { row: 1, col: 1 },
+      focus: { row: 3, col: 3 },
+    })
+  })
+
+  it("jumps from the anchor of a range when not extending", () => {
+    const range = { anchor: { row: 1, col: 1 }, focus: { row: 4, col: 3 } }
+    expect(move(range, "down", { extend: false, jump: true }, bounds)).toEqual(cell(9, 1))
+    expect(move(range, "right", { extend: false, jump: true }, bounds)).toEqual(cell(1, 4))
+  })
+
+  it("jumps the focus end of a range to the edge when extending", () => {
+    const range = { anchor: { row: 1, col: 1 }, focus: { row: 4, col: 3 } }
+    expect(move(range, "down", { extend: true, jump: true }, bounds)).toEqual({
+      anchor: { row: 1, col: 1 },
+      focus: { row: 9, col: 3 },
+    })
   })
 
   it("extends by moving only the focus", () => {
@@ -147,6 +181,21 @@ describe("moveToEdge", () => {
     expect(moveToEdge(cell(3, 2), "end", jump, bounds)).toEqual(cell(9, 4))
   })
 
+  it("starts from the anchor of a range when not extending", () => {
+    const range = { anchor: { row: 1, col: 1 }, focus: { row: 4, col: 3 } }
+    expect(moveToEdge(range, "home", plain, bounds)).toEqual(cell(1, 0))
+    expect(moveToEdge(range, "end", plain, bounds)).toEqual(cell(1, 4))
+    expect(moveToEdge(range, "end", { extend: false, jump: true }, bounds)).toEqual(cell(9, 4))
+  })
+
+  it("extends the focus end of a range along its own row", () => {
+    const range = { anchor: { row: 1, col: 1 }, focus: { row: 4, col: 3 } }
+    expect(moveToEdge(range, "end", { extend: true, jump: false }, bounds)).toEqual({
+      anchor: { row: 1, col: 1 },
+      focus: { row: 4, col: 4 },
+    })
+  })
+
   it("extends from the anchor", () => {
     expect(moveToEdge(cell(3, 2), "end", { extend: true, jump: false }, bounds)).toEqual({
       anchor: { row: 3, col: 2 },
@@ -173,6 +222,20 @@ describe("movePage", () => {
   it("stops at the first and last row", () => {
     expect(movePage(cell(8, 1), "down", 4, { extend: false }, bounds)).toEqual(cell(9, 1))
     expect(movePage(cell(1, 1), "up", 4, { extend: false }, bounds)).toEqual(cell(0, 1))
+  })
+
+  it("starts from the anchor of a range when not extending", () => {
+    const range = { anchor: { row: 1, col: 1 }, focus: { row: 4, col: 3 } }
+    expect(movePage(range, "down", 4, { extend: false }, bounds)).toEqual(cell(5, 1))
+    expect(movePage(range, "up", 4, { extend: false }, bounds)).toEqual(cell(0, 1))
+  })
+
+  it("pages the focus end of a range when extending", () => {
+    const range = { anchor: { row: 1, col: 1 }, focus: { row: 4, col: 3 } }
+    expect(movePage(range, "down", 4, { extend: true }, bounds)).toEqual({
+      anchor: { row: 1, col: 1 },
+      focus: { row: 8, col: 3 },
+    })
   })
 
   it("extends from the anchor", () => {
