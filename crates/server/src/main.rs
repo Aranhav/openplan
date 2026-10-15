@@ -6,10 +6,9 @@ use openplan_server::{
     app::{AppState, build_router},
     auth::session,
     config::Config,
-    db,
+    db, logging,
     openapi::openapi_json,
 };
-use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
 #[command(name = "openplan", version, about = "OpenPlan planning platform")]
@@ -39,9 +38,7 @@ async fn main() -> anyhow::Result<()> {
 
 async fn serve() -> anyhow::Result<()> {
     let config = Config::from_env()?;
-    let filter = EnvFilter::try_new(&config.log)
-        .with_context(|| format!("OPENPLAN_LOG is not a valid filter: {}", config.log))?;
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    logging::init(&config.log)?;
 
     let db = db::connect(&config.database_url, config.db_pool_size).await?;
     db::MIGRATOR

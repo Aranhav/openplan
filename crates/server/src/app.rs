@@ -13,8 +13,9 @@ use sqlx::PgPool;
 use tower::ServiceBuilder;
 use tower_http::{
     request_id::{MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
-    trace::TraceLayer,
+    trace::{DefaultOnResponse, TraceLayer},
 };
+use tracing::Level;
 use utoipa::{OpenApi, ToSchema};
 use utoipa_scalar::{Scalar, Servable};
 use uuid::Uuid;
@@ -124,22 +125,95 @@ pub fn build_router(state: AppState) -> Router {
             ServiceBuilder::new()
                 .layer(SetRequestIdLayer::new(REQUEST_ID_HEADER, MakeRequestUuidV7))
                 .layer(
-                    TraceLayer::new_for_http().make_span_with(|request: &Request<_>| {
-                        let request_id = request
-                            .headers()
-                            .get(REQUEST_ID_HEADER)
-                            .and_then(|value| value.to_str().ok())
-                            .unwrap_or_default();
-                        tracing::info_span!(
-                            "request",
-                            method = %request.method(),
-                            uri = %request.uri(),
-                            request_id,
-                        )
-                    }),
+                    TraceLayer::new_for_http()
+                        .make_span_with(|request: &Request<_>| {
+                            let request_id = request
+                                .headers()
+                                .get(REQUEST_ID_HEADER)
+                                .and_then(|value| value.to_str().ok())
+                                .unwrap_or_default();
+                            // The path only: query strings can carry secrets.
+                            tracing::info_span!(
+                                "request",
+                                method = %request.method(),
+                                path = %request.uri().path(),
+                                request_id = %request_id,
+                            )
+                        })
+                        .on_response(DefaultOnResponse::new().level(Level::INFO)),
                 )
                 .layer(PropagateRequestIdLayer::new(REQUEST_ID_HEADER))
                 .layer(middleware::from_fn(no_store_for_api)),
         )
         .with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::LogBuffer;
+    use axum::{body::Body, http::StatusCode};
+    use sqlx::postgres::PgPoolOptions;
+    use tower::ServiceExt;
+    use tracing_subscriber::EnvFilter;
+
+    fn router() -> Router {
+        let config = Config::from_lookup(|name| match name {
+            "DATABASE_URL" => Some("postgres://invalid".to_string()),
+            "OPENPLAN_PUBLIC_URL" => Some("http://localhost:8080".to_string()),
+            _ => None,
+        })
+        .expect("test config is valid");
+        let db = PgPoolOptions::new()
+            .connect_lazy("postgres://invalid")
+            .expect("lazy pool does not connect");
+        build_router(AppState::new(db, config))
+    }
+
+    /// Sends `uri` through the router and returns the status and the log lines
+    /// written at the default `info` level.
+    async fn request_logs(uri: &str) -> (StatusCode, Vec<String>) {
+        let buffer = LogBuffer::default();
+        let subscriber = crate::logging::subscriber(EnvFilter::new("info"), false, buffer.clone());
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let response = router()
+            .oneshot(Request::get(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let lines = buffer.contents().lines().map(str::to_string).collect();
+        (response.status(), lines)
+    }
+
+    #[tokio::test]
+    async fn each_request_logs_one_info_line_with_method_path_status_and_latency() {
+        let (status, lines) = request_logs("/api/health?token=hunter2&page=2").await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        let line = &lines[0];
+        assert!(line.contains(" INFO "), "{line}");
+        assert!(line.contains("method=GET"), "{line}");
+        assert!(line.contains("path=/api/health"), "{line}");
+        assert!(line.contains("status=200"), "{line}");
+        assert!(line.contains(" ms"), "{line}");
+        assert!(line.contains("latency="), "{line}");
+    }
+
+    #[tokio::test]
+    async fn the_query_string_never_reaches_the_logs() {
+        let (_, lines) = request_logs("/api/health?token=hunter2").await;
+
+        let logs = lines.join("\n");
+        assert!(!logs.contains("hunter2"), "{logs}");
+        assert!(!logs.contains('?'), "{logs}");
+    }
+
+    #[tokio::test]
+    async fn client_errors_are_logged_with_their_status() {
+        let (status, lines) = request_logs("/api/v1/nope").await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("status=404"), "{}", lines[0]);
+    }
 }

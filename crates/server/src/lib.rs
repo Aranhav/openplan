@@ -6,6 +6,7 @@ pub mod config;
 pub mod db;
 pub mod error;
 pub mod extract;
+pub mod logging;
 pub mod models;
 pub mod openapi;
 pub mod static_files;

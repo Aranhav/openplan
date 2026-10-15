@@ -1,8 +1,13 @@
 //! Test doubles shared by the unit tests of several modules.
 
-use std::{error::Error as StdError, fmt};
+use std::{
+    error::Error as StdError,
+    fmt, io,
+    sync::{Arc, Mutex, PoisonError},
+};
 
 use sqlx::error::{DatabaseError, ErrorKind};
+use tracing_subscriber::fmt::MakeWriter;
 
 /// The kind of database error a test wants to simulate.
 #[derive(Debug)]
@@ -53,4 +58,37 @@ impl DatabaseError for FakeDatabaseError {
 /// A `sqlx::Error` that reports `violation` as its kind.
 pub(crate) fn database_error(violation: Violation) -> sqlx::Error {
     sqlx::Error::Database(Box::new(FakeDatabaseError(violation)))
+}
+
+/// A log writer that keeps what it is given, for tests that read the logs.
+#[derive(Clone, Default)]
+pub(crate) struct LogBuffer(Arc<Mutex<Vec<u8>>>);
+
+impl LogBuffer {
+    pub(crate) fn contents(&self) -> String {
+        let bytes = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+}
+
+impl io::Write for LogBuffer {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl MakeWriter<'_> for LogBuffer {
+    type Writer = LogBuffer;
+
+    fn make_writer(&self) -> LogBuffer {
+        self.clone()
+    }
 }
