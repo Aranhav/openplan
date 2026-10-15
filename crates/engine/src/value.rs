@@ -157,6 +157,19 @@ impl Column {
         }
     }
 
+    /// Makes every number of a number column one that a cell can hold: a number that
+    /// overflowed or has no value becomes 0, and so does a negative zero. Other columns are
+    /// left alone.
+    pub(crate) fn sanitize(&mut self) {
+        if let Column::Number(cells) = self {
+            for cell in cells {
+                if !cell.is_finite() || *cell == 0.0 {
+                    *cell = 0.0;
+                }
+            }
+        }
+    }
+
     /// Whether the cell at `i` holds the blank value of its type. Panics if `i` is out of range.
     pub fn is_blank_at(&self, i: usize) -> bool {
         match self {

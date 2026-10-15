@@ -19,17 +19,12 @@ fn mismatch() -> EngineError {
     }
 }
 
-/// A calculation that overflows has no number to show, so it gives 0 like a blank.
-fn finite(number: f64) -> f64 {
-    if number.is_finite() { number } else { 0.0 }
-}
-
 pub(super) fn negate(operand: Column) -> Result<Column, EngineError> {
     let Column::Number(mut numbers) = operand else {
         return Err(mismatch());
     };
     for number in &mut numbers {
-        *number = if *number == 0.0 { 0.0 } else { -*number };
+        *number = -*number;
     }
     Ok(Column::Number(numbers))
 }
@@ -72,12 +67,10 @@ fn arithmetic(op: BinOp, left: Column, right: Column) -> Result<Column, EngineEr
         }
     }
     match op {
-        BinOp::Add => apply(&mut left, &right, |a, b| finite(a + b)),
-        BinOp::Sub => apply(&mut left, &right, |a, b| finite(a - b)),
-        BinOp::Mul => apply(&mut left, &right, |a, b| finite(a * b)),
-        BinOp::Div => apply(&mut left, &right, |a, b| {
-            if b == 0.0 { 0.0 } else { finite(a / b) }
-        }),
+        BinOp::Add => apply(&mut left, &right, |a, b| a + b),
+        BinOp::Sub => apply(&mut left, &right, |a, b| a - b),
+        BinOp::Mul => apply(&mut left, &right, |a, b| a * b),
+        BinOp::Div => apply(&mut left, &right, |a, b| if b == 0.0 { 0.0 } else { a / b }),
         _ => return Err(mismatch()),
     }
     Ok(Column::Number(left))

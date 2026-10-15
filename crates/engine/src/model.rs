@@ -11,7 +11,9 @@ use crate::formula::{ColumnSource, evaluate_formula};
 use crate::ids::{LineItemId, ListId, VersionId};
 use crate::shape::{Axis, Shape};
 use crate::structure::{Layout, LineItem, Structure, level_name};
-use crate::summary::{LevelSpec, Summary, SummaryCache, aggregate, ratio_parts};
+use crate::summary::{
+    LevelSpec, Summary, SummaryCache, ratio_parts, roll_up, with_actual_before_switchover,
+};
 use crate::value::{BLANK_DATE, BLANK_ITEM, BLANK_PERIOD, Cell, Column, Format, Value, ValueType};
 
 /// Days from 0001-01-01 (day 1 of the common era) to 1970-01-01.
@@ -97,6 +99,7 @@ impl Model {
             inputs: &self.inputs,
             computed: HashMap::new(),
             rolled_up: Mutex::default(),
+            switched: Mutex::default(),
         };
         let mut errors = HashMap::new();
         let mut changes = self.empty_change_set();
@@ -225,20 +228,16 @@ impl Model {
                 ))
             })
             .transpose()?;
-        let time_method = line_item
-            .time_summary
-            .as_ref()
-            .unwrap_or(&line_item.summary);
-        let rolled_up = aggregate(
+        let rolled_up = roll_up(
             &self.structure,
+            line_item,
             &shape,
+            layout.restriction.as_deref(),
             &src,
-            &line_item.summary,
-            time_method,
-            levels,
             part_columns
                 .as_ref()
                 .map(|(numerator, denominator)| (&**numerator, &**denominator)),
+            levels,
         )?;
         let summary = Arc::new(rolled_up);
         self.summaries
@@ -323,29 +322,30 @@ impl Model {
     /// clears columns whose axes, type or time scale changed (and, when the calendar's years
     /// or fiscal start month changed, those with a Time axis or period values), and lays the
     /// rest out again by coordinate when items, subset members or versions came or went.
+    /// Calculated columns are not laid out again, since the next recalculation fills them in;
+    /// they are dropped when any of that applies to them, so that none is read at coordinates
+    /// it was not calculated for.
     fn reconcile_inputs(
         &mut self,
         old: &Structure,
         changes: &mut ChangeSet,
     ) -> Result<(), EngineError> {
         let new = Arc::clone(&self.structure);
-        let stale: Vec<LineItemId> = self
-            .computed
-            .iter()
-            .filter(|(id, column)| {
-                !new.line_item(**id)
-                    .is_some_and(|li| li.formula.is_some() && fits(&new, li, column))
-            })
-            .map(|(id, _)| *id)
-            .collect();
+        let time_changed = old.calendar.years != new.calendar.years
+            || old.calendar.fiscal_year_start_month != new.calendar.fiscal_year_start_month;
+        let mut axis_maps = AxisMaps::new(old, &new);
+        let mut stale = Vec::new();
+        for (id, column) in &self.computed {
+            if !computed_survives(old, &new, &mut axis_maps, time_changed, *id, column)? {
+                stale.push(*id);
+            }
+        }
         for id in stale {
             self.computed.remove(&id);
             changes.note(id);
         }
         self.errors
             .retain(|id, _| new.line_item(*id).is_some_and(|li| li.formula.is_some()));
-        let time_changed = old.calendar.years != new.calendar.years
-            || old.calendar.fiscal_year_start_month != new.calendar.fiscal_year_start_month;
         for line_item in old.line_items().filter(|li| new.line_item(li.id).is_none()) {
             changes.note(line_item.id);
         }
@@ -363,7 +363,6 @@ impl Model {
             changes.note(id);
         }
 
-        let mut axis_maps = AxisMaps::new(old, &new);
         for line_item in new.line_items().filter(|li| li.formula.is_none()) {
             let layout = new.layout(line_item)?;
             let shape = new.shape_of(&layout)?;
@@ -404,14 +403,19 @@ impl Model {
         Ok(())
     }
 
-    /// Blanks list-formatted cells that point at deleted items of `list`.
+    /// Blanks list-formatted cells, typed in or calculated, that point at deleted items of `list`.
     fn blank_item_cells(&mut self, list: ListId, doomed: &HashSet<u32>, changes: &mut ChangeSet) {
         let structure = Arc::clone(&self.structure);
         let formatted = structure
             .line_items()
-            .filter(|li| li.formula.is_none() && li.format == Format::List { list });
+            .filter(|li| li.format == Format::List { list });
         for line_item in formatted {
-            let Some(column) = self.inputs.get_mut(&line_item.id) else {
+            let columns = if line_item.formula.is_none() {
+                &mut self.inputs
+            } else {
+                &mut self.computed
+            };
+            let Some(column) = columns.get_mut(&line_item.id) else {
                 continue;
             };
             let points_at_doomed = matches!(&**column, Column::Item(cells) if cells.iter().any(|cell| doomed.contains(cell)));
@@ -493,22 +497,41 @@ fn missing_line_item(id: LineItemId) -> EngineError {
     }
 }
 
-/// Whether a calculated column still has the type and the number of cells its line item calls
-/// for.
-fn fits(structure: &Structure, line_item: &LineItem, column: &Column) -> bool {
-    let kind_fits = matches!(
-        (column, line_item.format.value_type()),
-        (Column::Number(_), ValueType::Number)
-            | (Column::Boolean(_), ValueType::Boolean)
-            | (Column::Text(_), ValueType::Text)
-            | (Column::Date(_), ValueType::Date)
-            | (Column::Item(_), ValueType::Item(_))
-            | (Column::Period(_), ValueType::Period(_))
-    );
-    kind_fits
-        && structure
-            .line_item_shape(line_item.id)
-            .is_ok_and(|shape| shape.size() == column.len())
+/// Whether the calculated column of line item `id` is still laid out as the structure now has
+/// it: the line item is still calculated, its type, axes and time scale are the same and no
+/// axis has gained, lost or moved an item, subset member, version or period.
+fn computed_survives(
+    old: &Structure,
+    new: &Structure,
+    axis_maps: &mut AxisMaps,
+    time_changed: bool,
+    id: LineItemId,
+    column: &Column,
+) -> Result<bool, EngineError> {
+    let (Some(old_line_item), Some(line_item)) = (
+        old.line_item(id),
+        new.line_item(id).filter(|li| li.formula.is_some()),
+    ) else {
+        return Ok(false);
+    };
+    let ty = line_item.format.value_type();
+    let layout = new.layout(line_item)?;
+    let shape = new.shape_of(&layout)?;
+    let reinterpreted =
+        time_changed && (shape.time_pos().is_some() || matches!(ty, ValueType::Period(_)));
+    if reinterpreted
+        || old_line_item.format.value_type() != ty
+        || old.layout(old_line_item)? != layout
+        || column.len() != shape.size()
+    {
+        return Ok(false);
+    }
+    for axis in &layout.axes {
+        if !axis_maps.get(axis, layout.restriction.as_deref())?.identity {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// The part of a ratio summary with id `id`, which must be laid out over `shape`.
@@ -540,6 +563,8 @@ struct Working<'a> {
     computed: HashMap<LineItemId, Arc<Column>>,
     /// Line items rolled up to the levels that formulas have asked for.
     rolled_up: Mutex<HashMap<(LineItemId, LevelSpec), Arc<Summary>>>,
+    /// Calculated or typed-in cells as formulas read them, where that differs from the cells.
+    switched: Mutex<HashMap<LineItemId, Arc<Column>>>,
 }
 
 impl Working<'_> {
@@ -558,11 +583,14 @@ impl Working<'_> {
             .get_mut()
             .unwrap_or_else(PoisonError::into_inner)
             .retain(|(rolled, _), _| *rolled != id && !uses(rolled));
+        self.switched
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&id);
     }
-}
 
-impl ColumnSource for Working<'_> {
-    fn column(&self, id: LineItemId) -> Result<Arc<Column>, EngineError> {
+    /// The cells of a line item over its own shape: typed in, calculated so far or blank.
+    fn cells(&self, id: LineItemId) -> Result<Arc<Column>, EngineError> {
         if let Some(column) = self.inputs.get(&id).or_else(|| self.computed.get(&id)) {
             return Ok(Arc::clone(column));
         }
@@ -575,6 +603,33 @@ impl ColumnSource for Working<'_> {
             &line_item.format.value_type(),
             shape.size(),
         )))
+    }
+}
+
+impl ColumnSource for Working<'_> {
+    fn column(&self, id: LineItemId) -> Result<Arc<Column>, EngineError> {
+        let lock = || self.switched.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(found) = lock().get(&id) {
+            return Ok(Arc::clone(found));
+        }
+        let cells = self.cells(id)?;
+        let line_item = self
+            .structure
+            .line_item(id)
+            .ok_or_else(|| missing_line_item(id))?;
+        let layout = self.structure.layout(line_item)?;
+        let shape = self.structure.shape_of(&layout)?;
+        let switched = with_actual_before_switchover(
+            self.structure,
+            &shape,
+            layout.restriction.as_deref(),
+            &cells,
+        )?;
+        Ok(switched.map_or(cells, |switched| {
+            let switched = Arc::new(switched);
+            lock().insert(id, Arc::clone(&switched));
+            switched
+        }))
     }
 
     fn aggregated(&self, id: LineItemId, levels: &LevelSpec) -> Result<Arc<Summary>, EngineError> {
@@ -592,29 +647,26 @@ impl ColumnSource for Working<'_> {
             .structure
             .line_item(id)
             .ok_or_else(|| missing_line_item(id))?;
-        let shape = self.structure.line_item_shape(id)?;
-        let src = self.column(id)?;
+        let layout = self.structure.layout(line_item)?;
+        let shape = self.structure.shape_of(&layout)?;
+        let src = self.cells(id)?;
         let parts = ratio_parts(line_item)?
             .map(|(numerator, denominator)| {
                 ratio_part(self.structure, numerator, &shape)?;
                 ratio_part(self.structure, denominator, &shape)?;
-                Ok::<_, EngineError>((self.column(numerator)?, self.column(denominator)?))
+                Ok::<_, EngineError>((self.cells(numerator)?, self.cells(denominator)?))
             })
             .transpose()?;
-        let time_method = line_item
-            .time_summary
-            .as_ref()
-            .unwrap_or(&line_item.summary);
-        let rolled = Arc::new(aggregate(
+        let rolled = Arc::new(roll_up(
             self.structure,
+            line_item,
             &shape,
+            layout.restriction.as_deref(),
             &src,
-            &line_item.summary,
-            time_method,
-            levels,
             parts
                 .as_ref()
                 .map(|(numerator, denominator)| (&**numerator, &**denominator)),
+            levels,
         )?);
         self.rolled_up
             .lock()

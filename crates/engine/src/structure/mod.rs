@@ -393,6 +393,14 @@ impl Structure {
         })
     }
 
+    /// Months from the start of the model calendar to the start of a time range; 0 for the
+    /// model calendar itself.
+    pub(crate) fn time_offset(&self, range: Option<TimeRangeId>) -> i64 {
+        range
+            .and_then(|id| self.time_ranges.get(&id))
+            .map_or(0, |range| self.calendar.range_month_offset(range))
+    }
+
     fn require_list(&self, id: ListId) -> Result<&List, EngineError> {
         self.lists.get(&id).ok_or_else(|| not_found("list", id.0))
     }

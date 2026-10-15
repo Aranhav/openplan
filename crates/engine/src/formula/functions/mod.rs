@@ -2,7 +2,7 @@
 //! result types, and the one-line documentation the editor shows, and the evaluation of the
 //! calls that have an implementation.
 
-use crate::error::EngineError;
+use crate::error::{EngineError, FormulaError};
 use crate::shape::Shape;
 use crate::structure::same_name;
 use crate::value::Column;
@@ -611,6 +611,23 @@ pub fn lookup(name: &str) -> Option<FuncId> {
         .map(|position| FuncId::ALL[position])
 }
 
+/// Checks a call of `func` against the line item it is evaluated for, before any cell is.
+///
+/// Whatever depends on the structure only, such as which dimensions the line item has, is
+/// checked here and not while evaluating, so that a formula is valid or not whatever the
+/// data, whichever branch of an `IF` its cells take.
+pub(crate) fn check_fn(
+    func: FuncId,
+    ctx: &EvalCtx,
+    target: &Shape,
+    args: &[TExpr],
+) -> Result<(), EngineError> {
+    match func {
+        FuncId::Item => dimension::check_item(ctx, target, args),
+        _ => Ok(()),
+    }
+}
+
 /// Evaluates a call of `func` with the argument expressions `args` for the target cells at the
 /// linear indices `idx` of `target`.
 pub(crate) fn eval_fn(
@@ -622,8 +639,12 @@ pub(crate) fn eval_fn(
 ) -> Result<Column, EngineError> {
     match func {
         FuncId::Item => dimension::eval_item(ctx, target, args, idx),
-        other => Err(EngineError::Invalid {
+        other => Err(EngineError::Formula(vec![FormulaError {
+            code: "formula.unknown_function",
             message: format!("Function {} is not available yet.", other.def().name),
-        }),
+            start: 0,
+            end: 0,
+            suggestion: None,
+        }])),
     }
 }

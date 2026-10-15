@@ -10,17 +10,15 @@ use crate::value::{BLANK_ITEM, BLANK_PERIOD, Column};
 
 use crate::formula::{DIMENSION, EvalCtx, Span, TExpr};
 
-/// `ITEM(dimension)`: the item, version or period the target cell sits at on that axis.
-///
-/// An item of a list is its dense index, a version its position among all versions of the
-/// model, and a period its index at the line item's time level on the model calendar.
-pub(super) fn eval_item(
-    ctx: &EvalCtx,
-    target: &Shape,
-    args: &[TExpr],
-    idx: &[usize],
-) -> Result<Column, EngineError> {
-    let structure = ctx.structure;
+/// Checks that the line item has the dimension `ITEM` asks for.
+pub(super) fn check_item(ctx: &EvalCtx, target: &Shape, args: &[TExpr]) -> Result<(), EngineError> {
+    item_axis(ctx.structure, target, args).map(|_| ())
+}
+
+/// The position on `target` of the axis `ITEM(dimension)` names, or the error that the line item
+/// has no such dimension. Which axes a line item has depends on the structure only, so this is
+/// checked before any cell is evaluated.
+fn item_axis(structure: &Structure, target: &Shape, args: &[TExpr]) -> Result<usize, EngineError> {
     let (axis, name, span) = match args {
         [TExpr::ListRef { list, span }] if *list == ListId::VERSIONS => {
             (target.axis_pos(&Axis::Versions), "Versions", *span)
@@ -40,9 +38,21 @@ pub(super) fn eval_item(
             });
         }
     };
-    let Some(axis) = axis else {
-        return Err(missing_dimension(name, span));
-    };
+    axis.ok_or_else(|| missing_dimension(name, span))
+}
+
+/// `ITEM(dimension)`: the item, version or period the target cell sits at on that axis.
+///
+/// An item of a list is its dense index, a version its position among all versions of the
+/// model, and a period its index at the line item's time level on the model calendar.
+pub(super) fn eval_item(
+    ctx: &EvalCtx,
+    target: &Shape,
+    args: &[TExpr],
+    idx: &[usize],
+) -> Result<Column, EngineError> {
+    let structure = ctx.structure;
+    let axis = item_axis(structure, target, args)?;
     let (stride, len) = (target.strides[axis], target.lens[axis] as usize);
     let coords = idx.iter().map(|&i| (i / stride % len) as u32);
     Ok(match &target.axes[axis] {
@@ -78,7 +88,11 @@ pub(super) fn eval_item(
                     .collect(),
             )
         }
-        Axis::ListTop(_) => return Err(missing_dimension(name, span)),
+        Axis::ListTop(_) => {
+            return Err(EngineError::Invalid {
+                message: "A line item has no top-level axis.".to_string(),
+            });
+        }
     })
 }
 

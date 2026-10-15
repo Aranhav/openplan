@@ -11,18 +11,18 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
-use crate::calendar::TimeLevel;
 use crate::error::{EngineError, FormulaError};
-use crate::ids::{LineItemId, ListId, TimeRangeId, VersionId};
+use crate::ids::{LineItemId, ListId, VersionId};
 use crate::shape::{Axis, Shape};
 use crate::structure::{LineItem, Structure};
-use crate::summary::{LevelSpec, Summary, aggregate, ancestors, lift};
+use crate::summary::{LevelSpec, Summary, ancestors, lift, roll_up};
 use crate::value::{BLANK_DATE, BLANK_ITEM, BLANK_PERIOD, Column, ValueType};
 
 use super::eval::EvalCtx;
 use super::{DIMENSION, ModifierKind, SelectTarget, TModifier};
 
 mod scatter;
+mod time;
 
 /// The source index of a cell that has nothing to read, which stays that whatever is added to it.
 const NONE: usize = usize::MAX;
@@ -366,17 +366,19 @@ impl Builder<'_> {
             }
         };
         found.ok_or_else(|| {
-            let what = match target {
-                SelectTarget::Item { list, .. } => {
-                    format!("the dimension '{}'", self.ctx.structure.list_name(list))
+            let name = &line_item.name;
+            dimension(match target {
+                SelectTarget::Item { list, .. } => format!(
+                    "'{name}' has no dimension '{}' for SELECT to fix.",
+                    self.ctx.structure.list_name(list)
+                ),
+                SelectTarget::Version(_) => {
+                    format!("'{name}' has no Versions dimension for SELECT to fix.")
                 }
-                SelectTarget::Version(_) => "a Versions dimension".to_string(),
-                SelectTarget::Period { .. } => "a Time dimension".to_string(),
-            };
-            dimension(format!(
-                "'{}' has no {what} for SELECT to fix.",
-                line_item.name
-            ))
+                SelectTarget::Period { .. } => {
+                    format!("'{name}' has no Time dimension for SELECT to fix.")
+                }
+            })
         })
     }
 
@@ -463,7 +465,7 @@ impl Builder<'_> {
             .map(|((axis, driver), target)| match axis {
                 Axis::List(_) | Axis::Subset(_) => self.plan_list(axis, driver, target),
                 Axis::Time { level, range } => self.plan_time((*level, *range), driver, target),
-                Axis::Versions => self.plan_versions(work, driver, target),
+                Axis::Versions => self.plan_versions(work, drivers, driver, target),
                 Axis::ListTop(_) => Err(invalid(format!(
                     "Line item '{}' cannot have a top-level axis.",
                     line_item.name
@@ -650,165 +652,6 @@ impl Builder<'_> {
         Ok((axis.clone(), positions))
     }
 
-    fn plan_time(
-        &self,
-        source: (TimeLevel, Option<TimeRangeId>),
-        driver: &Driver,
-        matched: Option<usize>,
-    ) -> Result<AxisPlan, EngineError> {
-        let structure = self.ctx.structure;
-        let (wanted, periods, feed) = match (driver, matched) {
-            (Driver::Select(SelectTarget::Period { level, index }), _) => {
-                ((*level, None), vec![*index], Feed::Single)
-            }
-            (Driver::Lookup(reader, ValueType::Period(level)), _) => (
-                (*level, None),
-                (0..structure.calendar.periods(*level)).collect(),
-                Feed::Values(Arc::clone(reader)),
-            ),
-            (Driver::Unassigned, Some(target)) => {
-                let Axis::Time { level, range } = self.target.axes[target] else {
-                    return Err(mismatched_modifier());
-                };
-                (
-                    (level, range),
-                    (0..self.target.lens[target]).collect(),
-                    Feed::Axis(target),
-                )
-            }
-            (Driver::Unassigned, None) => {
-                return Ok(AxisPlan {
-                    to: Axis::Time {
-                        level: TimeLevel::All,
-                        range: source.1,
-                    },
-                    positions: vec![Some(0)],
-                    feed: Feed::Single,
-                });
-            }
-            _ => return Err(mismatched_modifier()),
-        };
-        let (to, positions) = self.place_time(source, wanted, &periods)?;
-        Ok(AxisPlan {
-            to,
-            positions,
-            feed,
-        })
-    }
-
-    /// Where the periods `periods` of the time axis `driver` land on a source time axis: the
-    /// source period that contains the first month of each, once the source is rolled up to the
-    /// driver's level if it is finer. Periods are matched by calendar month, so axes with
-    /// different time ranges line up by date.
-    fn place_time(
-        &self,
-        source: (TimeLevel, Option<TimeRangeId>),
-        driver: (TimeLevel, Option<TimeRangeId>),
-        periods: &[u32],
-    ) -> Result<(Axis, Vec<Option<u32>>), EngineError> {
-        let structure = self.ctx.structure;
-        let ((level, range), (driver_level, driver_range)) = (source, driver);
-        let to_level = level.max(driver_level);
-        let source_calendar = structure.time_calendar(range)?;
-        let driver_calendar = structure.time_calendar(driver_range)?;
-        let source_offset = month_offset(structure, range);
-        let driver_offset = month_offset(structure, driver_range);
-        let positions = periods
-            .iter()
-            .map(|&period| {
-                let first = driver_calendar.months_in_period(driver_level, period).start;
-                let month = driver_offset + i64::from(first) - source_offset;
-                u32::try_from(month)
-                    .ok()
-                    .filter(|&month| month < source_calendar.months())
-                    .map(|month| source_calendar.period_of_month(month, to_level))
-            })
-            .collect();
-        Ok((
-            Axis::Time {
-                level: to_level,
-                range,
-            },
-            positions,
-        ))
-    }
-
-    fn plan_versions(
-        &self,
-        work: &Work,
-        driver: &Driver,
-        matched: Option<usize>,
-    ) -> Result<AxisPlan, EngineError> {
-        let structure = self.ctx.structure;
-        let source_keys = structure.axis_keys(&Axis::Versions, work.restriction.as_deref())?;
-        let position_of = |key: Option<u128>| {
-            key.and_then(|key| source_keys.iter().position(|source| *source == Some(key)))
-                .map(|position| position as u32)
-        };
-        match (driver, matched) {
-            (Driver::Select(SelectTarget::Version(version)), _) => Ok(AxisPlan {
-                to: Axis::Versions,
-                positions: vec![position_of(Some(version.0.as_u128()))],
-                feed: Feed::Single,
-            }),
-            (Driver::Unassigned, Some(target)) => {
-                let target_keys = structure.axis_keys(&Axis::Versions, self.restriction)?;
-                let (time, cutoff) = self.switchover(&target_keys)?;
-                let actual = structure
-                    .versions()
-                    .iter()
-                    .find(|version| version.is_actual)
-                    .and_then(|version| position_of(Some(version.id.0.as_u128())));
-                Ok(AxisPlan {
-                    to: Axis::Versions,
-                    positions: target_keys.iter().map(|key| position_of(*key)).collect(),
-                    feed: Feed::Versions {
-                        axis: target,
-                        time,
-                        actual,
-                        cutoff,
-                    },
-                })
-            }
-            (Driver::Unassigned, None) => Err(dimension("Use SELECT to choose a version.")),
-            _ => Err(mismatched_modifier()),
-        }
-    }
-
-    /// The target's time axis and, for each version of its Versions axis, how many leading
-    /// periods lie entirely before the version's switchover month.
-    fn switchover(
-        &self,
-        target_keys: &[Option<u128>],
-    ) -> Result<(Option<usize>, Vec<u32>), EngineError> {
-        let structure = self.ctx.structure;
-        let Some(time) = self.target.time_pos() else {
-            return Ok((None, vec![0; target_keys.len()]));
-        };
-        let Axis::Time { level, range } = self.target.axes[time] else {
-            return Err(mismatched_modifier());
-        };
-        let calendar = structure.time_calendar(range)?;
-        let offset = month_offset(structure, range);
-        let cutoff = target_keys
-            .iter()
-            .map(|key| {
-                let switchover = key
-                    .and_then(|key| structure.version(VersionId(Uuid::from_u128(key))))
-                    .and_then(|version| version.switchover);
-                switchover.map_or(0, |month| {
-                    (0..calendar.periods(level))
-                        .take_while(|&period| {
-                            let end = calendar.months_in_period(level, period).end;
-                            offset + i64::from(end) <= i64::from(month)
-                        })
-                        .count() as u32
-                })
-            })
-            .collect();
-        Ok((Some(time), cutoff))
-    }
-
     /// Rolls the source up where the plans ask for it and turns the plans into a reader.
     fn finish(
         &self,
@@ -826,18 +669,14 @@ impl Builder<'_> {
                 .aggregated(line_item.id, &LevelSpec(levels))?;
             (rolled.0.clone(), Data::Summary(rolled))
         } else {
-            let time_method = line_item
-                .time_summary
-                .as_ref()
-                .unwrap_or(&line_item.summary);
-            let (shape, column) = aggregate(
+            let (shape, column) = roll_up(
                 self.ctx.structure,
+                line_item,
                 &work.shape,
+                work.restriction.as_deref(),
                 &work.column,
-                &line_item.summary,
-                time_method,
-                &LevelSpec(levels),
                 None,
+                &LevelSpec(levels),
             )?;
             (shape, Data::Column(Arc::new(column)))
         };
@@ -927,13 +766,6 @@ fn free_axis(work: &Work, drivers: &[Driver], wanted: impl Fn(&Axis) -> bool) ->
         .enumerate()
         .find(|(position, axis)| matches!(drivers[*position], Driver::Unassigned) && wanted(axis))
         .map(|(position, _)| position)
-}
-
-/// Months from the start of the model calendar to the start of a time range.
-fn month_offset(structure: &Structure, range: Option<TimeRangeId>) -> i64 {
-    range
-        .and_then(|id| structure.time_range(id))
-        .map_or(0, |range| structure.calendar.range_month_offset(range))
 }
 
 fn list_of(structure: &Structure, id: ListId) -> Result<&crate::structure::List, EngineError> {

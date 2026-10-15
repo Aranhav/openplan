@@ -24,8 +24,12 @@ struct Fx {
 
 impl Fx {
     fn new(years: u8) -> Fx {
+        Fx::with_calendar(calendar(years))
+    }
+
+    fn with_calendar(calendar: Calendar) -> Fx {
         Fx {
-            model: Model::new(calendar(years)),
+            model: Model::new(calendar),
         }
     }
 
@@ -122,6 +126,16 @@ impl Fx {
 
     fn set_number(&mut self, line_item: LineItemId, coords: Vec<CoordToken>, value: f64) {
         self.set(line_item, coords, Value::Number(value));
+    }
+
+    fn set_all(&mut self, line_item: LineItemId, cells: Vec<(Vec<CoordToken>, Value)>) {
+        let edits = cells
+            .into_iter()
+            .map(|(coords, value)| CellEdit { coords, value })
+            .collect();
+        self.model
+            .apply(Command::SetCells { line_item, edits })
+            .unwrap();
     }
 
     fn recalc(&mut self) {
@@ -1440,13 +1454,16 @@ fn functions_are_reported_as_not_available_yet() {
     let mut fx = Fx::new(1);
     let module = fx.module("Sales", vec![month_axis()]);
     let units = fx.number(module, "Units");
-    let wrapped = fx.calc_number(module, "Wrapped", "ABS(Units)");
+    let wrapped = fx.calc_number(module, "Wrapped", "1 + ABS(Units)");
     fx.set_number(units, vec![period("Jan 26")], -4.0);
 
     fx.recalc();
 
+    // The problem is a formula problem, located at the call.
     let errors = fx.errors(wrapped);
+    assert_eq!(errors[0].code, "formula.unknown_function");
     assert_eq!(errors[0].message, "Function ABS is not available yet.");
+    assert_eq!((errors[0].start, errors[0].end), (4, 14));
     assert_eq!(fx.number_at(wrapped, vec![period("Jan 26")]), 0.0);
 }
 
@@ -1558,4 +1575,594 @@ fn a_million_cells_evaluate_in_chunks() {
         fx.number_at(revenue, vec![item(ids[last]), period("Nov 45")]),
         0.0
     );
+}
+
+/// A model with a monthly Time x Versions module whose Budget switches over from Actual after
+/// January: Actual 100, 50, 5 and Budget -, 10, 1 for January to March.
+struct Switchover {
+    fx: Fx,
+    amount: LineItemId,
+    quarterly: LineItemId,
+    totals: LineItemId,
+    actual: CoordToken,
+    budget: CoordToken,
+    forecast: CoordToken,
+}
+
+fn switchover_model() -> Switchover {
+    let mut fx = Fx::new(1);
+    let finance = fx.module("Finance", vec![month_axis(), AxisSpec::Versions]);
+    let amount = fx.number(finance, "Amount");
+    let quarterly_module = fx.module(
+        "Quarterly",
+        vec![time_axis(TimeLevel::Quarter), AxisSpec::Versions],
+    );
+    let quarterly = fx.calc_number(quarterly_module, "Quarter Amount", "Amount");
+    let totals_module = fx.module("Totals", vec![AxisSpec::Versions]);
+    let totals = fx.calc_number(totals_module, "Total Amount", "Amount");
+    let budget_id = fx.model.structure().version_by_name("Budget").unwrap().id;
+    fx.model
+        .apply(Command::UpsertVersion {
+            id: budget_id,
+            name: "Budget".to_string(),
+            is_actual: false,
+            is_current: true,
+            switchover: Some(1),
+        })
+        .unwrap();
+    let (actual, budget, forecast) = (
+        fx.version("Actual"),
+        fx.version("Budget"),
+        fx.version("Forecast"),
+    );
+    for (month, version, value) in [
+        ("Jan 26", &actual, 100.0),
+        ("Feb 26", &actual, 50.0),
+        ("Mar 26", &actual, 5.0),
+        ("Feb 26", &budget, 10.0),
+        ("Mar 26", &budget, 1.0),
+    ] {
+        fx.set_number(amount, vec![period(month), version.clone()], value);
+    }
+    fx.recalc();
+    Switchover {
+        fx,
+        amount,
+        quarterly,
+        totals,
+        actual,
+        budget,
+        forecast,
+    }
+}
+
+#[test]
+fn switchover_applies_inside_aggregated_periods() {
+    let w = switchover_model();
+    let q1 = |version: &CoordToken| vec![period("Q1 FY26"), version.clone()];
+
+    // January is before the Budget's switchover, so the quarter holds Actual's January with the
+    // Budget's February and March.
+    assert_eq!(w.fx.number_at(w.quarterly, q1(&w.budget)), 111.0);
+    assert_eq!(w.fx.number_at(w.quarterly, q1(&w.actual)), 155.0);
+    assert_eq!(w.fx.number_at(w.quarterly, q1(&w.forecast)), 0.0);
+    assert_eq!(
+        w.fx.number_at(w.quarterly, vec![period("Q2 FY26"), w.budget.clone()]),
+        0.0
+    );
+    // A target without Time adds up all periods the same way.
+    assert_eq!(w.fx.number_at(w.totals, vec![w.budget.clone()]), 111.0);
+    assert_eq!(w.fx.number_at(w.totals, vec![w.actual.clone()]), 155.0);
+    assert_eq!(w.fx.number_at(w.totals, vec![w.forecast.clone()]), 0.0);
+    // The stored cells are untouched.
+    assert_eq!(
+        w.fx.number_at(w.amount, vec![period("Jan 26"), w.budget.clone()]),
+        0.0
+    );
+}
+
+#[test]
+fn summaries_apply_the_switchover_too() {
+    let w = switchover_model();
+    let year = LevelSpec(vec![time_axis_of(TimeLevel::Year), Axis::Versions]);
+    let quarter = LevelSpec(vec![time_axis_of(TimeLevel::Quarter), Axis::Versions]);
+    let read = |levels: &LevelSpec, label: &str, version: &CoordToken| match w
+        .fx
+        .model
+        .read_summary(w.amount, &[period(label), version.clone()], levels)
+        .unwrap()
+    {
+        Value::Number(number) => number,
+        other => panic!("expected a number, found {other:?}"),
+    };
+
+    // The totals of the grid agree with the formulas that read the same line item.
+    assert_eq!(read(&year, "FY26", &w.budget), 111.0);
+    assert_eq!(read(&year, "FY26", &w.actual), 155.0);
+    assert_eq!(read(&quarter, "Q1 FY26", &w.budget), 111.0);
+    assert_eq!(read(&quarter, "Q2 FY26", &w.budget), 0.0);
+}
+
+#[test]
+fn a_selected_version_reads_the_switchover_too() {
+    let mut w = switchover_model();
+    let report = w.fx.module("Report", Vec::new());
+    let budget_total =
+        w.fx.calc_number(report, "Budget Total", "Amount[SELECT: Versions.Budget]");
+
+    w.fx.recalc();
+
+    assert_eq!(w.fx.number_at(budget_total, Vec::new()), 111.0);
+}
+
+#[test]
+fn a_coarser_source_reads_actual_in_the_target_months_before_the_switchover() {
+    let mut fx = Fx::new(1);
+    let quarterly = fx.module(
+        "Quarterly Input",
+        vec![time_axis(TimeLevel::Quarter), AxisSpec::Versions],
+    );
+    let quarter_amount = fx.number(quarterly, "Quarter Input Amount");
+    let monthly = fx.module("Monthly View", vec![month_axis(), AxisSpec::Versions]);
+    let view = fx.calc_number(monthly, "Month View Amount", "Quarter Input Amount");
+    let budget_id = fx.model.structure().version_by_name("Budget").unwrap().id;
+    fx.model
+        .apply(Command::UpsertVersion {
+            id: budget_id,
+            name: "Budget".to_string(),
+            is_actual: false,
+            is_current: true,
+            switchover: Some(1),
+        })
+        .unwrap();
+    let (actual, budget) = (fx.version("Actual"), fx.version("Budget"));
+    fx.set_number(
+        quarter_amount,
+        vec![period("Q1 FY26"), actual.clone()],
+        100.0,
+    );
+    fx.set_number(
+        quarter_amount,
+        vec![period("Q1 FY26"), budget.clone()],
+        10.0,
+    );
+
+    fx.recalc();
+
+    // The quarter holds both, so the target's own months decide.
+    assert_eq!(
+        fx.number_at(view, vec![period("Jan 26"), budget.clone()]),
+        100.0
+    );
+    assert_eq!(fx.number_at(view, vec![period("Feb 26"), budget]), 10.0);
+    assert_eq!(fx.number_at(view, vec![period("Feb 26"), actual]), 100.0);
+}
+
+fn time_axis_of(level: TimeLevel) -> Axis {
+    Axis::Time { level, range: None }
+}
+
+#[test]
+fn item_dimension_is_checked_even_when_a_branch_is_skipped() {
+    let mut fx = Fx::new(1);
+    let products = fx.list("Products", None, None);
+    fx.items(products, &[("Widget", None)]);
+    let module = fx.module("Plain", vec![month_axis()]);
+    let units = fx.number(module, "Units");
+    let formula = "IF Units > 0 THEN 1 ELSE (IF ITEM(Products) = Products.Widget THEN 2 ELSE 3)";
+    let pick = fx.calc_number(module, "Pick", formula);
+    let start = formula.find("ITEM(").unwrap() + "ITEM(".len();
+    let months: Vec<String> = (0..12)
+        .map(|month| calendar(1).label(TimeLevel::Month, month))
+        .collect();
+    let fill = |fx: &mut Fx, value: f64| {
+        let cells = months
+            .iter()
+            .map(|month| (vec![period(month)], Value::Number(value)))
+            .collect();
+        fx.set_all(units, cells);
+    };
+
+    // Every cell takes the THEN branch, which never runs the ELSE branch that has ITEM in it,
+    // and yet the formula is wrong whatever the data.
+    for value in [1.0, 0.0] {
+        fill(&mut fx, value);
+        fx.recalc();
+        let errors = fx.errors(pick);
+        assert_eq!(errors.len(), 1, "units {value}");
+        assert_eq!(errors[0].code, "formula.dimension");
+        assert_eq!(
+            errors[0].message,
+            "This formula's line item has no 'Products' dimension."
+        );
+        assert_eq!(
+            (errors[0].start, errors[0].end),
+            (start, start + "Products".len())
+        );
+    }
+}
+
+#[test]
+fn a_changed_subset_drops_calculated_values_until_recalculation() {
+    let mut fx = Fx::new(1);
+    let products = fx.list("Products", None, None);
+    let [a, b, c] = fx.items(products, &[("A", None), ("B", None), ("C", None)])[..] else {
+        unreachable!()
+    };
+    let subset = fx.subset("Chosen", products, &[a, b]);
+    let module = fx.module("View", vec![AxisSpec::Subset { subset }]);
+    let value = fx.number(module, "Value");
+    let doubled = fx.calc_number(module, "Doubled", "Value * 2");
+    fx.set_number(value, vec![item(a)], 1.0);
+    fx.set_number(value, vec![item(b)], 2.0);
+    fx.recalc();
+    assert_eq!(fx.number_at(doubled, vec![item(b)]), 4.0);
+
+    fx.model
+        .apply(Command::UpdateSubset {
+            id: subset,
+            name: None,
+            items: Some(vec![a, c]),
+        })
+        .unwrap();
+
+    // C does not inherit B's value; nothing is shown until the next recalculation.
+    assert_eq!(fx.number_at(doubled, vec![item(c)]), 0.0);
+    assert_eq!(fx.number_at(doubled, vec![item(a)]), 0.0);
+    fx.recalc();
+    assert_eq!(fx.number_at(doubled, vec![item(a)]), 2.0);
+    assert_eq!(fx.number_at(doubled, vec![item(c)]), 0.0);
+}
+
+#[test]
+fn deleting_an_item_blanks_calculated_values_that_name_it() {
+    let mut fx = Fx::new(1);
+    let segments = fx.list("Segments", None, None);
+    let [gold, silver] = fx.items(segments, &[("Gold", None), ("Silver", None)])[..] else {
+        unreachable!()
+    };
+    let module = fx.module("Choice", vec![month_axis()]);
+    let chosen = fx.calc(module, "Chosen", list_format(segments), "Segments.Silver");
+    let kept = fx.calc(module, "Kept", list_format(segments), "Segments.Gold");
+    fx.recalc();
+    assert_eq!(
+        fx.get(chosen, vec![period("Jan 26")]),
+        Value::Item(Some(silver))
+    );
+
+    fx.model
+        .apply(Command::DeleteListItems {
+            list: segments,
+            ids: vec![silver],
+        })
+        .unwrap();
+
+    assert_eq!(fx.get(chosen, vec![period("Jan 26")]), Value::Item(None));
+    assert_eq!(
+        fx.get(kept, vec![period("Jan 26")]),
+        Value::Item(Some(gold))
+    );
+}
+
+#[test]
+fn a_changed_version_restriction_drops_calculated_values_until_recalculation() {
+    let mut fx = Fx::new(1);
+    let module = fx.module("Finance", vec![month_axis(), AxisSpec::Versions]);
+    let amount = fx.number(module, "Amount");
+    let forecast_id = fx.model.structure().version_by_name("Forecast").unwrap().id;
+    let budget_id = fx.model.structure().version_by_name("Budget").unwrap().id;
+    let mut narrow = line_item(module, "Narrow", Format::number(), Some("Amount * 1"));
+    narrow.versions = VersionsScope::Only(vec![forecast_id, budget_id]);
+    let narrow = fx.add(narrow);
+    let (budget, forecast) = (fx.version("Budget"), fx.version("Forecast"));
+    fx.set_number(amount, vec![period("Jan 26"), budget.clone()], 2.0);
+    fx.set_number(amount, vec![period("Jan 26"), forecast.clone()], 3.0);
+    fx.recalc();
+    assert_eq!(
+        fx.number_at(narrow, vec![period("Jan 26"), budget.clone()]),
+        2.0
+    );
+
+    fx.model
+        .apply(Command::UpdateLineItem {
+            id: narrow,
+            patch: LineItemPatch {
+                versions: Some(VersionsScope::Only(vec![budget_id, forecast_id])),
+                ..LineItemPatch::default()
+            },
+        })
+        .unwrap();
+
+    // The versions swapped places, so the old cells would be read as each other's.
+    assert_eq!(
+        fx.number_at(narrow, vec![period("Jan 26"), budget.clone()]),
+        0.0
+    );
+    fx.recalc();
+    assert_eq!(fx.number_at(narrow, vec![period("Jan 26"), budget]), 2.0);
+    assert_eq!(fx.number_at(narrow, vec![period("Jan 26"), forecast]), 3.0);
+}
+
+#[test]
+fn a_changed_fiscal_start_drops_calculated_time_values() {
+    let mut fx = Fx::new(1);
+    let module = fx.module("Sales", vec![month_axis()]);
+    let units = fx.number(module, "Units");
+    let doubled = fx.calc_number(module, "Doubled", "Units + 5");
+    fx.set_number(units, vec![period("Jan 26")], 5.0);
+    fx.recalc();
+    assert_eq!(fx.number_at(doubled, vec![period("Jan 26")]), 10.0);
+
+    fx.model
+        .apply(Command::SetCalendar {
+            calendar: Calendar {
+                fiscal_year_start_month: 4,
+                first_year: 2027,
+                years: 1,
+                current_month: None,
+            },
+        })
+        .unwrap();
+
+    // The first month is now April 2026, and nothing computed for January is shown there.
+    assert_eq!(fx.number_at(doubled, vec![period("Apr 26")]), 0.0);
+    fx.recalc();
+    assert_eq!(fx.number_at(doubled, vec![period("Apr 26")]), 5.0);
+}
+
+#[test]
+fn non_finite_results_are_zero_and_never_negative_zero() {
+    let mut fx = Fx::new(1);
+    let module = fx.module("Edge", vec![month_axis()]);
+    fx.number(module, "Units");
+    let formulas = [
+        ("Overflow", "1.7e308 + 1.7e308"),
+        ("Both Overflow", "(1.7e308 + 1.7e308) - (1.7e308 + 1.7e308)"),
+        ("Product", "1.7e308 * 10"),
+        ("Zero Times Negative", "0 * -5"),
+        ("Negated Zero", "-Units"),
+        ("Zero Quotient", "0 / -5"),
+    ];
+    let items: Vec<LineItemId> = formulas
+        .iter()
+        .map(|(name, formula)| fx.calc_number(module, name, formula))
+        .collect();
+
+    fx.recalc();
+
+    for ((name, _), line_item) in formulas.iter().zip(items) {
+        let number = fx.number_at(line_item, vec![period("Jan 26")]);
+        assert_eq!(number, 0.0, "{name}");
+        assert!(number.is_sign_positive(), "{name} is negative zero");
+    }
+}
+
+#[test]
+fn a_roll_up_that_overflows_reads_zero() {
+    let mut w = world();
+    let detail = w.fx.module("Detail", vec![list_axis(w.countries)]);
+    let revenue = w.fx.number(detail, "Revenue");
+    w.fx.set_number(revenue, vec![item(w.us)], 1.7e308);
+    w.fx.set_number(revenue, vec![item(w.ca)], 1.7e308);
+    let by_region = LevelSpec(vec![Axis::List(w.regions)]);
+
+    let rolled =
+        w.fx.model
+            .read_summary(revenue, &[item(w.na)], &by_region)
+            .unwrap();
+
+    assert_eq!(rolled, Value::Number(0.0));
+}
+
+#[test]
+fn select_without_a_matching_dimension_is_a_dimension_error() {
+    let mut fx = Fx::new(1);
+    let products = fx.list("Products", None, None);
+    fx.items(products, &[("Widget", None)]);
+    let settings = fx.module("Settings", Vec::new());
+    let tax = fx.number(settings, "Tax");
+    let rates = fx.module("Rates", vec![month_axis()]);
+    let rate = fx.number(rates, "Rate");
+    let report = fx.module("Report", vec![month_axis()]);
+    let no_version = fx.calc_number(report, "No Version", "Rate[SELECT: Versions.Budget]");
+    let no_list = fx.calc_number(report, "No List", "Rate[SELECT: Products.Widget]");
+    let no_time = fx.calc_number(report, "No Time", "Tax[SELECT: Time.'Jan 26']");
+    fx.set_number(rate, vec![period("Jan 26")], 1.0);
+    fx.set_number(tax, Vec::new(), 1.0);
+
+    fx.recalc();
+
+    for (line_item, message) in [
+        (
+            no_version,
+            "'Rate' has no Versions dimension for SELECT to fix.",
+        ),
+        (
+            no_list,
+            "'Rate' has no dimension 'Products' for SELECT to fix.",
+        ),
+        (no_time, "'Tax' has no Time dimension for SELECT to fix."),
+    ] {
+        let errors = fx.errors(line_item);
+        assert_eq!(errors[0].code, "formula.dimension");
+        assert_eq!(errors[0].message, message);
+    }
+}
+
+#[test]
+fn three_level_hierarchy_aligns_in_both_directions() {
+    let mut w = world();
+    let cities = w.fx.list("Cities", Some(w.countries), None);
+    let [nyc, la, tor, ber] = w.fx.items(
+        cities,
+        &[
+            ("NYC", Some(w.us)),
+            ("LA", Some(w.us)),
+            ("TOR", Some(w.ca)),
+            ("BER", Some(w.de)),
+        ],
+    )[..] else {
+        unreachable!()
+    };
+    let city_module = w.fx.module("City Data", vec![list_axis(cities)]);
+    let population = w.fx.number(city_module, "Population");
+    let region_module = w.fx.module("Region Data", vec![list_axis(w.regions)]);
+    let region_total =
+        w.fx.calc_number(region_module, "Region Population", "Population");
+    let target = w.fx.number(region_module, "Target");
+    let country_module = w.fx.module("Country Data", vec![list_axis(w.countries)]);
+    let country_total =
+        w.fx.calc_number(country_module, "Country Population", "Population");
+    let city_target = w.fx.calc_number(city_module, "City Target", "Target");
+    let company = w.fx.module("Company", Vec::new());
+    let everyone = w.fx.calc_number(company, "Everyone", "Region Population");
+    for (city, value) in [(nyc, 8.0), (la, 4.0), (tor, 3.0), (ber, 3.5)] {
+        w.fx.set_number(population, vec![item(city)], value);
+    }
+    w.fx.set_number(target, vec![item(w.na)], 100.0);
+    w.fx.set_number(target, vec![item(w.eu)], 50.0);
+
+    w.fx.recalc();
+
+    assert_eq!(w.fx.number_at(region_total, vec![item(w.na)]), 15.0);
+    assert_eq!(w.fx.number_at(region_total, vec![item(w.eu)]), 3.5);
+    assert_eq!(w.fx.number_at(country_total, vec![item(w.us)]), 12.0);
+    assert_eq!(w.fx.number_at(country_total, vec![item(w.ca)]), 3.0);
+    assert_eq!(w.fx.number_at(country_total, vec![item(w.de)]), 3.5);
+    // Two levels down: each city reads the target of its region.
+    assert_eq!(w.fx.number_at(city_target, vec![item(nyc)]), 100.0);
+    assert_eq!(w.fx.number_at(city_target, vec![item(tor)]), 100.0);
+    assert_eq!(w.fx.number_at(city_target, vec![item(ber)]), 50.0);
+    assert_eq!(w.fx.number_at(everyone, Vec::new()), 18.5);
+}
+
+#[test]
+fn mapped_readers_work_across_chunk_boundaries() {
+    let mut fx = Fx::new(1);
+    let products = fx.list("Products", None, None);
+    let names: Vec<String> = (0..5000).map(|n| format!("P{n}")).collect();
+    let specs: Vec<(&str, Option<ItemId>)> =
+        names.iter().map(|name| (name.as_str(), None)).collect();
+    let ids = fx.items(products, &specs);
+    let segments = fx.list("Segments", None, None);
+    let [gold, silver] = fx.items(segments, &[("Gold", None), ("Silver", None)])[..] else {
+        unreachable!()
+    };
+    let departments = fx.list("Departments", None, None);
+    let dept_ids = fx.items(departments, &[("D0", None), ("D1", None), ("D2", None)]);
+
+    // A source with fewer axes than the target is read through tables, not copied.
+    let prices = fx.module("Prices", vec![list_axis(products)]);
+    let price = fx.number(prices, "Price");
+    let rates = fx.module("Rates", vec![month_axis()]);
+    let rate = fx.number(rates, "Rate");
+    let sales = fx.module("Sales", vec![list_axis(products), month_axis()]);
+    let scaled = fx.calc_number(sales, "Scaled", "Price * Rate");
+    fx.set_number(price, vec![item(ids[340])], 10.0);
+    fx.set_number(price, vec![item(ids[341])], 11.0);
+    fx.set_number(price, vec![item(ids[4999])], 13.0);
+    fx.set_number(rate, vec![period("Apr 26")], 5.0);
+    fx.set_number(rate, vec![period("May 26")], 7.0);
+    fx.set_number(rate, vec![period("Dec 26")], 2.0);
+
+    // LOOKUP and SUM read a mapping line item per cell.
+    let data = fx.module("Data", vec![list_axis(products)]);
+    let segment = fx.input(data, "Segment", list_format(segments));
+    let dept = fx.input(data, "Dept", list_format(departments));
+    let salary = fx.number(data, "Salary");
+    let discounts = fx.module("Discounts", vec![list_axis(segments)]);
+    let discount = fx.number(discounts, "Discount");
+    let looked_up = fx.calc_number(data, "Product Discount", "Discount[LOOKUP: Segment]");
+    let costs = fx.module("Costs", vec![list_axis(departments)]);
+    let payroll = fx.calc_number(costs, "Payroll", "Salary[SUM: Dept]");
+    fx.set_number(discount, vec![item(gold)], 0.5);
+    fx.set_number(discount, vec![item(silver)], 0.25);
+    let mut segment_cells = Vec::new();
+    let mut dept_cells = Vec::new();
+    let mut salary_cells = Vec::new();
+    for (position, id) in ids.iter().enumerate() {
+        let which = if position % 2 == 0 { gold } else { silver };
+        segment_cells.push((vec![item(*id)], Value::Item(Some(which))));
+        dept_cells.push((vec![item(*id)], Value::Item(Some(dept_ids[position % 3]))));
+        salary_cells.push((vec![item(*id)], Value::Number(1.0)));
+    }
+    fx.set_all(segment, segment_cells);
+    fx.set_all(dept, dept_cells);
+    fx.set_all(salary, salary_cells);
+
+    fx.recalc();
+
+    // Cell 4095 is product 340, April, and cell 4096 is product 341, May.
+    let cell = |product: usize, month: &str| vec![item(ids[product]), period(month)];
+    assert_eq!(fx.number_at(scaled, cell(340, "Dec 26")), 20.0);
+    assert_eq!(fx.number_at(scaled, cell(341, "Apr 26")), 55.0);
+    assert_eq!(fx.number_at(scaled, cell(341, "May 26")), 77.0);
+    assert_eq!(fx.number_at(scaled, cell(4999, "Dec 26")), 26.0);
+    assert_eq!(fx.number_at(scaled, cell(4998, "Dec 26")), 0.0);
+    for (product, expected) in [(4094, 0.5), (4095, 0.25), (4096, 0.5), (4097, 0.25)] {
+        assert_eq!(
+            fx.number_at(looked_up, vec![item(ids[product])]),
+            expected,
+            "product {product}"
+        );
+    }
+    assert_eq!(fx.number_at(payroll, vec![item(dept_ids[0])]), 1667.0);
+    assert_eq!(fx.number_at(payroll, vec![item(dept_ids[1])]), 1667.0);
+    assert_eq!(fx.number_at(payroll, vec![item(dept_ids[2])]), 1666.0);
+}
+
+#[test]
+fn fiscal_years_starting_in_april_align_by_period() {
+    let mut fx = Fx::with_calendar(Calendar {
+        fiscal_year_start_month: 4,
+        first_year: 2027,
+        years: 2,
+        current_month: None,
+    });
+    let monthly = fx.module("Monthly", vec![month_axis()]);
+    let revenue = fx.number(monthly, "Revenue");
+    let annual = fx.module("Annual", vec![time_axis(TimeLevel::Year)]);
+    let budget = fx.number(annual, "Annual Budget");
+    let yearly = fx.calc_number(annual, "Yearly Revenue", "Revenue");
+    let quarterly_module = fx.module("Quarterly", vec![time_axis(TimeLevel::Quarter)]);
+    let quarterly = fx.calc_number(quarterly_module, "Quarter Revenue", "Revenue");
+    let applied = fx.calc_number(monthly, "Budget Applied", "Annual Budget");
+    fx.set_number(revenue, vec![period("Apr 26")], 1.0);
+    fx.set_number(revenue, vec![period("Mar 27")], 2.0);
+    fx.set_number(revenue, vec![period("Apr 27")], 4.0);
+    fx.set_number(budget, vec![period("FY27")], 120.0);
+    fx.set_number(budget, vec![period("FY28")], 240.0);
+
+    fx.recalc();
+
+    assert_eq!(fx.number_at(yearly, vec![period("FY27")]), 3.0);
+    assert_eq!(fx.number_at(yearly, vec![period("FY28")]), 4.0);
+    assert_eq!(fx.number_at(quarterly, vec![period("Q1 FY27")]), 1.0);
+    assert_eq!(fx.number_at(quarterly, vec![period("Q4 FY27")]), 2.0);
+    assert_eq!(fx.number_at(quarterly, vec![period("Q1 FY28")]), 4.0);
+    assert_eq!(fx.number_at(applied, vec![period("Apr 26")]), 120.0);
+    assert_eq!(fx.number_at(applied, vec![period("Mar 27")]), 120.0);
+    assert_eq!(fx.number_at(applied, vec![period("Apr 27")]), 240.0);
+}
+
+#[test]
+fn if_gives_the_same_result_when_every_cell_takes_one_branch() {
+    let mut fx = Fx::new(1);
+    let module = fx.module("Checks", vec![month_axis()]);
+    fx.number(module, "Units");
+    let always_then = fx.calc_number(module, "Always Then", "IF Units >= 0 THEN 1 ELSE 2");
+    let always_else = fx.calc_number(module, "Always Else", "IF Units < 0 THEN 1 ELSE 2");
+    let nested = fx.calc_number(
+        module,
+        "Nested",
+        "IF Units < 0 THEN 1 ELSE (IF Units = 0 THEN 3 ELSE 4)",
+    );
+
+    fx.recalc();
+
+    for label in ["Jan 26", "Jun 26", "Dec 26"] {
+        assert_eq!(fx.number_at(always_then, vec![period(label)]), 1.0);
+        assert_eq!(fx.number_at(always_else, vec![period(label)]), 2.0);
+        assert_eq!(fx.number_at(nested, vec![period(label)]), 3.0);
+    }
 }

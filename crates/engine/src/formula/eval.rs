@@ -21,7 +21,7 @@ use crate::summary::{LevelSpec, Summary};
 use crate::value::{BLANK_ITEM, Cell, Column, Value, ValueType};
 
 use super::align::{Reader, build_reader};
-use super::functions::eval_fn;
+use super::functions::{check_fn, eval_fn};
 use super::{DIMENSION, Span, TExpr, TModifier, UnOp, parse, resolve};
 
 mod ops;
@@ -31,10 +31,12 @@ const CHUNK: usize = 4096;
 
 /// Where the evaluator finds the values of the line items a formula reads.
 pub(crate) trait ColumnSource: Sync {
-    /// The current values of a line item, laid out over its own shape.
+    /// The values of a line item as formulas read them, laid out over its own shape: in the
+    /// periods before a version's switchover, a version shows the actual version's values.
     fn column(&self, line_item: LineItemId) -> Result<Arc<Column>, EngineError>;
 
-    /// The values of a line item rolled up to `levels` with its own summary methods.
+    /// The values of a line item rolled up to `levels` with its own summary methods, with the
+    /// same switchover rule as [`ColumnSource::column`].
     fn aggregated(
         &self,
         line_item: LineItemId,
@@ -133,7 +135,8 @@ pub(crate) fn evaluate_formula(
     })
 }
 
-/// Evaluates `expr` for every cell of `target`, in chunks that run in parallel.
+/// Evaluates `expr` for every cell of `target`, in chunks that run in parallel. Numbers that
+/// overflowed or have no value come out as 0, as does a negative zero.
 pub(crate) fn eval_all(ctx: &EvalCtx, target: &Shape, expr: &TExpr) -> Result<Column, EngineError> {
     let mut problems = Vec::new();
     prepare(ctx, target, expr, &mut problems);
@@ -144,7 +147,9 @@ pub(crate) fn eval_all(ctx: &EvalCtx, target: &Shape, expr: &TExpr) -> Result<Co
     let size = target.size();
     let run = |start: usize| {
         let idx: Vec<usize> = (start..(start + CHUNK).min(size)).collect();
-        eval(ctx, target, expr, &idx)
+        let mut column = eval(ctx, target, expr, &idx)?;
+        column.sanitize();
+        Ok(column)
     };
     let starts: Vec<usize> = (0..size).step_by(CHUNK).collect();
     let chunks: Vec<Result<Column, EngineError>> = if starts.len() > 1 {
@@ -190,7 +195,12 @@ fn prepare(ctx: &EvalCtx, target: &Shape, expr: &TExpr, problems: &mut Vec<Formu
                 prepare(ctx, target, part, problems);
             }
         }
-        TExpr::Call { args, .. } => {
+        TExpr::Call {
+            func, args, span, ..
+        } => {
+            if let Err(error) = check_fn(*func, ctx, target, args) {
+                problems.extend(locate(error, *span));
+            }
             for arg in args {
                 prepare(ctx, target, arg, problems);
             }
@@ -205,7 +215,8 @@ fn prepare(ctx: &EvalCtx, target: &Shape, expr: &TExpr, problems: &mut Vec<Formu
     }
 }
 
-/// The problems of a failed reader as formula errors that point at `span`.
+/// The problems of a failed reader or call as formula errors that point at `span`, unless they
+/// already point somewhere.
 fn locate(error: EngineError, span: Span) -> Vec<FormulaError> {
     match error {
         EngineError::Formula(errors) => errors
@@ -303,7 +314,10 @@ pub(crate) fn eval(
             let otherwise = eval(ctx, target, els, idx)?;
             ops::select(&mask, chosen, otherwise)
         }
-        TExpr::Call { func, args, .. } => eval_fn(*func, ctx, target, args, idx),
+        TExpr::Call {
+            func, args, span, ..
+        } => eval_fn(*func, ctx, target, args, idx)
+            .map_err(|error| EngineError::Formula(locate(error, *span))),
     }
 }
 

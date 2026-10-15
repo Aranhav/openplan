@@ -3,14 +3,16 @@
 use std::borrow::Cow;
 
 use crate::error::EngineError;
-use crate::ids::{LineItemId, ListId};
+use crate::ids::{LineItemId, ListId, VersionId};
 use crate::shape::{Axis, Shape};
 use crate::structure::{LineItem, List, Structure, SummaryMethod, level_name};
 use crate::value::Column;
 
 mod cache;
+mod switchover;
 
 pub(crate) use cache::{Summary, SummaryCache};
+pub(crate) use switchover::{cutoffs, with_actual_before_switchover};
 
 /// The levels a grid is summarized to: one axis per axis of the source shape, in the same
 /// order.
@@ -130,13 +132,53 @@ pub fn aggregate(
         state = reduce(&shape, &next, &groups, &state, reducer, keep_parts);
         shape = next;
     }
-    let column = match src {
+    let mut column = match src {
         Column::Boolean(_) => {
             Column::Boolean(state.values.iter().map(|&value| value != 0.0).collect())
         }
         _ => Column::Number(state.values.into_owned()),
     };
+    column.sanitize();
     Ok((out_shape, column))
+}
+
+/// Rolls the cells of a line item over `shape` up to `levels` with the line item's own summary
+/// methods, as a grid shows its totals. `ratio_parts` holds the cells of the parts of a ratio
+/// summary. A roll-up reads the months before a version's switchover from the actual version
+/// (see [`with_actual_before_switchover`]), so that totals agree with the formulas that read
+/// the line item; `restriction` names the versions of a restricted Versions axis.
+pub(crate) fn roll_up(
+    structure: &Structure,
+    line_item: &LineItem,
+    shape: &Shape,
+    restriction: Option<&[VersionId]>,
+    src: &Column,
+    ratio_parts: Option<(&Column, &Column)>,
+    levels: &LevelSpec,
+) -> Result<Summary, EngineError> {
+    let rolls_up = levels.0 != shape.axes;
+    let view = |cells| switched(structure, shape, restriction, rolls_up, cells);
+    let src = view(src)?;
+    let parts = ratio_parts
+        .map(|(numerator, denominator)| {
+            Ok::<_, EngineError>((view(numerator)?, view(denominator)?))
+        })
+        .transpose()?;
+    let time_method = line_item
+        .time_summary
+        .as_ref()
+        .unwrap_or(&line_item.summary);
+    aggregate(
+        structure,
+        shape,
+        &src,
+        &line_item.summary,
+        time_method,
+        levels,
+        parts
+            .as_ref()
+            .map(|(numerator, denominator)| (&**numerator, &**denominator)),
+    )
 }
 
 fn blank(shape: Shape, like: &Column) -> (Shape, Column) {
@@ -182,6 +224,23 @@ pub(crate) fn ratio_parts(
         ))),
         (summary, time) => Ok(summary.or(time)),
     }
+}
+
+/// The cells of a grid as a roll-up reads them: with the actual version's cells in the periods
+/// before a switchover, if the grid is rolled up at all.
+fn switched<'a>(
+    structure: &Structure,
+    shape: &Shape,
+    restriction: Option<&[VersionId]>,
+    rolls_up: bool,
+    cells: &'a Column,
+) -> Result<Cow<'a, Column>, EngineError> {
+    let switched = if rolls_up {
+        with_actual_before_switchover(structure, shape, restriction, cells)?
+    } else {
+        None
+    };
+    Ok(switched.map_or(Cow::Borrowed(cells), Cow::Owned))
 }
 
 /// Which axes a step of the roll-up combines.
