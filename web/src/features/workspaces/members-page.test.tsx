@@ -272,7 +272,7 @@ describe("the members page", () => {
   })
 
   it("asks before you change your own role, and changes nothing if you cancel", async () => {
-    mockSession()
+    mockSession({ me: ordinaryMe })
     const patched = vi.fn()
     serveMembers([ada, grace])
     server.use(
@@ -298,6 +298,22 @@ describe("the members page", () => {
     await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument())
     expect(patched).not.toHaveBeenCalled()
     expect(screen.getByRole("combobox", { name: "Role for Ada Lovelace" })).toHaveFocus()
+  })
+
+  it("tells an instance admin they keep their access when they change their own role", async () => {
+    mockSession()
+    serveMembers([ada, grace])
+    const typist = userEvent.setup()
+    renderApp(pageUrl)
+    await chooseRole(typist, "Ada Lovelace", "Viewer")
+    const dialog = await screen.findByRole("alertdialog", { name: "Change your own role?" })
+
+    expect(
+      within(dialog).getByText(
+        "You'll stay an instance admin, so you can still manage this workspace.",
+      ),
+    ).toBeVisible()
+    expect(within(dialog).queryByText(/may lose the ability/)).not.toBeInTheDocument()
   })
 
   it("puts the role back and shows the server's reason when the last admin is demoted", async () => {

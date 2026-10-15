@@ -10,6 +10,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
+import { useMe } from "@/features/auth/api"
 import { closeUnlessBusy } from "@/lib/close-unless-busy"
 
 interface ChangeOwnRoleDialogProps {
@@ -30,6 +31,10 @@ export function ChangeOwnRoleDialog({
   onOpenChange,
   onCloseAutoFocus,
 }: ChangeOwnRoleDialogProps) {
+  const { data: me } = useMe()
+  // An instance admin is an admin of every workspace, so a role of their own takes nothing away.
+  const keepsAccess = me?.user.is_instance_admin === true
+
   function confirm(event: MouseEvent) {
     // The action would close the dialog straight away; keep it open until the change is saved.
     event.preventDefault()
@@ -42,7 +47,9 @@ export function ChangeOwnRoleDialog({
         <AlertDialogHeader>
           <AlertDialogTitle>Change your own role?</AlertDialogTitle>
           <AlertDialogDescription>
-            You may lose the ability to manage this workspace.
+            {keepsAccess
+              ? "You'll stay an instance admin, so you can still manage this workspace."
+              : "You may lose the ability to manage this workspace."}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
