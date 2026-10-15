@@ -41,10 +41,16 @@ export function DeleteModelDialog({
 }: DeleteModelDialogProps) {
   const deleteModel = useDeleteModel()
   const deleted = useRef(false)
+  // The request is over once the model is gone, but the dialog stays locked while `onDeleted`
+  // leaves its page and until it closes: a second deletion would only fail.
+  const busy = deleteModel.isPending || deleteModel.isSuccess
 
   async function confirm(event: MouseEvent) {
     // The action would close the dialog straight away; keep it open until the model is gone.
     event.preventDefault()
+    if (deleted.current) {
+      return
+    }
     try {
       await deleteModel.mutateAsync(model)
       deleted.current = true
@@ -53,6 +59,10 @@ export function DeleteModelDialog({
       onOpenChange(false)
     } catch (error) {
       toast.error(errorDetail(error))
+      // The model is gone, so a failure to leave its page must not strand a locked dialog.
+      if (deleted.current) {
+        onOpenChange(false)
+      }
     }
   }
 
@@ -66,7 +76,7 @@ export function DeleteModelDialog({
   }
 
   return (
-    <AlertDialog open={open} onOpenChange={closeUnlessBusy(deleteModel.isPending, onOpenChange)}>
+    <AlertDialog open={open} onOpenChange={closeUnlessBusy(busy, onOpenChange)}>
       <AlertDialogContent onCloseAutoFocus={restoreFocus}>
         <AlertDialogHeader>
           <AlertDialogTitle>Delete {model.name}?</AlertDialogTitle>
@@ -75,12 +85,8 @@ export function DeleteModelDialog({
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel disabled={deleteModel.isPending}>Cancel</AlertDialogCancel>
-          <AlertDialogAction
-            variant="destructive"
-            disabled={deleteModel.isPending}
-            onClick={confirm}
-          >
+          <AlertDialogCancel disabled={busy}>Cancel</AlertDialogCancel>
+          <AlertDialogAction variant="destructive" disabled={busy} onClick={confirm}>
             {deleteModel.isPending && <Loader2 className="animate-spin" />}
             Delete model
           </AlertDialogAction>
