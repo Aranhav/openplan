@@ -28,7 +28,9 @@ export function AppSidebar(props: ComponentProps<typeof Sidebar>) {
   const { setOpenMobile } = useSidebar()
   const pathname = useLocation({ select: (location) => location.pathname })
 
-  // On a phone the sidebar is a sheet that covers the page; close it once you have moved on.
+  // On a phone the sidebar is a sheet that covers the page. Close it when a link is chosen (even
+  // one to the page already open) and whenever the address changes some other way, like Back.
+  const closeSheet = () => setOpenMobile(false)
   useEffect(() => {
     setOpenMobile(false)
   }, [pathname, setOpenMobile])
@@ -61,6 +63,7 @@ export function AppSidebar(props: ComponentProps<typeof Sidebar>) {
                           to="/w/$workspaceId"
                           params={{ workspaceId: workspace.id }}
                           activeOptions={{ exact: true }}
+                          onClick={closeSheet}
                         >
                           <LayoutGrid />
                           <span>Models</span>
@@ -69,7 +72,11 @@ export function AppSidebar(props: ComponentProps<typeof Sidebar>) {
                     </SidebarMenuItem>
                     <SidebarMenuItem>
                       <SidebarMenuButton asChild tooltip="Members" isActive={Boolean(onMembers)}>
-                        <Link to="/w/$workspaceId/members" params={{ workspaceId: workspace.id }}>
+                        <Link
+                          to="/w/$workspaceId/members"
+                          params={{ workspaceId: workspace.id }}
+                          onClick={closeSheet}
+                        >
                           <Users />
                           <span>Members</span>
                         </Link>
@@ -93,7 +100,7 @@ export function AppSidebar(props: ComponentProps<typeof Sidebar>) {
               <SidebarMenu>
                 <SidebarMenuItem>
                   <SidebarMenuButton asChild tooltip="Users" isActive={Boolean(onUsers)}>
-                    <Link to="/admin/users">
+                    <Link to="/admin/users" onClick={closeSheet}>
                       <UserCog />
                       <span>Users</span>
                     </Link>

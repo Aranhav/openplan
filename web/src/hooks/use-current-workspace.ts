@@ -2,24 +2,7 @@ import { useParams } from "@tanstack/react-router"
 import { useEffect } from "react"
 import { useModel } from "@/features/models/api"
 import { useWorkspaces } from "@/features/workspaces/api"
-
-const LAST_WORKSPACE_KEY = "openplan.lastWorkspace"
-
-function readLastWorkspace(): string | null {
-  try {
-    return window.localStorage.getItem(LAST_WORKSPACE_KEY)
-  } catch {
-    return null
-  }
-}
-
-function setLastWorkspace(id: string) {
-  try {
-    window.localStorage.setItem(LAST_WORKSPACE_KEY, id)
-  } catch {
-    // Storage can be unavailable (private mode); the choice then only lasts until the next visit.
-  }
-}
+import { pickWorkspace, setLastWorkspace } from "@/lib/last-workspace"
 
 /**
  * The workspace the user is working in: the one in the address, else the one that owns the model
@@ -35,8 +18,7 @@ export function useCurrentWorkspace() {
   const fromRoute = workspaces?.find((workspace) => workspace.id === routeWorkspaceId)
   // On a model's page the workspace is unknown until the model arrives; guessing would flash another.
   const awaitingModel = modelId !== undefined && model.isPending
-  const lastUsed = workspaces?.find((workspace) => workspace.id === readLastWorkspace())
-  const workspace = fromRoute ?? (awaitingModel ? undefined : (lastUsed ?? workspaces?.[0]))
+  const workspace = fromRoute ?? (awaitingModel ? undefined : pickWorkspace(workspaces ?? []))
 
   const rememberedId = fromRoute?.id
   useEffect(() => {

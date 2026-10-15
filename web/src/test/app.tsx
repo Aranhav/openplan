@@ -53,13 +53,13 @@ export function makeModel(overrides: Partial<ModelDto> = {}): ModelDto {
 export interface Session {
   needsSetup: boolean
   signedIn: boolean
-  /** What the me and workspaces endpoints return for a signed-in user. */
+  /** What the me endpoint returns for a signed-in user, workspaces included. */
   me: MeResponse
   /** How many times the me endpoint has been asked. */
   meRequests: number
 }
 
-/** Answers the setup-status, me and workspaces endpoints from `state`, which a test can change mid-flight. */
+/** Answers the setup-status and me endpoints from `state`, which a test can change mid-flight. */
 export function mockSession(initial: Partial<Session> = {}): Session {
   const state: Session = { needsSetup: false, signedIn: true, me, meRequests: 0, ...initial }
   server.use(
@@ -70,11 +70,6 @@ export function mockSession(initial: Partial<Session> = {}): Session {
         ? HttpResponse.json(state.me)
         : problem(401, "auth.unauthenticated", "Sign in to continue.")
     }),
-    http.get("/api/v1/workspaces", () =>
-      state.signedIn
-        ? HttpResponse.json(state.me.workspaces)
-        : problem(401, "auth.unauthenticated", "Sign in to continue."),
-    ),
   )
   return state
 }

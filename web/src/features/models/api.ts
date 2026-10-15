@@ -55,8 +55,10 @@ export function useDeleteModel() {
     mutationFn: ({ id }: Pick<ModelDto, "id" | "workspace_id">) =>
       unwrap(api.DELETE("/models/{id}", { params: { path: { id } } })),
     onSuccess: (_, { id, workspace_id }) => {
-      // Dropping the detail, not invalidating it: a refetch of a deleted model would only 404.
-      queryClient.removeQueries({ queryKey: queryKeys.model(id) })
+      // The model's page is still mounted until the caller navigates away, and a refetch of a
+      // deleted model would only 404. So mark its copy out of date without fetching it: anyone who
+      // opens it later asks the server and gets the 404.
+      queryClient.invalidateQueries({ queryKey: queryKeys.model(id), refetchType: "none" })
       return queryClient.invalidateQueries({ queryKey: queryKeys.models(workspace_id) })
     },
   })

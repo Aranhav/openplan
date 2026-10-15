@@ -8,23 +8,17 @@ import type { WorkspaceRole } from "./roles"
 type WorkspaceNameRequest = components["schemas"]["WorkspaceNameRequest"]
 type AddMemberRequest = components["schemas"]["AddMemberRequest"]
 
-/** The list sits in two caches (this one and `me`), so a change to a workspace refreshes both. */
+/** The workspace list is part of the signed-in user, so a change to a workspace refreshes that. */
 function refreshWorkspaces(queryClient: QueryClient) {
-  return Promise.all([
-    queryClient.invalidateQueries({ queryKey: queryKeys.workspaces, exact: true }),
-    queryClient.invalidateQueries({ queryKey: queryKeys.me }),
-  ])
+  return queryClient.invalidateQueries({ queryKey: queryKeys.me })
 }
 
+/**
+ * The signed-in user's workspaces. `GET /workspaces` returns the same list as `me`, which the
+ * route guard has already loaded, so this reads it from there: one cache, one request per refresh.
+ */
 export function useWorkspaces() {
-  const queryClient = useQueryClient()
-  return useQuery({
-    queryKey: queryKeys.workspaces,
-    queryFn: () => unwrap(api.GET("/workspaces")),
-    // The route guard has already loaded `me`, which carries the same list.
-    initialData: () => queryClient.getQueryData(meQuery.queryKey)?.workspaces,
-    initialDataUpdatedAt: () => queryClient.getQueryState(meQuery.queryKey)?.dataUpdatedAt,
-  })
+  return useQuery({ ...meQuery, select: (me) => me.workspaces })
 }
 
 export function useCreateWorkspace() {

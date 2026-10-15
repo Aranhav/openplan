@@ -48,6 +48,7 @@ afterEach(() => {
   server.resetHandlers()
   window.localStorage.clear()
   document.documentElement.classList.remove("dark")
+  document.cookie = "sidebar_state=; max-age=0; path=/"
 })
 
 afterAll(() => server.close())

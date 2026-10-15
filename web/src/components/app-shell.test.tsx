@@ -89,6 +89,35 @@ describe("the sidebar", () => {
   })
 })
 
+describe("the sidebar's saved state", () => {
+  it("starts open", async () => {
+    mockSession()
+    renderApp(`/w/${workspace.id}`)
+
+    await findSidebar()
+    expect(document.querySelector("[data-slot=sidebar]")).toHaveAttribute("data-state", "expanded")
+  })
+
+  it("starts collapsed when it was collapsed last time", async () => {
+    document.cookie = "sidebar_state=false; path=/"
+    mockSession()
+    renderApp(`/w/${workspace.id}`)
+
+    await findSidebar()
+    expect(document.querySelector("[data-slot=sidebar]")).toHaveAttribute("data-state", "collapsed")
+  })
+
+  it("saves a collapse for next time", async () => {
+    mockSession()
+    const typist = userEvent.setup()
+    renderApp(`/w/${workspace.id}`)
+    await findSidebar()
+    await typist.keyboard("{Control>}b{/Control}")
+
+    await waitFor(() => expect(document.cookie).toContain("sidebar_state=false"))
+  })
+})
+
 describe("the header", () => {
   it("names the workspace and the page", async () => {
     mockSession()
@@ -100,6 +129,15 @@ describe("the header", () => {
       `/w/${workspace.id}`,
     )
     expect(within(crumbs).getByText("Members")).toHaveAttribute("aria-current", "page")
+  })
+
+  it("keeps the workspace in view on a phone, where the sidebar is hidden", async () => {
+    mockSession()
+    renderApp(`/w/${workspace.id}`)
+
+    const crumbs = await screen.findByRole("navigation", { name: "breadcrumb" })
+    const workspaceCrumb = within(crumbs).getByRole("link", { name: "Acme Corp" }).closest("li")
+    expect(workspaceCrumb?.className).not.toMatch(/\bhidden\b/)
   })
 
   it("names the model when you are in one", async () => {
@@ -149,5 +187,18 @@ describe("on a phone", () => {
 
     await waitFor(() => expect(router.state.location.pathname).toBe(`/w/${workspace.id}/members`))
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument())
+  })
+
+  it("closes the sheet on a link to the page you are already on", async () => {
+    window.innerWidth = 375
+    mockSession()
+    const typist = userEvent.setup()
+    const { router } = renderApp(`/w/${workspace.id}`)
+    await typist.click(await screen.findByRole("button", { name: "Toggle Sidebar" }))
+    const sheet = await screen.findByRole("dialog", { name: "Sidebar" })
+    await typist.click(within(sheet).getByRole("link", { name: "Models" }))
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument())
+    expect(router.state.location.pathname).toBe(`/w/${workspace.id}`)
   })
 })

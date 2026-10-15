@@ -56,6 +56,16 @@ describe("the current workspace", () => {
     expect(router.history.length).toBe(1)
   })
 
+  it("is the last one used when you go home from inside the app", async () => {
+    mockSession({ me: meInTwoWorkspaces })
+    window.localStorage.setItem(LAST_WORKSPACE_KEY, globex.id)
+    const { router } = renderApp("/profile")
+    await screen.findByRole("heading", { name: "Profile" })
+    await router.navigate({ to: "/" })
+
+    await waitFor(() => expect(router.state.location.pathname).toBe(`/w/${globex.id}`))
+  })
+
   it("is the first one when none was used, or the one used is gone", async () => {
     mockSession({ me: meInTwoWorkspaces })
     window.localStorage.setItem(LAST_WORKSPACE_KEY, "0192f3a0-0000-7000-8000-0000000000ff")
@@ -68,8 +78,11 @@ describe("the current workspace", () => {
     mockSession({ me: { ...me, workspaces: [] } })
     const { router } = renderApp("/")
 
-    expect(await screen.findByText("You're not in any workspace yet")).toBeVisible()
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "You're not in any workspace yet" }),
+    ).toBeVisible()
     expect(screen.getByText("Ask an admin to add you to a workspace.")).toBeVisible()
+    expect(document.title).toBe("No workspace · OpenPlan")
     expect(screen.getByRole("button", { name: /No workspace/ })).toBeVisible()
     expect(router.state.location.pathname).toBe("/")
   })

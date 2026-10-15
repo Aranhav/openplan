@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from "@testing-library/react"
+import { fireEvent, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { HttpResponse, http } from "msw"
 import { describe, expect, it } from "vitest"
@@ -78,6 +78,33 @@ describe("the command palette", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
   })
 
+  it("ignores the shortcut while the keys are held down", async () => {
+    mockSession()
+    mockModels()
+    const typist = userEvent.setup()
+    renderApp(`/w/${workspace.id}`)
+    const palette = await openPalette(typist)
+    fireEvent.keyDown(document, { key: "k", ctrlKey: true, repeat: true })
+    await new Promise((resolve) => setTimeout(resolve, 100))
+
+    expect(palette).toBeVisible()
+  })
+
+  it("does not open over another dialog", async () => {
+    mockSession()
+    mockModels()
+    const typist = userEvent.setup()
+    renderApp(`/w/${workspace.id}`)
+    await typist.click(await screen.findByRole("button", { name: /Acme Corp/ }))
+    await typist.click(await screen.findByRole("menuitem", { name: "Create workspace" }))
+    const dialog = await screen.findByRole("dialog", { name: "Create workspace" })
+    await typist.keyboard("{Control>}k{/Control}")
+    await new Promise((resolve) => setTimeout(resolve, 100))
+
+    expect(screen.queryByRole("dialog", { name: "Command palette" })).not.toBeInTheDocument()
+    expect(dialog).toBeVisible()
+  })
+
   it("narrows the results as you type", async () => {
     mockSession()
     mockModels()
@@ -137,6 +164,22 @@ describe("the command palette", () => {
 
     await waitFor(() => expect(router.state.location.pathname).toBe(`/w/${globex.id}`))
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+  })
+
+  it("marks the current workspace", async () => {
+    mockSession({ me: meInTwoWorkspaces })
+    mockModels()
+    const typist = userEvent.setup()
+    renderApp(`/w/${workspace.id}`)
+    const palette = await openPalette(typist)
+
+    expect(within(palette).getByRole("option", { name: /Acme Corp/ })).toHaveAttribute(
+      "aria-current",
+      "true",
+    )
+    expect(within(palette).getByRole("option", { name: /Globex/ })).not.toHaveAttribute(
+      "aria-current",
+    )
   })
 
   it("changes the theme", async () => {

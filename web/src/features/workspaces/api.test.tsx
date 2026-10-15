@@ -3,6 +3,7 @@ import { renderHook, waitFor } from "@testing-library/react"
 import { HttpResponse, http } from "msw"
 import type { ReactNode } from "react"
 import { describe, expect, it, vi } from "vitest"
+import { useMe } from "@/features/auth/api"
 import { queryKeys } from "@/lib/api/keys"
 import { me, user, workspace } from "@/test/app"
 import { server } from "@/test/server"
@@ -30,20 +31,20 @@ function setup() {
   return { queryClient, wrapper }
 }
 
-/** Serves the workspace list and counts how often it is asked for. */
-function serveWorkspaces() {
+/** Serves the signed-in user, who carries the workspace list, and counts how often it is asked for. */
+function serveMe() {
   const requests = vi.fn()
   server.use(
-    http.get("/api/v1/workspaces", () => {
+    http.get("/api/v1/auth/me", () => {
       requests()
-      return HttpResponse.json(me.workspaces)
+      return HttpResponse.json(me)
     }),
   )
   return requests
 }
 
 describe("useWorkspaces", () => {
-  it("starts from the user the route guard already loaded, without asking again", async () => {
+  it("lists the workspaces of the user the route guard already loaded, without asking again", async () => {
     const { queryClient, wrapper } = setup()
     queryClient.setQueryData(queryKeys.me, me)
     const { result } = renderHook(() => useWorkspaces(), { wrapper })
@@ -52,18 +53,28 @@ describe("useWorkspaces", () => {
     expect(result.current.isFetching).toBe(false)
   })
 
-  it("fetches the list when nothing is known yet", async () => {
-    serveWorkspaces()
+  it("loads the signed-in user when nothing is known yet", async () => {
+    serveMe()
     const { wrapper } = setup()
     const { result } = renderHook(() => useWorkspaces(), { wrapper })
 
     expect(result.current.data).toBeUndefined()
     await waitFor(() => expect(result.current.data).toEqual(me.workspaces))
   })
+
+  it("shares its request with the signed-in user, so one refresh is one request", async () => {
+    const requests = serveMe()
+    const { wrapper } = setup()
+    const { result } = renderHook(() => ({ user: useMe(), list: useWorkspaces() }), { wrapper })
+    await waitFor(() => expect(result.current.list.data).toEqual(me.workspaces))
+    await waitFor(() => expect(result.current.user.data).toEqual(me))
+
+    expect(requests).toHaveBeenCalledOnce()
+  })
 })
 
 describe("workspace mutations", () => {
-  it("creating a workspace refreshes the list and the signed-in user", async () => {
+  it("creating a workspace refreshes the list", async () => {
     const created = { id: "0192f3a0-0000-7000-8000-000000000004", name: "Initech", role: "admin" }
     const posted = vi.fn()
     server.use(
@@ -72,7 +83,7 @@ describe("workspace mutations", () => {
         return HttpResponse.json(created, { status: 201 })
       }),
     )
-    const listRequests = serveWorkspaces()
+    const requests = serveMe()
     const { queryClient, wrapper } = setup()
     queryClient.setQueryData(queryKeys.me, me)
     const { result } = renderHook(() => ({ list: useWorkspaces(), create: useCreateWorkspace() }), {
@@ -81,8 +92,7 @@ describe("workspace mutations", () => {
     await result.current.create.mutateAsync({ name: "Initech" })
 
     expect(posted).toHaveBeenCalledWith({ name: "Initech" })
-    expect(listRequests).toHaveBeenCalledTimes(1)
-    expect(queryClient.getQueryState(queryKeys.me)?.isInvalidated).toBe(true)
+    expect(requests).toHaveBeenCalledOnce()
   })
 
   it("renaming a workspace refreshes the list", async () => {
@@ -93,7 +103,7 @@ describe("workspace mutations", () => {
         return HttpResponse.json({ ...workspace, name: "Acme Inc" })
       }),
     )
-    const listRequests = serveWorkspaces()
+    const requests = serveMe()
     const { queryClient, wrapper } = setup()
     queryClient.setQueryData(queryKeys.me, me)
     const { result } = renderHook(() => ({ list: useWorkspaces(), rename: useRenameWorkspace() }), {
@@ -102,8 +112,7 @@ describe("workspace mutations", () => {
     await result.current.rename.mutateAsync({ id: workspace.id, name: "Acme Inc" })
 
     expect(patched).toHaveBeenCalledWith({ name: "Acme Inc" })
-    expect(listRequests).toHaveBeenCalledTimes(1)
-    expect(queryClient.getQueryState(queryKeys.me)?.isInvalidated).toBe(true)
+    expect(requests).toHaveBeenCalledOnce()
   })
 })
 
@@ -157,7 +166,7 @@ describe("member queries and mutations", () => {
       }),
     )
     const requests = serveMembers()
-    const listRequests = serveWorkspaces()
+    const meRequests = serveMe()
     const { queryClient, wrapper } = setup()
     queryClient.setQueryData(queryKeys.me, me)
     const { result } = renderHook(
@@ -173,8 +182,7 @@ describe("member queries and mutations", () => {
 
     expect(patched).toHaveBeenCalledWith({ role: "planner" })
     await waitFor(() => expect(requests).toHaveBeenCalledTimes(2))
-    await waitFor(() => expect(listRequests).toHaveBeenCalledTimes(1))
-    expect(queryClient.getQueryState(queryKeys.me)?.isInvalidated).toBe(true)
+    await waitFor(() => expect(meRequests).toHaveBeenCalledOnce())
   })
 
   it("removing a member refreshes the members and the user's own workspaces", async () => {
@@ -186,7 +194,7 @@ describe("member queries and mutations", () => {
       }),
     )
     const requests = serveMembers()
-    const listRequests = serveWorkspaces()
+    const meRequests = serveMe()
     const { queryClient, wrapper } = setup()
     queryClient.setQueryData(queryKeys.me, me)
     const { result } = renderHook(
@@ -202,7 +210,6 @@ describe("member queries and mutations", () => {
 
     expect(removed).toHaveBeenCalledOnce()
     await waitFor(() => expect(requests).toHaveBeenCalledTimes(2))
-    await waitFor(() => expect(listRequests).toHaveBeenCalledTimes(1))
-    expect(queryClient.getQueryState(queryKeys.me)?.isInvalidated).toBe(true)
+    await waitFor(() => expect(meRequests).toHaveBeenCalledOnce())
   })
 })

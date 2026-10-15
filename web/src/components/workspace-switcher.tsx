@@ -1,6 +1,6 @@
 import { Link } from "@tanstack/react-router"
 import { Check, ChevronsUpDown, Plus } from "lucide-react"
-import { useState } from "react"
+import { useRef, useState } from "react"
 import { Badge } from "@/components/ui/badge"
 import {
   DropdownMenu,
@@ -25,7 +25,8 @@ import { useCurrentWorkspace } from "@/hooks/use-current-workspace"
 import { cn } from "@/lib/utils"
 
 export function WorkspaceSwitcher() {
-  const { isMobile } = useSidebar()
+  const { isMobile, setOpenMobile } = useSidebar()
+  const trigger = useRef<HTMLButtonElement>(null)
   const { data: me } = useMe()
   const { data: workspaces = [] } = useWorkspaces()
   const { workspace, isLoading } = useCurrentWorkspace()
@@ -53,6 +54,7 @@ export function WorkspaceSwitcher() {
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <SidebarMenuButton
+                ref={trigger}
                 size="lg"
                 className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
               >
@@ -87,7 +89,13 @@ export function WorkspaceSwitcher() {
               )}
               {workspaces.map((item) => (
                 <DropdownMenuItem key={item.id} asChild>
-                  <Link to="/w/$workspaceId" params={{ workspaceId: item.id }}>
+                  <Link
+                    to="/w/$workspaceId"
+                    params={{ workspaceId: item.id }}
+                    activeOptions={{ exact: true }}
+                    aria-current={item.id === workspace?.id ? "true" : undefined}
+                    onClick={() => setOpenMobile(false)}
+                  >
                     <Check className={cn("size-4", item.id !== workspace?.id && "invisible")} />
                     <span className="truncate">{item.name}</span>
                     <Badge variant="secondary" className="ml-auto">
@@ -109,7 +117,18 @@ export function WorkspaceSwitcher() {
           </DropdownMenu>
         </SidebarMenuItem>
       </SidebarMenu>
-      {canCreate && <CreateWorkspaceDialog open={creating} onOpenChange={setCreating} />}
+      {canCreate && (
+        <CreateWorkspaceDialog
+          open={creating}
+          onOpenChange={setCreating}
+          // The dialog was opened from a menu item, which is gone by now: give focus back to the
+          // button that opened the menu.
+          onCloseAutoFocus={(event) => {
+            event.preventDefault()
+            trigger.current?.focus()
+          }}
+        />
+      )}
     </>
   )
 }

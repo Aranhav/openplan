@@ -22,6 +22,8 @@ describe("the user menu", () => {
     const trigger = await screen.findByRole("button", { name: /Ada Lovelace/ })
     expect(trigger).toHaveTextContent("AL")
     expect(trigger).toHaveTextContent(user.email)
+    // The initials are decoration; they must not be read out as part of the name.
+    expect(trigger).toHaveAccessibleName(/^Ada Lovelace\s*ada@example\.com$/)
   })
 
   it("links to the profile", async () => {
@@ -74,22 +76,24 @@ describe("the user menu", () => {
   })
 
   it("stays disabled while signing out", async () => {
+    const session = mockSession()
     server.use(
       http.post("/api/v1/auth/logout", async () => {
         await delay(300)
+        session.signedIn = false
         return new HttpResponse(null, { status: 204 })
       }),
     )
-    mockSession()
     const typist = userEvent.setup()
     renderApp(`/w/${workspace.id}`)
     const menu = await openUserMenu(typist)
     await typist.click(within(menu).getByRole("menuitem", { name: "Sign out" }))
 
-    expect(within(menu).getByRole("menuitem", { name: "Sign out" })).toHaveAttribute(
-      "aria-disabled",
-      "true",
-    )
+    const signOut = within(menu).getByRole("menuitem", { name: "Sign out" })
+    expect(signOut).toHaveAttribute("aria-disabled", "true")
+    expect(signOut.querySelector("svg.animate-spin")).toBeInTheDocument()
+    // Let it finish, so nothing is still running when the next test starts.
+    expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument()
   })
 
   it("explains when signing out fails and lets the user try again", async () => {

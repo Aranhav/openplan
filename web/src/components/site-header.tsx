@@ -36,15 +36,15 @@ export function SiteHeader() {
       <Button
         variant="outline"
         size="sm"
-        className="ml-auto justify-between gap-2 text-muted-foreground sm:w-56"
+        className="ml-auto justify-between gap-2 text-muted-foreground md:w-56"
         aria-keyshortcuts={IS_APPLE ? "Meta+K" : "Control+K"}
         onClick={() => setSearching(true)}
       >
         <span className="flex items-center gap-2">
           <Search />
-          <span className="sr-only sm:not-sr-only">Search…</span>
+          <span className="sr-only md:not-sr-only">Search…</span>
         </span>
-        <Kbd className="hidden sm:inline-flex">{IS_APPLE ? "⌘K" : "Ctrl K"}</Kbd>
+        <Kbd className="hidden md:inline-flex">{IS_APPLE ? "⌘K" : "Ctrl K"}</Kbd>
       </Button>
       <CommandMenu open={searching} onOpenChange={setSearching} />
     </header>
@@ -78,15 +78,15 @@ function Breadcrumbs() {
   return page ? <Crumbs parent={parent} page={page} /> : null
 }
 
-/** On a phone only the page is shown; the workspace is already in the sidebar. */
+/** The workspace stays in view on a phone, where the sidebar is tucked away; its width is capped so the page keeps room. */
 function Crumbs({ parent, page }: { parent?: ReactNode; page: ReactNode }) {
   return (
     <Breadcrumb className="min-w-0">
       <BreadcrumbList className="flex-nowrap">
         {parent && (
           <>
-            <BreadcrumbItem className="hidden min-w-0 sm:inline-flex">{parent}</BreadcrumbItem>
-            <BreadcrumbSeparator className="hidden sm:block" />
+            <BreadcrumbItem className="max-w-30 shrink-0 md:max-w-64">{parent}</BreadcrumbItem>
+            <BreadcrumbSeparator />
           </>
         )}
         <BreadcrumbItem className="min-w-0">

@@ -1,7 +1,7 @@
 import { Link } from "@tanstack/react-router"
-import { Check, ChevronsUpDown, CircleUser, Loader2, LogOut, Palette } from "lucide-react"
+import { ChevronsUpDown, CircleUser, Loader2, LogOut, Palette } from "lucide-react"
 import { toast } from "sonner"
-import { useTheme } from "@/components/theme-provider"
+import { type Theme, useTheme } from "@/components/theme-provider"
 import { THEME_OPTIONS } from "@/components/theme-options"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import {
@@ -11,6 +11,8 @@ import {
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuPortal,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuSub,
   DropdownMenuSubContent,
@@ -26,7 +28,6 @@ import {
 import { Skeleton } from "@/components/ui/skeleton"
 import { useLogout, useMe } from "@/features/auth/api"
 import { errorDetail } from "@/lib/api/client"
-import { cn } from "@/lib/utils"
 
 function initials(name: string): string {
   const words = name.trim().split(/\s+/)
@@ -35,7 +36,7 @@ function initials(name: string): string {
 }
 
 export function NavUser() {
-  const { isMobile } = useSidebar()
+  const { isMobile, setOpenMobile } = useSidebar()
   const { data: me } = useMe()
   const { theme, setTheme } = useTheme()
   const logout = useLogout()
@@ -63,7 +64,7 @@ export function NavUser() {
   const { name, email } = me.user
   const identity = (
     <>
-      <Avatar className="size-8 rounded-lg">
+      <Avatar aria-hidden className="size-8 rounded-lg">
         <AvatarFallback className="rounded-lg">{initials(name)}</AvatarFallback>
       </Avatar>
       <div className="grid flex-1 text-left text-sm leading-tight">
@@ -98,7 +99,7 @@ export function NavUser() {
             <DropdownMenuSeparator />
             <DropdownMenuGroup>
               <DropdownMenuItem asChild>
-                <Link to="/profile">
+                <Link to="/profile" onClick={() => setOpenMobile(false)}>
                   <CircleUser />
                   Profile
                 </Link>
@@ -110,18 +111,17 @@ export function NavUser() {
                 </DropdownMenuSubTrigger>
                 <DropdownMenuPortal>
                   <DropdownMenuSubContent>
-                    {THEME_OPTIONS.map(({ value, label, icon: Icon }) => (
-                      <DropdownMenuItem
-                        key={value}
-                        role="menuitemradio"
-                        aria-checked={theme === value}
-                        onSelect={() => setTheme(value)}
-                      >
-                        <Icon />
-                        {label}
-                        <Check className={cn("ml-auto", theme !== value && "invisible")} />
-                      </DropdownMenuItem>
-                    ))}
+                    <DropdownMenuRadioGroup
+                      value={theme}
+                      onValueChange={(value) => setTheme(value as Theme)}
+                    >
+                      {THEME_OPTIONS.map(({ value, label, icon: Icon }) => (
+                        <DropdownMenuRadioItem key={value} value={value}>
+                          <Icon />
+                          {label}
+                        </DropdownMenuRadioItem>
+                      ))}
+                    </DropdownMenuRadioGroup>
                   </DropdownMenuSubContent>
                 </DropdownMenuPortal>
               </DropdownMenuSub>

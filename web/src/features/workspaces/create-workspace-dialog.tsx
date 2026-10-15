@@ -38,12 +38,18 @@ type CreateWorkspaceValues = z.infer<typeof schema>
 interface CreateWorkspaceDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
+  /** Called as the dialog closes; preventing the event stops focus returning to where it was. */
+  onCloseAutoFocus?: (event: Event) => void
 }
 
-export function CreateWorkspaceDialog({ open, onOpenChange }: CreateWorkspaceDialogProps) {
+export function CreateWorkspaceDialog({
+  open,
+  onOpenChange,
+  onCloseAutoFocus,
+}: CreateWorkspaceDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+      <DialogContent onCloseAutoFocus={onCloseAutoFocus}>
         <DialogHeader>
           <DialogTitle>Create workspace</DialogTitle>
           <DialogDescription>

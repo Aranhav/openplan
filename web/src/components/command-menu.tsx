@@ -21,6 +21,8 @@ import { roleLabels } from "@/features/workspaces/roles"
 import { useCurrentWorkspace } from "@/hooks/use-current-workspace"
 import { cn } from "@/lib/utils"
 
+const OPEN_DIALOG = '[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"]'
+
 interface CommandMenuProps {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -36,8 +38,13 @@ export function CommandMenu({ open, onOpenChange }: CommandMenuProps) {
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       const shortcut = (event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey
-      if (shortcut && event.key.toLowerCase() === "k") {
-        event.preventDefault()
+      if (!shortcut || event.key.toLowerCase() !== "k") {
+        return
+      }
+      // The browser has its own use for this shortcut (Firefox focuses its search bar); take it
+      // over in every case, but only act on a fresh press, and never from behind another dialog.
+      event.preventDefault()
+      if (!event.repeat && (open || !document.querySelector(OPEN_DIALOG))) {
         onOpenChange(!open)
       }
     }
@@ -115,6 +122,7 @@ export function CommandMenu({ open, onOpenChange }: CommandMenuProps) {
               <CommandItem
                 key={item.id}
                 value={`Switch to ${item.name}`}
+                aria-current={item.id === workspace?.id ? "true" : undefined}
                 onSelect={() =>
                   run(() => navigate({ to: "/w/$workspaceId", params: { workspaceId: item.id } }))
                 }

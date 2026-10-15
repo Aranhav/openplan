@@ -113,7 +113,7 @@ describe("model mutations", () => {
     await waitFor(() => expect(listRequests).toHaveBeenCalledTimes(2))
   })
 
-  it("deleting a model forgets its page's copy and refreshes the list", async () => {
+  it("deleting a model refreshes the list and marks its page's copy out of date", async () => {
     const deleted = vi.fn()
     server.use(
       http.delete(`/api/v1/models/${model.id}`, () => {
@@ -126,15 +126,39 @@ describe("model mutations", () => {
     queryClient.setQueryData(queryKeys.model(model.id), model)
     const { result } = renderHook(
       () => ({ models: useModels(workspace.id), remove: useDeleteModel() }),
-      {
-        wrapper,
-      },
+      { wrapper },
     )
     await waitFor(() => expect(result.current.models.isSuccess).toBe(true))
     await result.current.remove.mutateAsync(model)
 
     expect(deleted).toHaveBeenCalledOnce()
-    expect(queryClient.getQueryData(queryKeys.model(model.id))).toBeUndefined()
+    expect(queryClient.getQueryState(queryKeys.model(model.id))?.isInvalidated).toBe(true)
     await waitFor(() => expect(listRequests).toHaveBeenCalledTimes(2))
+  })
+
+  it("deleting a model leaves a page that still shows it alone, instead of fetching it again", async () => {
+    const detailRequests = vi.fn()
+    server.use(
+      http.get(`/api/v1/models/${model.id}`, () => {
+        detailRequests()
+        return HttpResponse.json(model)
+      }),
+      http.delete(`/api/v1/models/${model.id}`, () => new HttpResponse(null, { status: 204 })),
+    )
+    serveList([])
+    const { wrapper } = setup()
+    const { result, rerender } = renderHook(
+      () => ({ detail: useModel(model.id), remove: useDeleteModel() }),
+      { wrapper },
+    )
+    await waitFor(() => expect(result.current.detail.isSuccess).toBe(true))
+    await result.current.remove.mutateAsync(model)
+    rerender()
+    // Give a wrongly started fetch the time to show up.
+    await new Promise((resolve) => setTimeout(resolve, 100))
+
+    expect(detailRequests).toHaveBeenCalledOnce()
+    expect(result.current.detail.data).toEqual(model)
+    expect(result.current.detail.isError).toBe(false)
   })
 })
