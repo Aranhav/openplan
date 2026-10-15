@@ -119,6 +119,12 @@ impl SummaryCache {
         );
     }
 
+    /// How many summaries are cached.
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.lock().values().map(HashMap::len).sum()
+    }
+
     /// The entries, which stay consistent even if a thread panicked while holding the lock.
     fn lock(&self) -> MutexGuard<'_, Entries> {
         self.entries.lock().unwrap_or_else(PoisonError::into_inner)

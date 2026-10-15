@@ -7,7 +7,7 @@ use chrono::{Datelike, NaiveDate};
 use crate::calendar::Calendar;
 use crate::command::{CellEdit, ChangeSet, Command, CoordToken, LineItemPatch};
 use crate::error::{CellIssue, EngineError, FormulaError};
-use crate::formula::{ColumnSource, Completion, completions};
+use crate::formula::{ColumnSource, Completion, completions, parse};
 use crate::graph::Graph;
 use crate::ids::{LineItemId, ListId, VersionId};
 use crate::shape::{Axis, Shape};
@@ -179,7 +179,8 @@ impl Model {
     /// returns the type it would have, which is that of the line item's format, or every problem
     /// that setting it would be rejected for. That includes problems with the dimensions of the
     /// line items it reads and circular references, which are found by trying the formula on a
-    /// copy of the model, so the cost is that of setting it.
+    /// copy of the model, so the cost is that of setting it. A formula that does not parse is
+    /// refused without a copy, which is most of what is wrong while one is typed.
     ///
     /// A blank formula is none, which makes the line item an input and is always valid. A line
     /// item that does not exist is reported as a problem with code `structure.not_found`.
@@ -191,12 +192,18 @@ impl Model {
         if src.trim().is_empty() {
             return Ok(ty);
         }
+        if let Err(errors) = parse(src) {
+            return Err(errors);
+        }
         let patch = LineItemPatch {
             formula: Some(Some(src.to_string())),
             ..LineItemPatch::default()
         };
-        self.clone()
-            .apply(Command::UpdateLineItem { id: li, patch })
+        let mut copy = self.clone();
+        // A copy shares the cached summaries with the model, and a structural change clears them
+        // for both; the copy gets a cache of its own.
+        copy.summaries = SummaryCache::default();
+        copy.apply(Command::UpdateLineItem { id: li, patch })
             .map(|_| ty)
             .map_err(formula_errors)
     }
@@ -882,6 +889,7 @@ fn blank_value(ty: &ValueType) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::calendar::TimeLevel;
     use crate::command::ItemSpec;
     use crate::ids::{ItemId, ModuleId};
     use crate::structure::{AxisSpec, LineItem, SummaryMethod, TimeScale, VersionsScope};
@@ -980,5 +988,62 @@ mod tests {
             .unwrap();
         assert!(changes.changed_line_items.is_empty());
         assert!(Arc::ptr_eq(&before, &model.inputs[&units]));
+    }
+
+    #[test]
+    fn checking_a_formula_leaves_the_summary_cache_of_the_model_alone() {
+        let mut model = Model::new(calendar());
+        let module = ModuleId::new();
+        let (units, revenue) = (LineItemId::new(), LineItemId::new());
+        let line_item = |id, name: &str, ordinal| {
+            Command::CreateLineItem(LineItem {
+                id,
+                module,
+                name: name.to_string(),
+                ordinal,
+                format: Format::number(),
+                formula: None,
+                summary: SummaryMethod::Sum,
+                time_summary: None,
+                applies_to: None,
+                time_scale: TimeScale::Module,
+                versions: VersionsScope::Module,
+                notes: String::new(),
+                code: None,
+                read_access_driver: None,
+                write_access_driver: None,
+            })
+        };
+        model
+            .apply_batch(vec![
+                Command::CreateModule {
+                    id: module,
+                    name: "Plan".to_string(),
+                    axes: vec![AxisSpec::Time {
+                        level: TimeLevel::Month,
+                        range: None,
+                    }],
+                    functional_area: String::new(),
+                },
+                line_item(units, "Units", 0),
+                line_item(revenue, "Revenue", 1),
+            ])
+            .unwrap();
+        let quarters = LevelSpec(vec![Axis::Time {
+            level: TimeLevel::Quarter,
+            range: None,
+        }]);
+        let q1 = [CoordToken::Period("Q1 FY26".to_string())];
+        model.read_summary(units, &q1, &quarters).unwrap();
+        assert_eq!(model.summaries.len(), 1);
+
+        assert_eq!(
+            model.check_formula(revenue, "Units * 3"),
+            Ok(ValueType::Number)
+        );
+        assert!(model.check_formula(revenue, "Units *").is_err());
+        assert!(model.check_formula(revenue, "Revenue").is_err());
+
+        assert_eq!(model.summaries.len(), 1);
     }
 }
