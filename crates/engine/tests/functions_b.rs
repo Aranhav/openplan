@@ -1912,28 +1912,27 @@ fn irr_over_a_long_timeline_ignores_flows_too_small_to_see() {
 fn irr_over_a_long_timeline_never_uses_subnormal_weights() {
     // Over 240 flows the weights of the first flows at the lowest rates of the search go
     // subnormal and give the wrong sign. The only root is at -97 %, below the lowest rate that
-    // the search scans for 240 flows, so the answer is 0 or that root.
+    // the search scans for 240 flows, so the answer is 0.
     let mut book = Book::with_calendar(calendar(1, 2026, 20));
     let mut flows = vec![-1000.0, 30.0];
     flows.resize(240, 0.0);
     book.series("Thirty", &flows);
     let rate = book.numbers("IRR(Thirty)", 1)[0];
-    assert!(rate == 0.0 || (rate + 0.97).abs() < 1e-6, "{rate}");
+    assert_eq!(rate, 0.0, "{rate}");
 }
 
 #[test]
 fn irr_over_a_long_timeline_never_reports_a_non_root() {
     // The only root of these 240 flows is at growth 1e170^(1/100), about 50.1, which is above the
-    // highest growth the search scans for 240 flows. Above about 40 the weight of the late flow
-    // underflows, and the sign change that gave was no root (a rate of 40.5).
+    // highest growth the search scans for 240 flows, so the answer is 0. Above about 40 the weight
+    // of the late flow underflows, and the sign change that gave a rate of 40.5 was no root.
     let mut book = Book::with_calendar(calendar(1, 2026, 20));
     let mut flows = vec![0.0; 240];
     flows[100] = -1.0;
     flows[200] = 1e170;
     book.series("Late", &flows);
-    let root = 10f64.powf(1.7) - 1.0;
     let rate = book.numbers("IRR(Late)", 1)[0];
-    assert!(rate == 0.0 || (rate - root).abs() < 1e-6, "{rate}");
+    assert_eq!(rate, 0.0, "{rate}");
 }
 
 #[test]

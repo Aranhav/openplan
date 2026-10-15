@@ -94,7 +94,7 @@ const IRR_STEPS: usize = 100;
 const IRR_TOLERANCE: f64 = 1e-10;
 /// The sign-change search scans the growth factors `1 + rate`, log-spaced from the lowest growth
 /// (see [`lowest_growth`]) to the highest (see [`highest_growth`]), in `IRR_GRID` points. The
-/// lowest growth is at most `IRR_LOW`, the rate of -99.999 %, and the highest at most `IRR_HIGH`,
+/// lowest growth is at least `IRR_LOW`, the rate of -99.999 %, and the highest at most `IRR_HIGH`,
 /// the rate of 1000 %.
 const IRR_LOW: f64 = 1e-5;
 const IRR_HIGH: f64 = 1001.0;
@@ -102,7 +102,7 @@ const IRR_GRID: usize = 1000;
 /// The least weight the search gives a flow. At the lowest growth the first flow's weight is the
 /// growth to the power of the number of flows less one, and at the highest growth the last flow's
 /// weight is the reciprocal of that power. Below the normal range of a double, from about 2.2e-308,
-/// a weight loses precision and can lose its sign.
+/// a weight loses precision, and one that underflows to 0 loses its magnitude.
 const IRR_LEAST_WEIGHT: f64 = 1e-300;
 
 /// The rate at which the values of `series` have a present value of 0: where Newton's method
@@ -181,10 +181,10 @@ fn first_sign_change(series: &[f64]) -> Option<f64> {
         if value == 0.0 {
             continue;
         }
-        if let Some((low, at_low)) = previous
-            && (at_low < 0.0) != (value < 0.0)
+        if let Some((previous_rate, at_previous)) = previous
+            && (at_previous < 0.0) != (value < 0.0)
         {
-            return Some(bisect(series, low, rate, at_low < 0.0));
+            return Some(bisect(series, previous_rate, rate, at_previous < 0.0));
         }
         previous = Some((rate, value));
     }
