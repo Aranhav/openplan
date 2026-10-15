@@ -42,7 +42,7 @@ async fn serve() -> anyhow::Result<()> {
         .with_context(|| format!("OPENPLAN_LOG is not a valid filter: {}", config.log))?;
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
-    let db = db::connect(&config.database_url).await?;
+    let db = db::connect(&config.database_url, config.db_pool_size).await?;
     db::MIGRATOR
         .run(&db)
         .await

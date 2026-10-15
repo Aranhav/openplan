@@ -5,6 +5,7 @@ use anyhow::Context;
 const DEFAULT_PORT: u16 = 8080;
 const DEFAULT_LOG: &str = "info";
 const DEFAULT_TRUSTED_PROXY_HOPS: u8 = 0;
+const DEFAULT_DB_POOL_SIZE: u32 = 10;
 
 #[derive(Clone)]
 pub struct Config {
@@ -15,6 +16,8 @@ pub struct Config {
     /// How many proxies sit in front of the server and append to `X-Forwarded-For`.
     /// Zero means the peer address is the client address.
     pub trusted_proxy_hops: u8,
+    /// The most database connections the server holds open at once.
+    pub db_pool_size: u32,
 }
 
 impl fmt::Debug for Config {
@@ -25,6 +28,7 @@ impl fmt::Debug for Config {
             .field("bind", &self.bind)
             .field("log", &self.log)
             .field("trusted_proxy_hops", &self.trusted_proxy_hops)
+            .field("db_pool_size", &self.db_pool_size)
             .finish_non_exhaustive()
     }
 }
@@ -62,12 +66,23 @@ impl Config {
             })?,
             None => DEFAULT_TRUSTED_PROXY_HOPS,
         };
+        let db_pool_size = match value("OPENPLAN_DB_POOL_SIZE") {
+            Some(size) => size
+                .parse::<u32>()
+                .ok()
+                .filter(|&size| size > 0)
+                .with_context(|| {
+                    format!("OPENPLAN_DB_POOL_SIZE is not a number greater than 0: {size}")
+                })?,
+            None => DEFAULT_DB_POOL_SIZE,
+        };
         Ok(Config {
             database_url: required("DATABASE_URL")?,
             public_url: required("OPENPLAN_PUBLIC_URL")?,
             bind,
             log: value("OPENPLAN_LOG").unwrap_or_else(|| DEFAULT_LOG.to_string()),
             trusted_proxy_hops,
+            db_pool_size,
         })
     }
 
@@ -233,6 +248,40 @@ mod tests {
             err.to_string().contains("OPENPLAN_TRUSTED_PROXY_HOPS"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn db_pool_size_defaults_to_ten() {
+        let config = config_from(&[
+            ("DATABASE_URL", "postgres://localhost/openplan"),
+            ("OPENPLAN_PUBLIC_URL", "http://localhost:8080"),
+        ])
+        .unwrap();
+        assert_eq!(config.db_pool_size, 10);
+    }
+
+    #[test]
+    fn db_pool_size_is_read_and_trimmed() {
+        let config = config_from(&[
+            ("DATABASE_URL", "postgres://localhost/openplan"),
+            ("OPENPLAN_PUBLIC_URL", "http://localhost:8080"),
+            ("OPENPLAN_DB_POOL_SIZE", " 4 "),
+        ])
+        .unwrap();
+        assert_eq!(config.db_pool_size, 4);
+    }
+
+    #[test]
+    fn invalid_db_pool_size_is_error() {
+        for size in ["0", "-1", "many", "4.5"] {
+            let err = config_from(&[
+                ("DATABASE_URL", "postgres://localhost/openplan"),
+                ("OPENPLAN_PUBLIC_URL", "http://localhost:8080"),
+                ("OPENPLAN_DB_POOL_SIZE", size),
+            ])
+            .unwrap_err();
+            assert!(err.to_string().contains("OPENPLAN_DB_POOL_SIZE"), "{err}");
+        }
     }
 
     #[test]

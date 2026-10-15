@@ -50,6 +50,7 @@ The browser only talks to the Vercel origin. Vercel rewrites `/api/*` to the Ren
 | `PORT` | unset | Port to listen on, on all interfaces, when `OPENPLAN_BIND` is unset. Render sets it. |
 | `OPENPLAN_LOG` | `info` | Log filter. |
 | `OPENPLAN_TRUSTED_PROXY_HOPS` | `0` | Number of proxies in front of the server. See below. |
+| `OPENPLAN_DB_POOL_SIZE` | `10` | Most database connections the server holds open. A request that finds none free waits up to 10 seconds, then fails with a 500. Keep it below your database's connection limit. |
 
 ### Trusted proxy hops
 
