@@ -1,6 +1,6 @@
 mod common;
 
-use axum::http::{StatusCode, header};
+use axum::http::{Method, StatusCode, header};
 use common::{TestApp, TestResponse};
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -59,6 +59,33 @@ async fn admin_id(app: &mut TestApp) -> String {
         .as_str()
         .unwrap()
         .to_string()
+}
+
+async fn change_password_request(app: &mut TestApp, current: &str, new: &str) -> TestResponse {
+    app.post(
+        "/api/v1/auth/me/password",
+        Some(json!({ "current_password": current, "new_password": new })),
+    )
+    .await
+}
+
+/// Makes every statement that deletes sessions fail, so that a password change
+/// or a user update fails after its other writes.
+async fn fail_session_deletes(pool: &PgPool) {
+    sqlx::query(
+        "CREATE FUNCTION fail_session_delete() RETURNS trigger LANGUAGE plpgsql AS
+         $$ BEGIN RAISE EXCEPTION 'injected failure'; END $$",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "CREATE TRIGGER fail_session_delete BEFORE DELETE ON sessions
+         FOR EACH STATEMENT EXECUTE FUNCTION fail_session_delete()",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
 }
 
 fn assert_problem(response: &TestResponse, status: StatusCode, code: &str) {
@@ -403,7 +430,7 @@ async fn unknown_user_is_not_found(pool: PgPool) {
             Some(json!({ "name": "Nobody" })),
         )
         .await;
-    assert_problem(&malformed, StatusCode::NOT_FOUND, "user.not_found");
+    assert_problem(&malformed, StatusCode::NOT_FOUND, "not_found");
 }
 
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
@@ -472,4 +499,227 @@ async fn openapi_documents_the_user_routes(pool: PgPool) {
     assert!(paths["/api/v1/auth/me"]["patch"].is_object());
     assert!(paths["/api/v1/auth/me/password"]["post"].is_object());
     assert!(response.json["components"]["schemas"]["UserDto"].is_object());
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn admin_renames_another_user_and_keeps_their_session(pool: PgPool) {
+    let mut admin = TestApp::new(pool.clone());
+    setup_admin(&mut admin).await;
+    let planner_id = create_planner(&mut admin).await;
+    let mut planner = TestApp::new(pool);
+    assert_eq!(
+        login(&mut planner, PLANNER_EMAIL, PASSWORD).await.status,
+        StatusCode::OK
+    );
+
+    let renamed = admin
+        .patch(
+            &format!("/api/v1/users/{planner_id}"),
+            Some(json!({ "name": "Patricia Planner" })),
+        )
+        .await;
+
+    assert_eq!(renamed.status, StatusCode::OK, "{}", renamed.text);
+    assert_eq!(renamed.json["name"], "Patricia Planner");
+    assert_eq!(renamed.json["email"], PLANNER_EMAIL);
+    assert_eq!(renamed.json["disabled"], false);
+    let me = planner.get("/api/v1/auth/me").await;
+    assert_eq!(me.status, StatusCode::OK, "{}", me.text);
+    assert_eq!(me.json["user"]["name"], "Patricia Planner");
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn admin_promotes_user_to_instance_admin(pool: PgPool) {
+    let mut admin = TestApp::new(pool.clone());
+    setup_admin(&mut admin).await;
+    let planner_id = create_planner(&mut admin).await;
+    let mut planner = TestApp::new(pool);
+    assert_eq!(
+        login(&mut planner, PLANNER_EMAIL, PASSWORD).await.status,
+        StatusCode::OK
+    );
+    assert_problem(
+        &planner.get("/api/v1/users").await,
+        StatusCode::FORBIDDEN,
+        "auth.forbidden",
+    );
+
+    let promoted = admin
+        .patch(
+            &format!("/api/v1/users/{planner_id}"),
+            Some(json!({ "is_instance_admin": true })),
+        )
+        .await;
+
+    assert_eq!(promoted.status, StatusCode::OK, "{}", promoted.text);
+    assert_eq!(promoted.json["is_instance_admin"], true);
+    let listed = planner.get("/api/v1/users").await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.text);
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn admin_reenables_disabled_user(pool: PgPool) {
+    let mut admin = TestApp::new(pool.clone());
+    setup_admin(&mut admin).await;
+    let planner_id = create_planner(&mut admin).await;
+    let mut planner = TestApp::new(pool);
+    let target = format!("/api/v1/users/{planner_id}");
+    admin
+        .patch(&target, Some(json!({ "disabled": true })))
+        .await;
+    assert_problem(
+        &login(&mut planner, PLANNER_EMAIL, PASSWORD).await,
+        StatusCode::UNAUTHORIZED,
+        "auth.invalid_credentials",
+    );
+
+    let reenabled = admin
+        .patch(&target, Some(json!({ "disabled": false })))
+        .await;
+
+    assert_eq!(reenabled.status, StatusCode::OK, "{}", reenabled.text);
+    assert_eq!(reenabled.json["disabled"], false);
+    assert_eq!(
+        login(&mut planner, PLANNER_EMAIL, PASSWORD).await.status,
+        StatusCode::OK
+    );
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn admin_cannot_set_own_password_here(pool: PgPool) {
+    let mut admin = TestApp::new(pool);
+    setup_admin(&mut admin).await;
+    let own_id = admin_id(&mut admin).await;
+
+    let response = admin
+        .patch(
+            &format!("/api/v1/users/{own_id}"),
+            Some(json!({ "password": NEW_PASSWORD })),
+        )
+        .await;
+
+    assert_problem(&response, StatusCode::UNPROCESSABLE_ENTITY, "validation");
+    assert_eq!(field_names(&response), ["password"]);
+    assert_eq!(
+        response.json["errors"][0]["message"],
+        "Use your profile to change your own password."
+    );
+    assert_eq!(admin.get("/api/v1/auth/me").await.status, StatusCode::OK);
+    assert_eq!(
+        login(&mut admin, ADMIN_EMAIL, PASSWORD).await.status,
+        StatusCode::OK
+    );
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn user_update_is_atomic_with_session_revocation(pool: PgPool) {
+    let mut admin = TestApp::new(pool.clone());
+    setup_admin(&mut admin).await;
+    let planner_id = create_planner(&mut admin).await;
+    let mut planner = TestApp::new(pool.clone());
+    assert_eq!(
+        login(&mut planner, PLANNER_EMAIL, PASSWORD).await.status,
+        StatusCode::OK
+    );
+    let target = format!("/api/v1/users/{planner_id}");
+    fail_session_deletes(&pool).await;
+
+    let disabled = admin
+        .patch(&target, Some(json!({ "disabled": true })))
+        .await;
+    assert_problem(&disabled, StatusCode::INTERNAL_SERVER_ERROR, "internal");
+    let reset = admin
+        .patch(&target, Some(json!({ "password": NEW_PASSWORD })))
+        .await;
+    assert_problem(&reset, StatusCode::INTERNAL_SERVER_ERROR, "internal");
+
+    assert_eq!(
+        login(&mut planner, PLANNER_EMAIL, PASSWORD).await.status,
+        StatusCode::OK
+    );
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn password_change_is_atomic_with_session_revocation(pool: PgPool) {
+    let mut app = TestApp::new(pool.clone());
+    setup_admin(&mut app).await;
+    fail_session_deletes(&pool).await;
+
+    let response = change_password_request(&mut app, PASSWORD, NEW_PASSWORD).await;
+
+    assert_problem(&response, StatusCode::INTERNAL_SERVER_ERROR, "internal");
+    assert_eq!(
+        login(&mut app, ADMIN_EMAIL, PASSWORD).await.status,
+        StatusCode::OK
+    );
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn password_change_is_rate_limited_after_10_wrong_attempts(pool: PgPool) {
+    let mut app = TestApp::new(pool);
+    setup_admin(&mut app).await;
+
+    for attempt in 1..=10 {
+        let response = change_password_request(&mut app, "not the password", NEW_PASSWORD).await;
+        assert_eq!(
+            response.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "attempt {attempt}"
+        );
+    }
+    let blocked = change_password_request(&mut app, "not the password", NEW_PASSWORD).await;
+
+    assert_problem(&blocked, StatusCode::TOO_MANY_REQUESTS, "auth.rate_limited");
+    let retry_after: u64 = blocked.headers[header::RETRY_AFTER]
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!((1..=900).contains(&retry_after), "{retry_after}");
+    let correct = change_password_request(&mut app, PASSWORD, NEW_PASSWORD).await;
+    assert_eq!(correct.status, StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn successful_password_change_resets_the_rate_limit(pool: PgPool) {
+    let mut app = TestApp::new(pool);
+    setup_admin(&mut app).await;
+
+    for _ in 0..9 {
+        change_password_request(&mut app, "not the password", NEW_PASSWORD).await;
+    }
+    let changed = change_password_request(&mut app, PASSWORD, NEW_PASSWORD).await;
+    assert_eq!(changed.status, StatusCode::NO_CONTENT, "{}", changed.text);
+
+    for attempt in 1..=10 {
+        let response =
+            change_password_request(&mut app, "not the password", "another passphrase").await;
+        assert_eq!(
+            response.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "attempt {attempt}"
+        );
+    }
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn users_api_responses_are_not_cacheable(pool: PgPool) {
+    let mut admin = TestApp::new(pool);
+    setup_admin(&mut admin).await;
+
+    assert_no_store(&admin.get("/api/v1/users").await);
+    let rejected = admin
+        .request_without_csrf(
+            Method::POST,
+            "/api/v1/users",
+            Some(json!({
+                "email": "x@acme.com",
+                "name": "Xan",
+                "password": PASSWORD,
+                "is_instance_admin": false,
+            })),
+        )
+        .await;
+    assert_problem(&rejected, StatusCode::FORBIDDEN, "auth.csrf");
+    assert_no_store(&rejected);
 }

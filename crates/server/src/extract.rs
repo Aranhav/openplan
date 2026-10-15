@@ -2,8 +2,8 @@ use std::error::Error as _;
 
 use axum::{
     Json,
-    extract::{FromRequest, Request, rejection::JsonRejection},
-    http::StatusCode,
+    extract::{FromRequest, FromRequestParts, Path, Request, rejection::JsonRejection},
+    http::{StatusCode, request::Parts},
 };
 use serde::de::DeserializeOwned;
 
@@ -26,6 +26,25 @@ where
     async fn from_request(req: Request, state: &S) -> Result<Self, AppError> {
         let Json(value) = Json::<T>::from_request(req, state).await?;
         Ok(ApiJson(value))
+    }
+}
+
+/// A path parameter whose rejections are `application/problem+json` 404s: a
+/// parameter that does not parse names no resource.
+pub struct ApiPath<T>(pub T);
+
+impl<S, T> FromRequestParts<S> for ApiPath<T>
+where
+    S: Send + Sync,
+    T: DeserializeOwned + Send,
+{
+    type Rejection = AppError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, AppError> {
+        let Path(value) = Path::<T>::from_request_parts(parts, state)
+            .await
+            .map_err(|_| AppError::NotFound)?;
+        Ok(ApiPath(value))
     }
 }
 
@@ -90,11 +109,12 @@ mod tests {
         Router,
         body::{Body, to_bytes},
         http::{Request, header},
-        routing::post,
+        routing::{get, post},
     };
     use serde::Deserialize;
     use serde_json::Value;
     use tower::ServiceExt;
+    use uuid::Uuid;
 
     #[derive(Deserialize)]
     struct Sample {
@@ -205,5 +225,47 @@ mod tests {
             assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
             assert_eq!(json["code"], "unsupported_media_type");
         }
+    }
+
+    async fn get_path(uri: &str) -> (StatusCode, Option<String>, String) {
+        let router = Router::new().route(
+            "/{id}",
+            get(|ApiPath(id): ApiPath<Uuid>| async move { id.to_string() }),
+        );
+        let response = router
+            .oneshot(Request::get(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let content_type = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .map(|value| value.to_str().unwrap().to_string());
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (
+            status,
+            content_type,
+            String::from_utf8(bytes.to_vec()).unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn well_formed_path_parameter_is_extracted() {
+        let id = Uuid::now_v7();
+
+        let (status, _, body) = get_path(&format!("/{id}")).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, id.to_string());
+    }
+
+    #[tokio::test]
+    async fn malformed_path_parameter_is_a_problem_not_found() {
+        let (status, content_type, body) = get_path("/not-a-uuid").await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(content_type.unwrap(), "application/problem+json");
+        let json: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(json["code"], "not_found");
     }
 }

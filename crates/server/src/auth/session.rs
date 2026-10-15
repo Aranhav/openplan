@@ -1,5 +1,5 @@
 use sha2::{Digest, Sha256};
-use sqlx::PgPool;
+use sqlx::{PgExecutor, PgPool};
 use uuid::Uuid;
 
 use crate::error::AppResult;
@@ -83,7 +83,7 @@ pub async fn delete(db: &PgPool, raw: &str) -> AppResult<()> {
     Ok(())
 }
 
-pub async fn delete_all_for_user(db: &PgPool, user_id: Uuid) -> AppResult<()> {
+pub async fn delete_all_for_user(db: impl PgExecutor<'_>, user_id: Uuid) -> AppResult<()> {
     sqlx::query("DELETE FROM sessions WHERE user_id = $1")
         .bind(user_id)
         .execute(db)
@@ -93,7 +93,11 @@ pub async fn delete_all_for_user(db: &PgPool, user_id: Uuid) -> AppResult<()> {
 
 /// Deletes every session of `user_id` except the one whose raw token is
 /// `keep_raw_token`.
-pub async fn delete_others(db: &PgPool, user_id: Uuid, keep_raw_token: &str) -> AppResult<()> {
+pub async fn delete_others(
+    db: impl PgExecutor<'_>,
+    user_id: Uuid,
+    keep_raw_token: &str,
+) -> AppResult<()> {
     sqlx::query("DELETE FROM sessions WHERE user_id = $1 AND id_hash <> $2")
         .bind(user_id)
         .bind(hash_token(keep_raw_token))

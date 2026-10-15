@@ -1,6 +1,6 @@
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::State,
     http::StatusCode,
     routing::{get, patch},
 };
@@ -14,11 +14,12 @@ use crate::{
     app::AppState,
     auth::{CurrentUser, password, session},
     error::{AppError, AppResult, FieldError},
-    extract::ApiJson,
+    extract::{ApiJson, ApiPath},
     validate,
 };
 
 const OWN_ACCOUNT_MESSAGE: &str = "You can't change this for your own account.";
+const OWN_PASSWORD_MESSAGE: &str = "Use your profile to change your own password.";
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -74,16 +75,11 @@ fn user_not_found() -> AppError {
     }
 }
 
-/// An unparseable id names no user, so it gets the same answer as an unknown one.
-fn parse_user_id(raw: &str) -> AppResult<Uuid> {
-    Uuid::parse_str(raw).map_err(|_| user_not_found())
-}
-
-fn own_account_change(forbidden: bool, field: &str) -> Result<(), FieldError> {
+fn own_account_rejection(forbidden: bool, field: &str, message: &str) -> Result<(), FieldError> {
     if forbidden {
         Err(FieldError {
             field: field.into(),
-            message: OWN_ACCOUNT_MESSAGE.into(),
+            message: message.into(),
         })
     } else {
         Ok(())
@@ -180,20 +176,29 @@ pub(crate) async fn create_user(
 pub(crate) async fn update_user(
     State(state): State<AppState>,
     user: CurrentUser,
-    Path(id): Path<String>,
+    ApiPath(id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<UpdateUserRequest>,
 ) -> AppResult<Json<UserDto>> {
     require_instance_admin(&user)?;
-    let id = parse_user_id(&id)?;
     let own_account = id == user.id;
     let name = body.name.as_deref().map(validate::person_name).transpose();
     validate::collect(vec![
         name.clone().map(drop),
         body.password.as_deref().map_or(Ok(()), validate::password),
-        own_account_change(own_account && body.disabled == Some(true), "disabled"),
-        own_account_change(
+        own_account_rejection(
+            own_account && body.disabled == Some(true),
+            "disabled",
+            OWN_ACCOUNT_MESSAGE,
+        ),
+        own_account_rejection(
             own_account && body.is_instance_admin == Some(false),
             "is_instance_admin",
+            OWN_ACCOUNT_MESSAGE,
+        ),
+        own_account_rejection(
+            own_account && body.password.is_some(),
+            "password",
+            OWN_PASSWORD_MESSAGE,
         ),
     ])?;
     let name = name?;
@@ -203,6 +208,7 @@ pub(crate) async fn update_user(
         None => None,
     };
 
+    let mut tx = state.db.begin().await?;
     let updated = sqlx::query_as::<_, UserDto>(
         "UPDATE users SET
            name = COALESCE($2, name),
@@ -218,11 +224,12 @@ pub(crate) async fn update_user(
     .bind(body.is_instance_admin)
     .bind(body.disabled)
     .bind(password_hash)
-    .fetch_optional(&state.db)
+    .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(user_not_found)?;
     if revokes_sessions {
-        session::delete_all_for_user(&state.db, id).await?;
+        session::delete_all_for_user(&mut *tx, id).await?;
     }
+    tx.commit().await?;
     Ok(Json(updated))
 }

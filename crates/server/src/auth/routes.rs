@@ -3,9 +3,7 @@ use std::net::SocketAddr;
 use axum::{
     Extension, Json, Router,
     extract::{ConnectInfo, State},
-    http::{HeaderMap, HeaderValue, StatusCode, header},
-    middleware,
-    response::Response,
+    http::{HeaderMap, StatusCode, header},
     routing::{get, post},
 };
 use axum_extra::extract::CookieJar;
@@ -34,14 +32,6 @@ pub fn router() -> Router<AppState> {
         .route("/auth/logout", post(logout))
         .route("/auth/me", get(me).patch(update_me))
         .route("/auth/me/password", post(change_password))
-        .layer(middleware::map_response(no_store))
-}
-
-async fn no_store(mut response: Response) -> Response {
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    response
 }
 
 #[derive(Serialize, ToSchema)]
@@ -389,6 +379,12 @@ pub(crate) async fn change_password(
         field: "new_password".into(),
         ..err
     })?;
+    // Shares the login limiter; the key prefix keeps the two budgets apart.
+    let limiter_key = format!("password|{}", user.id);
+    state
+        .login_limiter
+        .check_and_record(&limiter_key)
+        .map_err(|retry_after_secs| AppError::RateLimited { retry_after_secs })?;
     let stored_hash: Option<String> =
         sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1")
             .bind(user.id)
@@ -401,12 +397,16 @@ pub(crate) async fn change_password(
         }
         .into());
     }
+    state.login_limiter.reset(&limiter_key);
     let password_hash = password::hash_password_async(body.new_password).await?;
+
+    let mut tx = state.db.begin().await?;
     sqlx::query("UPDATE users SET password_hash = $2, updated_at = now() WHERE id = $1")
         .bind(user.id)
         .bind(password_hash)
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await?;
-    session::delete_others(&state.db, user.id, token).await?;
+    session::delete_others(&mut *tx, user.id, token).await?;
+    tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }

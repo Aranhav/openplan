@@ -2,8 +2,9 @@ use std::{sync::Arc, time::Duration};
 
 use axum::{
     Json, Router,
-    http::{HeaderName, HeaderValue, Request},
+    http::{HeaderName, HeaderValue, Request, header},
     middleware,
+    response::Response,
     routing::get,
 };
 use serde::Serialize;
@@ -75,11 +76,20 @@ pub(crate) async fn health() -> Json<HealthResponse> {
     })
 }
 
+/// Keeps every API response, including CSRF rejections, out of shared caches.
+async fn no_store(mut response: Response) -> Response {
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
 pub fn build_router(state: AppState) -> Router {
     let api_v1: Router<AppState> = auth::routes::router()
         .merge(users::router())
         .layer(middleware::from_fn(csrf::require_csrf))
-        .layer(middleware::from_fn(renewal::reissue_cookies));
+        .layer(middleware::from_fn(renewal::reissue_cookies))
+        .layer(middleware::map_response(no_store));
 
     Router::new()
         .route("/api/health", get(health))
