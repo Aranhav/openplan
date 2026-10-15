@@ -30,6 +30,12 @@ export default defineConfig([
     },
   },
   {
+    // File routes export `Route` beside their page component; the router plugin
+    // code-splits the component, so Fast Refresh still works.
+    files: ["src/routes/**"],
+    rules: { "react-refresh/only-export-components": "off" },
+  },
+  {
     files: ["*.config.{js,ts}"],
     languageOptions: { globals: globals.node },
   },

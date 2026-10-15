@@ -1,5 +1,7 @@
+import { HttpResponse, delay, http } from "msw"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { ApiError, api, unwrap } from "./client"
+import { server } from "@/test/server"
+import { ApiError, api, errorDetail, unwrap } from "./client"
 
 function problem(status: number, body: Record<string, unknown>) {
   return new Response(JSON.stringify(body), {
@@ -9,7 +11,6 @@ function problem(status: number, body: Record<string, unknown>) {
 }
 
 afterEach(() => {
-  vi.unstubAllGlobals()
   document.cookie = "op_csrf=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/"
 })
 
@@ -56,6 +57,37 @@ describe("unwrap", () => {
     })
   })
 
+  it("reads retryAfter in seconds from the Retry-After header", async () => {
+    const body = { code: "auth.rate_limited", detail: "Too many attempts." }
+
+    await expect(
+      unwrap(
+        Promise.resolve({
+          error: body,
+          response: new Response(JSON.stringify(body), {
+            status: 429,
+            headers: { "retry-after": "120" },
+          }),
+        }),
+      ),
+    ).rejects.toMatchObject({ status: 429, code: "auth.rate_limited", retryAfter: 120 })
+  })
+
+  it.each([["soon"], ["-5"], [""]])(
+    "leaves retryAfter unset when the Retry-After header is %j",
+    async (header) => {
+      const error = await unwrap(
+        Promise.resolve({
+          error: { code: "auth.rate_limited" },
+          response: new Response(null, { status: 429, headers: { "retry-after": header } }),
+        }),
+      ).catch((cause: unknown) => cause)
+
+      expect(error).toBeInstanceOf(ApiError)
+      expect((error as ApiError).retryAfter).toBeUndefined()
+    },
+  )
+
   it("returns data on 200", async () => {
     const data = { id: "abc", name: "Acme" }
 
@@ -71,34 +103,77 @@ describe("unwrap", () => {
   })
 })
 
+describe("errorDetail", () => {
+  it("shows the server's detail for an ApiError", () => {
+    const error = new ApiError(409, "setup.already_done", "Setup has already been completed.")
+
+    expect(errorDetail(error)).toBe("Setup has already been completed.")
+  })
+
+  it("hides the message of anything else", () => {
+    expect(errorDetail(new TypeError("x is not a function"))).toBe("Something went wrong.")
+  })
+})
+
+describe("network failures", () => {
+  it("become an ApiError with status 0 and code network", async () => {
+    server.use(http.get("/api/v1/setup/status", () => HttpResponse.error()))
+
+    const result = unwrap(api.GET("/setup/status"))
+
+    await expect(result).rejects.toBeInstanceOf(ApiError)
+    await expect(result).rejects.toMatchObject({
+      status: 0,
+      code: "network",
+      detail: "Can't reach the server. Check your connection and try again.",
+      errors: [],
+    })
+  })
+
+  it("do not swallow a request the caller aborted", async () => {
+    server.use(
+      http.get("/api/v1/setup/status", async () => {
+        await delay("infinite")
+        return HttpResponse.json({ needs_setup: false })
+      }),
+    )
+    const controller = new AbortController()
+
+    const result = unwrap(api.GET("/setup/status", { signal: controller.signal }))
+    controller.abort()
+
+    await expect(result).rejects.toMatchObject({ name: "AbortError" })
+  })
+})
+
 describe("api", () => {
   it("adds the csrf header on POST", async () => {
     document.cookie = "op_csrf=abc; path=/"
-    const fetchMock = vi.fn<(request: Request) => Promise<Response>>(
-      async () => new Response(null, { status: 204 }),
+    const csrfHeader = vi.fn()
+    server.use(
+      http.post("/api/v1/auth/logout", ({ request }) => {
+        csrfHeader(request.headers.get("x-openplan-csrf"))
+        return new HttpResponse(null, { status: 204 })
+      }),
     )
-    vi.stubGlobal("fetch", fetchMock)
 
     await api.POST("/auth/logout")
 
-    const request = fetchMock.mock.calls[0][0]
-    expect(request.headers.get("x-openplan-csrf")).toBe("abc")
+    expect(csrfHeader).toHaveBeenCalledExactlyOnceWith("abc")
   })
 
   it("does not add the csrf header on GET", async () => {
     document.cookie = "op_csrf=abc; path=/"
-    const fetchMock = vi.fn<(request: Request) => Promise<Response>>(
-      async () =>
-        new Response(JSON.stringify({ needs_setup: false }), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        }),
+    const csrfHeader = vi.fn()
+    server.use(
+      http.get("/api/v1/setup/status", ({ request }) => {
+        csrfHeader(request.headers.get("x-openplan-csrf"))
+        return HttpResponse.json({ needs_setup: false })
+      }),
     )
-    vi.stubGlobal("fetch", fetchMock)
 
     await api.GET("/setup/status")
 
-    const request = fetchMock.mock.calls[0][0]
-    expect(request.headers.has("x-openplan-csrf")).toBe(false)
+    expect(csrfHeader).toHaveBeenCalledExactlyOnceWith(null)
   })
 })

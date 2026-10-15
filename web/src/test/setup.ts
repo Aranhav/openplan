@@ -1,6 +1,7 @@
 import "@testing-library/jest-dom/vitest"
 import { cleanup } from "@testing-library/react"
-import { afterEach } from "vitest"
+import { afterAll, afterEach, beforeAll } from "vitest"
+import { server } from "./server"
 
 // Node's Request rejects relative URLs; browsers resolve them against the page.
 const NativeRequest = globalThis.Request
@@ -25,6 +26,15 @@ Object.defineProperty(window, "matchMedia", {
   }),
 })
 
+// jsdom does not implement scrolling; the router restores scroll on navigation.
+window.scrollTo = () => {}
+
+// Requests no test mocked fail loudly instead of reaching a real network.
+beforeAll(() => server.listen({ onUnhandledFrame: "error" }))
+
 afterEach(() => {
   cleanup()
+  server.resetHandlers()
 })
+
+afterAll(() => server.close())

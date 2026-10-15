@@ -1,0 +1,114 @@
+import { zodResolver } from "@hookform/resolvers/zod"
+import { useNavigate } from "@tanstack/react-router"
+import { CircleAlert, Loader2 } from "lucide-react"
+import { useForm } from "react-hook-form"
+import { toast } from "sonner"
+import { z } from "zod"
+import { Alert, AlertDescription } from "@/components/ui/alert"
+import { Button } from "@/components/ui/button"
+import {
+  Form,
+  FormControl,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from "@/components/ui/form"
+import { Input } from "@/components/ui/input"
+import { ApiError, errorDetail } from "@/lib/api/client"
+import { useLogin } from "./api"
+
+const schema = z.object({
+  email: z.string().trim().min(1, "Enter your email."),
+  password: z.string().min(1, "Enter your password."),
+})
+
+type LoginValues = z.infer<typeof schema>
+
+interface LoginFormProps {
+  /** Where to go after signing in; only paths within this app are honoured. */
+  redirectTo?: string
+}
+
+function localPath(target: string | undefined): string {
+  return target && /^\/(?![/\\])/.test(target) ? target : "/"
+}
+
+function failureAlert(error: unknown): string | undefined {
+  if (!(error instanceof ApiError)) {
+    return undefined
+  }
+  if (error.code === "auth.invalid_credentials") {
+    return "Email or password is incorrect."
+  }
+  if (error.code === "auth.rate_limited") {
+    const minutes = Math.max(1, Math.ceil((error.retryAfter ?? 0) / 60))
+    return `Too many attempts. Try again in ${minutes} ${minutes === 1 ? "minute" : "minutes"}.`
+  }
+  return undefined
+}
+
+export function LoginForm({ redirectTo }: LoginFormProps) {
+  const login = useLogin()
+  const navigate = useNavigate()
+  const form = useForm<LoginValues>({
+    resolver: zodResolver(schema),
+    defaultValues: { email: "", password: "" },
+  })
+  const alert = failureAlert(login.error)
+
+  async function onSubmit(values: LoginValues) {
+    try {
+      await login.mutateAsync(values)
+    } catch (error) {
+      if (!failureAlert(error)) {
+        toast.error(errorDetail(error))
+      }
+      return
+    }
+    await navigate({ href: localPath(redirectTo) })
+  }
+
+  return (
+    <Form {...form}>
+      <form onSubmit={form.handleSubmit(onSubmit)} noValidate className="flex flex-col gap-4">
+        {alert && (
+          <Alert variant="destructive">
+            <CircleAlert />
+            <AlertDescription>{alert}</AlertDescription>
+          </Alert>
+        )}
+        <FormField
+          control={form.control}
+          name="email"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>Email</FormLabel>
+              <FormControl>
+                <Input type="email" autoComplete="username" autoFocus {...field} />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+        <FormField
+          control={form.control}
+          name="password"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>Password</FormLabel>
+              <FormControl>
+                <Input type="password" autoComplete="current-password" {...field} />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+        <Button type="submit" disabled={form.formState.isSubmitting}>
+          {form.formState.isSubmitting && <Loader2 className="animate-spin" />}
+          Sign in
+        </Button>
+      </form>
+    </Form>
+  )
+}

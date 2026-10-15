@@ -46,7 +46,15 @@ Web conventions:
 - Query keys come from `web/src/lib/api/keys.ts`.
 - `web/src/routeTree.gen.ts` (TanStack Router) and `web/src/lib/api/schema.d.ts` are generated and committed. Do not edit them by hand.
 - `web/src/components/ui/` is managed by the shadcn CLI. Do not edit it by hand.
-- Tests are Vitest with jsdom and Testing Library; the setup file is `web/src/test/setup.ts`.
+- Routes: `web/src/routes/` files stay thin and pages live in `web/src/features/<name>/`. Anything that needs a signed-in user goes under the `_app` layout route (`routes/_app.tsx`, and `routes/_app/*` for its children); its `beforeLoad` redirects to `/setup` or `/login` and puts the user on the route context as `context.me`. Auth queries and mutations (`meQuery`, `useLogin`, `useLogout`, ...) are in `web/src/features/auth/api.ts`.
+- Errors: `unwrap` throws `ApiError` (`status`, `code`, `detail`, `errors`, `retryAfter` in seconds from `Retry-After`). A fetch that never reaches the server becomes an `ApiError` with status 0 and code `network`. Use `errorDetail(error)` for text to show in a toast.
+
+Web testing:
+
+- Tests are Vitest with jsdom, Testing Library and `@testing-library/user-event`; the setup file is `web/src/test/setup.ts`.
+- API calls are mocked with msw (v3), not by stubbing `fetch`. `web/src/test/server.ts` exports the shared server; the setup file starts it with `onUnhandledFrame: "error"` (any request without a handler fails the test) and resets handlers after each test. Add handlers per test with `server.use(http.post("/api/v1/auth/login", () => ...))` and build error responses with `problem()` from `web/src/test/problem.ts`.
+- `renderWithProviders(ui)` from `web/src/test/render.tsx` renders a component inside a query client and an in-memory router at `/host`; any other path renders a placeholder, so assert navigation with `router.state.location.href`. To test the real route tree, use `createAppRouter(queryClient, createMemoryHistory({ initialEntries: [path] }))`.
+- Mock `sonner` with `vi.mock("sonner", () => ({ toast: { error: vi.fn() } }))` when a test asserts on a toast.
 
 End to end and containers:
 
