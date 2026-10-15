@@ -3,8 +3,8 @@ import type { Header, Member, PageMember, ViewDim } from "./view-types"
 export const ROW_HEIGHT = 32
 export const HEADER_ROW_HEIGHT = 32
 export const DEFAULT_COLUMN_WIDTH = 120
-const MIN_COLUMN_WIDTH = 48
-const MAX_COLUMN_WIDTH = 640
+export const MIN_COLUMN_WIDTH = 48
+export const MAX_COLUMN_WIDTH = 640
 /** How far a member is indented for each level of depth in the hierarchy. */
 export const INDENT = 16
 
@@ -170,4 +170,81 @@ export function revealOffset(
     return range.end - viewport
   }
   return scroll
+}
+
+/** A member with children that holds a row or column. `own` is the member of its own header. */
+export type CollapsibleMember = { level: number; member: Member; own: boolean }
+
+// A hierarchy is a handful of levels deep; a scan that long has left it.
+const MAX_ANCESTORS = 8
+const MAX_SCAN = 5000
+
+/**
+ * The members that hold the row or column at `index` and can be collapsed, for each dimension of
+ * the header from the innermost out: its own member if it has children, then the members above
+ * it, nearest first. A list or subset is listed parent first, so the members above come before;
+ * time is listed with each summary after its periods, so they come after. Only headers that have
+ * loaded are looked at, and only those of the same members of the outer dimensions.
+ */
+export function collapsibleMembers(
+  dims: readonly ViewDim[],
+  index: number,
+  count: number,
+  headerAt: (index: number) => Header | undefined,
+): CollapsibleMember[] {
+  const base = headerAt(index)
+  if (!base) {
+    return []
+  }
+  const found: CollapsibleMember[] = []
+  for (let level = dims.length - 1; level >= 0; level--) {
+    const own = base.members[level]
+    if (!own) {
+      continue
+    }
+    if (own.has_children) {
+      found.push({ level, member: own, own: true })
+    }
+    for (const member of membersAbove(dims[level], level, index, count, headerAt, base)) {
+      found.push({ level, member, own: false })
+    }
+  }
+  return found
+}
+
+function membersAbove(
+  dim: ViewDim,
+  level: number,
+  index: number,
+  count: number,
+  headerAt: (index: number) => Header | undefined,
+  base: Header,
+): Member[] {
+  const parentFirst = dim.kind === "list" || dim.kind === "subset"
+  if (!parentFirst && dim.kind !== "time") {
+    return []
+  }
+  const step = parentFirst ? -1 : 1
+  const found: Member[] = []
+  let depth = base.members[level].depth
+  for (
+    let i = index + step;
+    i >= 0 && i < count && Math.abs(i - index) <= MAX_SCAN && found.length < MAX_ANCESTORS;
+    i += step
+  ) {
+    const header = headerAt(i)
+    if (!header || !samePath(header, base, level - 1)) {
+      break
+    }
+    const member = header.members[level]
+    const above = parentFirst ? member.depth < depth : member.is_summary && member.depth > depth
+    if (above && member.has_children) {
+      found.push(member)
+      depth = member.depth
+      if (parentFirst && depth === 0) {
+        break
+      }
+    }
+  }
+  return found
 }

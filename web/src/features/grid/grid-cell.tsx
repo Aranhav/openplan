@@ -36,23 +36,31 @@ function surfaceClass(flags: readonly CellFlag[]): string {
     return "bg-muted font-semibold"
   }
   if (has(flags, "calculated") || has(flags, "switchover") || has(flags, "error")) {
-    return "bg-muted/60"
+    return "bg-muted/70"
   }
   return "bg-background"
 }
 
 // The look of components/ui/checkbox.tsx, drawn as a span: a Radix Checkbox per cell is too heavy
 // for the hundreds of cells of a screen. Keep the two in step when the shadcn one changes.
-function CheckGlyph({ checked, toggles }: { checked: boolean; toggles: boolean }) {
+function CheckGlyph({
+  checked,
+  toggles,
+  pending,
+}: {
+  checked: boolean
+  toggles: boolean
+  pending: boolean
+}) {
   return (
     <span
       aria-hidden
       data-toggle={toggles ? "" : undefined}
-      className={
+      className={`${
         checked
           ? "grid size-4 place-content-center rounded-[4px] border border-primary bg-primary text-primary-foreground shadow-xs"
           : "grid size-4 place-content-center rounded-[4px] border border-input shadow-xs dark:bg-input/30"
-      }
+      }${pending ? " opacity-60" : ""}`}
     >
       {checked && <Check className="size-3.5" />}
     </span>
@@ -73,6 +81,8 @@ type GridCellProps = {
   lineItem: LineItemInfo | undefined
   rules: readonly ConditionalFormat[]
   selected: boolean
+  /** The value is being written and has not come back from the server yet. */
+  pending: boolean
   /** No cell of the grid can be changed, whatever its flags say. */
   gridReadOnly: boolean
 }
@@ -92,6 +102,7 @@ export const GridCell = memo(function GridCell({
   lineItem,
   rules,
   selected,
+  pending,
   gridReadOnly,
 }: GridCellProps) {
   const position = {
@@ -148,7 +159,7 @@ export const GridCell = memo(function GridCell({
   } else if (format.type === "boolean" && cell.value.t === "boolean") {
     content = (
       <>
-        <CheckGlyph checked={cell.value.v} toggles={!readonly && !gridReadOnly} />
+        <CheckGlyph checked={cell.value.v} toggles={!readonly && !gridReadOnly} pending={pending} />
         <span className="sr-only">{cell.value.v ? "Checked" : "Not checked"}</span>
       </>
     )
@@ -158,7 +169,11 @@ export const GridCell = memo(function GridCell({
     // like a spreadsheet, and the number itself is the label and the title.
     const fits = !rightAligned || measureTextWidth(text, weight) <= width - CELL_PADDING - FIT_SLACK
     full = fits ? undefined : text
-    content = <span className="truncate">{fits ? text : "###"}</span>
+    content = (
+      <span className={pending ? "truncate text-muted-foreground italic" : "truncate"}>
+        {fits ? text : "###"}
+      </span>
+    )
   }
 
   return (

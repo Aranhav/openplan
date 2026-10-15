@@ -108,6 +108,8 @@ export type ViewData = ViewShape & {
    * are loaded, and answers with what they hold. For acting on cells that are not on screen.
    */
   load(range: CellRange): Promise<Lookup>
+  /** What `load` would answer, if every block it needs is loaded already, and nothing if not. */
+  peek(range: CellRange): Lookup | undefined
 }
 
 type Loaded = {
@@ -259,6 +261,13 @@ function combineBlocks(results: UseQueryResult<QueryResult, Error>[]): BlockResu
   )
 }
 
+const EMPTY_LOOKUP: Lookup = {
+  lineItems: [],
+  rowHeaders: () => undefined,
+  colHeaders: () => undefined,
+  cell: () => undefined,
+}
+
 /** A view that finished loading, kept to show while the next one loads. */
 type Settled = { key: string; shape: ViewShape; lookup: Lookup }
 
@@ -363,6 +372,32 @@ export function useViewData(modelId: string, query: GridQuery, visible: CellRang
     setSettled({ key, shape, lookup })
   }
   const error = origin.error ?? others.error
+
+  // The blocks of a range and the first, from the cache, which holds every block that has been
+  // loaded whether or not the grid shows it now.
+  const blocksOf = (range: CellRange): Block[] =>
+    [ORIGIN, ...blocksFor(range)].filter(
+      (block, index, all) =>
+        all.findIndex((b) => b.rowBlock === block.rowBlock && b.colBlock === block.colBlock) ===
+        index,
+    )
+  const read = (range: CellRange): Lookup | undefined => {
+    const loaded: Loaded[] = []
+    for (const block of blocksOf(range)) {
+      const state = queryClient.getQueryState<QueryResult>(queryKeys.query(modelId, query, block))
+      if (!state?.data) {
+        return undefined
+      }
+      loaded.push({
+        block,
+        result: state.data,
+        fetching: false,
+        errored: false,
+        updatedAt: state.dataUpdatedAt,
+      })
+    }
+    return assemble(loaded).lookup
+  }
   const showPrevious = !loadedNow && settled !== null && settled.key !== key
   const shown = showPrevious ? settled : { shape, lookup }
 
@@ -377,29 +412,13 @@ export function useViewData(modelId: string, query: GridQuery, visible: CellRang
         .refetchQueries({ queryKey: queryKeys.query(modelId, query), type: "active" })
         .then(() => undefined),
     load: async (range) => {
-      const blocks = [ORIGIN, ...blocksFor(range)].filter(
-        (block, index, all) =>
-          all.findIndex((b) => b.rowBlock === block.rowBlock && b.colBlock === block.colBlock) ===
-          index,
-      )
       await Promise.all(
-        blocks.map((block) => queryClient.ensureQueryData(blockOptions(modelId, query, block))),
+        blocksOf(range).map((block) =>
+          queryClient.ensureQueryData(blockOptions(modelId, query, block)),
+        ),
       )
-      const loaded: Loaded[] = blocks.flatMap((block) => {
-        const state = queryClient.getQueryState<QueryResult>(queryKeys.query(modelId, query, block))
-        return state?.data
-          ? [
-              {
-                block,
-                result: state.data,
-                fetching: false,
-                errored: false,
-                updatedAt: state.dataUpdatedAt,
-              },
-            ]
-          : []
-      })
-      return assemble(loaded).lookup
+      return read(range) ?? EMPTY_LOOKUP
     },
+    peek: read,
   }
 }

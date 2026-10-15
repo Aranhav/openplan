@@ -529,6 +529,20 @@ describe("hierarchy", () => {
       ).not.toBeInTheDocument()
     })
 
+    it("does not edit the previous view while the changed one loads", async () => {
+      const grid = await serveSlowCollapse()
+      grid.focus()
+      await userEvent.click(within(grid).getByRole("button", { name: "Collapse EMEA" }))
+      expect(grid).toHaveAttribute("aria-busy", "true")
+
+      await userEvent.keyboard("5")
+      expect(screen.queryByRole("textbox")).not.toBeInTheDocument()
+      await waitFor(() => expect(grid).not.toHaveAttribute("aria-busy"))
+      await userEvent.keyboard("5")
+
+      expect(screen.getByRole("textbox")).toHaveValue("5")
+    })
+
     it("does not dim a grid that is only scrolling to blocks it has not loaded", async () => {
       serveViewQuery()
       renderGrid()
@@ -1007,7 +1021,7 @@ describe("cell styling", () => {
     const grid = await renderFlags()
 
     const cell = cellAt(grid, 0, 1)
-    expect(cell).toHaveClass("bg-muted/60", "text-foreground", "cursor-not-allowed", "group/cell")
+    expect(cell).toHaveClass("bg-muted/70", "text-foreground", "cursor-not-allowed", "group/cell")
     expect(cell).toHaveAttribute("aria-readonly", "true")
     expect(cell.querySelector(".lucide-lock")).toHaveClass(
       "opacity-0",
@@ -1036,7 +1050,7 @@ describe("cell styling", () => {
     const grid = await renderFlags()
 
     expect(cellAt(grid, 0, 2)).toHaveClass("font-semibold", "bg-muted", "cursor-not-allowed")
-    expect(cellAt(grid, 0, 2)).not.toHaveClass("bg-muted/60")
+    expect(cellAt(grid, 0, 2)).not.toHaveClass("bg-muted/70")
   })
 
   it("hatches a cell that does not apply, leaves it empty and says so to a screen reader", async () => {
@@ -1045,7 +1059,7 @@ describe("cell styling", () => {
     const cell = cellAt(grid, 0, 3)
     expect(cell.className).toContain("repeating-linear-gradient(135deg")
     expect(cell.className).toContain("color-mix(in_oklab,var(--muted-foreground)_18%,transparent)")
-    expect(cell).not.toHaveClass("bg-muted/60")
+    expect(cell).not.toHaveClass("bg-muted/70")
     expect(cell).toHaveTextContent("Not applicable")
     expect(within(cell).getByText("Not applicable")).toHaveClass("sr-only")
     expect(cell).toHaveAttribute("aria-readonly", "true")
@@ -1056,7 +1070,7 @@ describe("cell styling", () => {
     const grid = await renderFlags()
 
     const cell = cellAt(grid, 0, 4)
-    expect(cell).toHaveClass("bg-muted/60")
+    expect(cell).toHaveClass("bg-muted/70")
     expect(cell).toHaveAccessibleDescription("Before the switchover: showing Actual.")
     await userEvent.hover(cell)
 
@@ -1072,7 +1086,7 @@ describe("cell styling", () => {
     const cell = cellAt(grid, 0, 5)
     expect(cell).toHaveTextContent("Error")
     expect(within(cell).getByText("Error")).toHaveClass("sr-only")
-    expect(cell).toHaveClass("bg-muted/60")
+    expect(cell).toHaveClass("bg-muted/70")
     expect(cell).toHaveAttribute("aria-readonly", "true")
   })
 
@@ -1378,27 +1392,21 @@ describe("boolean cells", () => {
     expect(checked).toHaveClass("justify-center")
   })
 
-  it("reports a click on the check box of an editable cell", async () => {
+  it("marks the check box of an editable cell as one that toggles", async () => {
     serveViewQuery()
-    const onToggleBoolean = vi.fn()
-    renderGrid({ onToggleBoolean })
+    renderGrid()
     const grid = await loadedGrid()
 
-    await userEvent.click(cellAt(grid, 1, booleanColumn).querySelector("[data-toggle]")!)
-
-    expect(onToggleBoolean).toHaveBeenCalledExactlyOnceWith({ row: 1, col: booleanColumn })
+    expect(cellAt(grid, 1, booleanColumn).querySelector("[data-toggle]")).not.toBeNull()
   })
 
-  it("does not toggle in a read-only grid", async () => {
+  it("does not mark the check box of a read-only grid as one that toggles", async () => {
     serveViewQuery()
-    const onToggleBoolean = vi.fn()
-    renderGrid({ onToggleBoolean, readOnly: true })
+    renderGrid({ readOnly: true })
     const grid = await loadedGrid()
 
     expect(grid).toHaveAttribute("aria-readonly", "true")
     expect(grid.querySelector("[data-toggle]")).toBeNull()
-    await userEvent.click(cellAt(grid, 1, booleanColumn))
-    expect(onToggleBoolean).not.toHaveBeenCalled()
   })
 
   it("does not toggle a cell that is read-only", async () => {
@@ -1410,7 +1418,7 @@ describe("boolean cells", () => {
             : numberCell(row),
       }),
     )
-    renderGrid({ onToggleBoolean: vi.fn() })
+    renderGrid()
     const grid = await loadedGrid()
 
     expect(cellAt(grid, 0, booleanColumn).querySelector("[data-toggle]")).toBeNull()

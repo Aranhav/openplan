@@ -17,11 +17,17 @@ import { EmptyState } from "@/components/empty-state"
 import { ErrorState } from "@/components/error-state"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
+import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
+import { CellMenuContent } from "./cell-context-menu"
 import { SWITCHOVER_NOTE, cellId, errorNoteId, noteOf, switchoverNoteId } from "./cell-notes"
-import { type GridCommand, resolveKey } from "./core/keymap"
-import { type CellRange, type Pos, rangeOf } from "./core/selection"
+import { type CellReader, cellLabel, cellTarget } from "./cell-targets"
+import { ColumnWidthPopover } from "./column-width-popover"
+import { type GridCommand, keyInput, resolveKey } from "./core/keymap"
+import { type CellRange, type Pos, contains, rangeOf } from "./core/selection"
+import { type GridReference, NO_REFERENCE, displayText, listOptions } from "./edit-reference"
+import { CellEditor } from "./editors/cell-editor"
 import { GridCell } from "./grid-cell"
 import { ColumnHeaders, type HeaderCallbacks, RowHeaders } from "./grid-headers"
 import {
@@ -29,16 +35,19 @@ import {
   HEADER_ROW_HEIGHT,
   ROW_HEIGHT,
   columnAt,
+  columnKey,
   lineItemIdAt,
   lineItemSource,
   revealOffset,
+  without,
 } from "./grid-layout"
 import { useColumnWidths } from "./use-column-widths"
 import { cellOf, useDragSelect } from "./use-drag-select"
 import { sameSelection, useGridSelection } from "./use-grid-selection"
 import { useFollowMember } from "./use-follow-member"
+import { useGridEditing } from "./use-grid-editing"
 import { useHoveredNote } from "./use-hovered-note"
-import { useViewData } from "./use-view-data"
+import { type Lookup, useViewData } from "./use-view-data"
 import type {
   ConditionalFormat,
   GridQuery,
@@ -60,8 +69,10 @@ export type GridProps = {
   query: GridQuery
   /** Names the grid for assistive technology. */
   label?: string
-  /** No cell can be changed (a viewer). */
+  /** No cell can be changed (a viewer): copying still works. */
   readOnly?: boolean
+  /** The items of the lists and the periods that list and period cells are edited with. */
+  reference?: GridReference
   conditionalFormats?: readonly ConditionalFormat[]
   /** Column widths by the joined member keys of the column header. */
   columnWidths?: Readonly<Record<string, number>>
@@ -71,8 +82,6 @@ export type GridProps = {
   onSelectLineItem?: (lineItemId: string) => void
   /** A chevron was clicked; without it, no chevrons. Keep the function the same between renders. */
   onToggleCollapse?: (member: MemberRef) => void
-  /** The check box of an editable boolean cell was clicked. */
-  onToggleBoolean?: (cell: Pos) => void
   /** Offered when the pivot shows nothing; without it, the message has no button. */
   onResetView?: () => void
   className?: string
@@ -120,19 +129,20 @@ function selectionMessage(range: CellRange): string {
 
 /**
  * The pivot grid: virtualized rows and columns with sticky, multi-level headers, loaded a block at
- * a time as it scrolls. It renders and navigates; editing is added around the callbacks.
+ * a time as it scrolls, and edited the way a spreadsheet is: type over a cell, Enter or F2 or a
+ * double click to edit it, Escape to give up, paste, fill down, clear, undo and redo.
  */
 export function Grid({
   modelId,
   query,
   label = "Planning grid",
   readOnly = false,
+  reference = NO_REFERENCE,
   conditionalFormats = NO_RULES,
   columnWidths = NO_WIDTHS,
   onColumnWidthsChange,
   onSelectLineItem,
   onToggleCollapse,
-  onToggleBoolean,
   onResetView,
   className,
 }: GridProps) {
@@ -283,6 +293,56 @@ export function Grid({
     onFound: select,
   })
 
+  // Editing. What the cells hold and where to find them is the same for the editors and the
+  // clipboard as for the rendering; a view that is only the previous one is not edited.
+  const readerOf = (lookup: Lookup): CellReader => ({
+    rowDims,
+    columnDims,
+    pages: data.pages,
+    lineItems: new Map(lookup.lineItems.map((lineItem) => [lineItem.id, lineItem])),
+    rowHeaders: lookup.rowHeaders,
+    colHeaders: lookup.colHeaders,
+    cell: lookup.cell,
+  })
+  const reader = readerOf(data)
+  const focusGrid = () => scrollRef.current?.focus({ preventScroll: true })
+  const editing = useGridEditing({
+    modelId,
+    moduleId: query.module,
+    readOnly: readOnly || data.isPlaceholder,
+    reference,
+    selection,
+    bounds: { rows: totalRows, cols: totalColumns },
+    reader,
+    load: async (range) => readerOf(await data.load(range)),
+    peek: (range) => {
+      const lookup = data.peek(range)
+      return lookup && readerOf(lookup)
+    },
+    moveSelection: (direction) =>
+      run({ type: "move", dir: direction, extend: false, jump: false }, 0),
+    focusGrid,
+  })
+
+  // Copy, cut and paste are the browser's own events, taken while the grid itself has the focus:
+  // an editor, a menu or anything else with the focus keeps its own.
+  const copy = useEffectEvent((event: ClipboardEvent) => editing.onCopy(event))
+  const cut = useEffectEvent((event: ClipboardEvent) => editing.onCut(event))
+  const paste = useEffectEvent((event: ClipboardEvent) => editing.onPaste(event))
+  useEffect(() => {
+    const handlers = { copy, cut, paste }
+    const listeners = (["copy", "cut", "paste"] as const).map((type) => {
+      const listener = (event: ClipboardEvent) => {
+        if (scrollRef.current && document.activeElement === scrollRef.current) {
+          handlers[type](event)
+        }
+      }
+      document.addEventListener(type, listener)
+      return () => document.removeEventListener(type, listener)
+    })
+    return () => listeners.forEach((remove) => remove())
+  }, [])
+
   // The notes: what a switchover or error cell cannot say by its value, in one tooltip that
   // follows the pointer, or the active cell while the grid has focus.
   const [focused, setFocused] = useState(false)
@@ -314,7 +374,6 @@ export function Grid({
    */
   function collapseActive(command: Extract<GridCommand, { type: "collapse" }>) {
     const header = command.axis === "row" ? rowHeaders(active.row) : colHeaders(active.col)
-    const dims = command.axis === "row" ? rowDims : columnDims
     if (!toggleMember || !header) {
       return
     }
@@ -323,15 +382,7 @@ export function Grid({
       if (member.has_children) {
         // Only a member that is not in the state asked for changes.
         if (member.collapsed === command.expand) {
-          const row = command.axis === "row"
-          follow.start({
-            axis: command.axis,
-            path: header.members.slice(0, level + 1).map((m) => m.key),
-            inner: header.members.slice(level + 1).map((m) => m.key),
-            from: row ? active.row : active.col,
-            other: row ? active.col : active.row,
-          })
-          toggleMember(dims[level], member)
+          collapseMember(command.axis, level, member)
         }
         return
       }
@@ -339,12 +390,70 @@ export function Grid({
     announce(command.expand ? "Nothing to expand" : "Nothing to collapse")
   }
 
+  /**
+   * Collapses or expands a member that holds the active row or column, the member of its own
+   * header or one above it, and goes with the active cell to the member's row or column.
+   */
+  function collapseMember(axis: "row" | "column", level: number, member: Member) {
+    const header = axis === "row" ? rowHeaders(active.row) : colHeaders(active.col)
+    const dims = axis === "row" ? rowDims : columnDims
+    if (!toggleMember || !header) {
+      return
+    }
+    const row = axis === "row"
+    follow.start({
+      axis,
+      path: [...header.members.slice(0, level).map((m) => m.key), member.key],
+      inner: header.members.slice(level + 1).map((m) => m.key),
+      from: row ? active.row : active.col,
+      other: row ? active.col : active.row,
+    })
+    toggleMember(dims[level], member)
+  }
+
+  // The menu of a cell, and the form for the width of its column that one of its items opens.
+  const [widthFor, setWidthFor] = useState<{ key: string; width: number } | null>(null)
+  const widthRequested = useRef(false)
+
+  /** Opens the menu at the active cell, as the Menu key and Shift+F10 do. */
+  function openMenuAtActive(element: HTMLElement) {
+    const box = element.getBoundingClientRect()
+    const left = rowHeaderWidth + colStarts[active.col] - element.scrollLeft
+    const top = headerHeight + active.row * ROW_HEIGHT - element.scrollTop
+    // A cell partly under the sticky headers is pointed at where it shows.
+    const x = box.left + Math.max(left, rowHeaderWidth) + 8
+    const y = box.top + Math.max(top, headerHeight) + ROW_HEIGHT - 4
+    element.dispatchEvent(
+      new MouseEvent("contextmenu", {
+        bubbles: true,
+        cancelable: true,
+        button: 2,
+        clientX: x,
+        clientY: y,
+      }),
+    )
+  }
+
+  function handleContextMenu(event: ReactMouseEvent<HTMLDivElement>) {
+    event.currentTarget.focus({ preventScroll: true })
+    const cell = cellOf(event.target)
+    if (cell && !contains(selection, cell)) {
+      follow.cancel()
+      select(cell)
+    }
+  }
+
   function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
     // Keys of something inside the grid, such as a chevron, are not the grid's.
     if (event.target !== event.currentTarget) {
       return
     }
-    const command = resolveKey(event.nativeEvent, "navigate")
+    if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) {
+      event.preventDefault()
+      openMenuAtActive(event.currentTarget)
+      return
+    }
+    const command = resolveKey(keyInput(event.nativeEvent), "navigate")
     if (command.type === "none") {
       return
     }
@@ -359,8 +468,10 @@ export function Grid({
       // Going on with something else ends a collapse that is still waiting for its view.
       follow.cancel()
       const next = run(command, pageRows(event.currentTarget))
-      // Tab on the last cell, or Shift+Tab on the first, goes on to the next control.
-      if (next && event.key === "Tab" && sameSelection(next, selection)) {
+      if (next === undefined) {
+        editing.run(command)
+      } else if (event.key === "Tab" && sameSelection(next, selection)) {
+        // Tab on the last cell, or Shift+Tab on the first, goes on to the next control.
         return
       }
     }
@@ -399,8 +510,15 @@ export function Grid({
     if (event.target instanceof Element && event.target.closest("[data-toggle]")) {
       const cell = cellOf(event.target)
       if (cell) {
-        onToggleBoolean?.(cell)
+        editing.toggleAt(cell)
       }
+    }
+  }
+
+  function handleDoubleClick(event: ReactMouseEvent<HTMLDivElement>) {
+    const cell = cellOf(event.target)
+    if (cell) {
+      editing.openAt(cell)
     }
   }
 
@@ -449,130 +567,234 @@ export function Grid({
   const multiple = range.rowStart !== range.rowEnd || range.colStart !== range.colEnd
   const anchor = tipCell ?? active
 
+  // The editor on the cell being edited, if the cell is still there to edit.
+  const editorCell = editing.editor
+  const editorTarget = editorCell && cellTarget(reader, editorCell.pos.row, editorCell.pos.col)
+  const editorValue = editorTarget && editing.valueOf(editorTarget)
+  const canWrite = !readOnly && !data.isPlaceholder
+  const activeHeader = colHeaders(active.col)
+
   return (
     <Frame className={className}>
       {data.error && <ErrorState error={data.error} onRetry={() => void data.refetch()} />}
       <div className="relative min-h-0 flex-1 overflow-hidden rounded-md border bg-background has-[:focus-visible]:border-ring has-[:focus-visible]:ring-[3px] has-[:focus-visible]:ring-ring/50 forced-colors:has-[:focus-visible]:outline-2">
         <TooltipProvider delayDuration={300}>
-          <div
-            ref={scrollRef}
-            role="grid"
-            tabIndex={0}
-            aria-label={label}
-            aria-rowcount={totalRows + columnDims.length}
-            aria-colcount={totalColumns + rowDims.length}
-            aria-multiselectable
-            aria-readonly={readOnly || undefined}
-            aria-busy={data.isPlaceholder || undefined}
-            aria-activedescendant={activeRendered ? activeId : undefined}
-            className={cn(
-              "group/grid h-full overflow-auto overscroll-contain bg-background outline-none",
-              data.isPlaceholder && "opacity-60",
-            )}
-            onKeyDown={handleKeyDown}
-            onPointerDown={handlePointerDown}
-            onPointerOver={onPointerOver}
-            onPointerLeave={onPointerLeave}
-            onClick={handleClick}
-            onFocus={() => setFocused(true)}
-            onBlur={() => setFocused(false)}
-          >
-            <div className="relative" style={{ width: contentWidth, height: contentHeight }}>
-              <ColumnHeaders
-                gridId={gridId}
-                columnDims={columnDims}
-                cols={cols}
-                colStarts={colStarts}
-                rowHeaderWidths={rowHeaderWidths}
-                headerAt={colHeaders}
-                lineItems={lineItems}
-                callbacks={headerCallbacks}
-                contentWidth={contentWidth}
-              />
-              {rowItems.map((rowItem) => {
-                const row = rowItem.index
-                const rowHeader = rowHeaders(row)
-                return (
-                  <div
-                    key={row}
-                    role="row"
-                    aria-rowindex={columnDims.length + row + 1}
-                    className="absolute left-0"
-                    style={{ top: rowItem.start, height: ROW_HEIGHT, width: contentWidth }}
-                  >
-                    <RowHeaders
-                      gridId={gridId}
-                      header={rowHeader}
-                      previous={rowHeaders(row - 1)}
-                      rowDims={rowDims}
-                      widths={rowHeaderWidths}
-                      lineItems={lineItems}
-                      onToggleCollapse={toggleMember}
-                    />
-                    {cols.map((col) => {
-                      const lineItemId = lineItemIdAt(
-                        lineItemSourceOfCells,
-                        rowHeader,
-                        colHeaders(col),
-                      )
-                      return (
-                        <GridCell
-                          key={col}
-                          gridId={gridId}
-                          row={row}
-                          col={col}
-                          colIndex={rowDimCount + col + 1}
-                          left={rowHeaderWidth + colStarts[col]}
-                          width={colWidths[col]}
-                          cell={data.cell(row, col)}
-                          lineItem={
-                            lineItemId === undefined ? undefined : lineItems.get(lineItemId)
-                          }
-                          rules={conditionalFormats}
-                          selected={
-                            row >= range.rowStart &&
-                            row <= range.rowEnd &&
-                            col >= range.colStart &&
-                            col <= range.colEnd
-                          }
-                          gridReadOnly={readOnly}
-                        />
-                      )
-                    })}
-                  </div>
-                )
-              })}
-              {multiple && (
-                <div
-                  aria-hidden
-                  data-selection="range"
-                  className="pointer-events-none absolute z-5 bg-primary/10 ring-1 ring-primary ring-inset forced-colors:outline-1 forced-colors:-outline-offset-1"
-                  style={rect(range.rowStart, range.rowEnd, range.colStart, range.colEnd)}
-                />
-              )}
+          <ContextMenu>
+            <ContextMenuTrigger asChild>
               <div
-                aria-hidden
-                data-selection="active"
-                className="pointer-events-none absolute z-5 ring-2 ring-primary/40 ring-inset group-focus/grid:ring-primary forced-colors:outline-2 forced-colors:-outline-offset-2"
-                style={rect(active.row, active.row, active.col, active.col)}
-              />
-              {/* Radix closes a tooltip when anything that holds its trigger scrolls, and the grid
-                  scrolls to the active cell as the keys move it; only Escape dismisses this one. */}
-              <Tooltip open={tipNote !== undefined && dismissed !== tipKey}>
-                <TooltipTrigger asChild>
+                ref={scrollRef}
+                role="grid"
+                tabIndex={0}
+                aria-label={label}
+                aria-rowcount={totalRows + columnDims.length}
+                aria-colcount={totalColumns + rowDims.length}
+                aria-multiselectable
+                aria-readonly={readOnly || undefined}
+                aria-busy={data.isPlaceholder || undefined}
+                aria-activedescendant={activeRendered ? activeId : undefined}
+                className={cn(
+                  "group/grid h-full overflow-auto overscroll-contain bg-background outline-none",
+                  data.isPlaceholder && "opacity-60",
+                )}
+                onKeyDown={handleKeyDown}
+                onPointerDown={handlePointerDown}
+                onPointerOver={onPointerOver}
+                onPointerLeave={onPointerLeave}
+                onClick={handleClick}
+                onDoubleClick={handleDoubleClick}
+                onContextMenu={handleContextMenu}
+                onFocus={() => setFocused(true)}
+                onBlur={() => setFocused(false)}
+              >
+                <div className="relative" style={{ width: contentWidth, height: contentHeight }}>
+                  <ColumnHeaders
+                    gridId={gridId}
+                    columnDims={columnDims}
+                    cols={cols}
+                    colStarts={colStarts}
+                    rowHeaderWidths={rowHeaderWidths}
+                    headerAt={colHeaders}
+                    lineItems={lineItems}
+                    callbacks={headerCallbacks}
+                    contentWidth={contentWidth}
+                  />
+                  {rowItems.map((rowItem) => {
+                    const row = rowItem.index
+                    const rowHeader = rowHeaders(row)
+                    return (
+                      <div
+                        key={row}
+                        role="row"
+                        aria-rowindex={columnDims.length + row + 1}
+                        className="absolute left-0"
+                        style={{ top: rowItem.start, height: ROW_HEIGHT, width: contentWidth }}
+                      >
+                        <RowHeaders
+                          gridId={gridId}
+                          header={rowHeader}
+                          previous={rowHeaders(row - 1)}
+                          rowDims={rowDims}
+                          widths={rowHeaderWidths}
+                          lineItems={lineItems}
+                          onToggleCollapse={toggleMember}
+                        />
+                        {cols.map((col) => {
+                          const lineItemId = lineItemIdAt(
+                            lineItemSourceOfCells,
+                            rowHeader,
+                            colHeaders(col),
+                          )
+                          const lineItem =
+                            lineItemId === undefined ? undefined : lineItems.get(lineItemId)
+                          // A value that is being written shows in place of the one it replaces.
+                          const pendingValue = editing.pendingAt(row, col)
+                          const loaded = data.cell(row, col)
+                          const cell =
+                            pendingValue && loaded
+                              ? {
+                                  ...loaded,
+                                  value: pendingValue,
+                                  text:
+                                    lineItem &&
+                                    displayText(pendingValue, lineItem.format, reference),
+                                }
+                              : loaded
+                          return (
+                            <GridCell
+                              key={col}
+                              gridId={gridId}
+                              row={row}
+                              col={col}
+                              colIndex={rowDimCount + col + 1}
+                              left={rowHeaderWidth + colStarts[col]}
+                              width={colWidths[col]}
+                              cell={cell}
+                              lineItem={lineItem}
+                              rules={conditionalFormats}
+                              selected={
+                                row >= range.rowStart &&
+                                row <= range.rowEnd &&
+                                col >= range.colStart &&
+                                col <= range.colEnd
+                              }
+                              pending={pendingValue !== undefined}
+                              gridReadOnly={!canWrite}
+                            />
+                          )
+                        })}
+                      </div>
+                    )
+                  })}
+                  {multiple && (
+                    <div
+                      aria-hidden
+                      data-selection="range"
+                      className="pointer-events-none absolute z-5 bg-primary/10 ring-1 ring-primary ring-inset forced-colors:outline-1 forced-colors:-outline-offset-1"
+                      style={rect(range.rowStart, range.rowEnd, range.colStart, range.colEnd)}
+                    />
+                  )}
                   <div
                     aria-hidden
-                    data-tooltip-anchor
-                    className="pointer-events-none absolute"
-                    style={rect(anchor.row, anchor.row, anchor.col, anchor.col)}
+                    data-selection="active"
+                    className="pointer-events-none absolute z-5 ring-2 ring-primary/40 ring-inset group-focus/grid:ring-primary forced-colors:outline-2 forced-colors:-outline-offset-2"
+                    style={rect(active.row, active.row, active.col, active.col)}
                   />
-                </TooltipTrigger>
-                <TooltipContent hideWhenDetached onEscapeKeyDown={() => setDismissed(tipKey)}>
-                  {tipNote}
-                </TooltipContent>
-              </Tooltip>
-            </div>
-          </div>
+                  {editorCell && editorTarget && editorValue && (
+                    <div
+                      className="absolute z-10"
+                      style={rect(
+                        editorCell.pos.row,
+                        editorCell.pos.row,
+                        editorCell.pos.col,
+                        editorCell.pos.col,
+                      )}
+                    >
+                      <CellEditor
+                        kind={editorCell.kind}
+                        label={cellLabel(reader, editorCell.pos.row, editorCell.pos.col) ?? label}
+                        initial={editorCell.initial}
+                        align={editorTarget.lineItem.format.type === "number" ? "right" : "left"}
+                        options={listOptions(editorTarget.lineItem.format, reference)}
+                        currentItem={editorValue.value.t === "item" ? editorValue.value.v : null}
+                        currentDate={editorValue.value.t === "date" ? editorValue.value.v : null}
+                        onText={editing.commitText}
+                        onValue={editing.pick}
+                        onLeave={editing.leave}
+                        onCancel={editing.cancel}
+                      />
+                    </div>
+                  )}
+                  {widthFor && (
+                    <ColumnWidthPopover
+                      anchor={rect(active.row, active.row, active.col, active.col)}
+                      width={widthFor.width}
+                      onSubmit={(width) => {
+                        onColumnWidthsChange?.({ ...columnWidths, [widthFor.key]: width })
+                        setWidthFor(null)
+                        focusGrid()
+                      }}
+                      onClose={() => {
+                        setWidthFor(null)
+                        focusGrid()
+                      }}
+                    />
+                  )}
+                  {/* Radix closes a tooltip when anything that holds its trigger scrolls, and the grid
+                      scrolls to the active cell as the keys move it; only Escape dismisses this one. */}
+                  <Tooltip open={tipNote !== undefined && dismissed !== tipKey}>
+                    <TooltipTrigger asChild>
+                      <div
+                        aria-hidden
+                        data-tooltip-anchor
+                        className="pointer-events-none absolute"
+                        style={rect(anchor.row, anchor.row, anchor.col, anchor.col)}
+                      />
+                    </TooltipTrigger>
+                    <TooltipContent hideWhenDetached onEscapeKeyDown={() => setDismissed(tipKey)}>
+                      {tipNote}
+                    </TooltipContent>
+                  </Tooltip>
+                </div>
+              </div>
+            </ContextMenuTrigger>
+            <CellMenuContent
+              rows={{ dims: rowDims, count: totalRows, index: active.row, headerAt: rowHeaders }}
+              columns={{
+                dims: columnDims,
+                count: totalColumns,
+                index: active.col,
+                headerAt: colHeaders,
+              }}
+              {...editing.menuState()}
+              onCollapse={toggleMember && collapseMember}
+              width={
+                onColumnWidthsChange && activeHeader
+                  ? {
+                      custom: columnKey(activeHeader) in columnWidths,
+                      onChange: () => {
+                        widthRequested.current = true
+                        setWidthFor({
+                          key: columnKey(activeHeader),
+                          width: colWidths[active.col],
+                        })
+                      },
+                      onReset: () =>
+                        onColumnWidthsChange(without(columnWidths, columnKey(activeHeader))),
+                    }
+                  : undefined
+              }
+              onCopy={() => void editing.copyToClipboard()}
+              onPaste={() => void editing.pasteFromClipboard()}
+              onFillDown={() => void editing.fillDown()}
+              onCloseAutoFocus={(event) => {
+                // A form for the width takes the keyboard from here.
+                if (widthRequested.current) {
+                  widthRequested.current = false
+                  event.preventDefault()
+                }
+              }}
+            />
+          </ContextMenu>
         </TooltipProvider>
       </div>
       <div hidden>

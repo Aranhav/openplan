@@ -120,7 +120,6 @@ describe("grid accessibility", () => {
             label="Revenue plan"
             onToggleCollapse={vi.fn()}
             onColumnWidthsChange={vi.fn()}
-            onToggleBoolean={vi.fn()}
           />
         </main>
       </QueryClientProvider>,

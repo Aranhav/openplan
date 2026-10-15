@@ -780,6 +780,39 @@ describe("useViewData load", () => {
     expect(windows(served.requests)).toContain("0,0")
   })
 
+  it("peeks at what is cached, without asking for anything", async () => {
+    const served = serveViewQuery()
+    const { Wrapper } = wrapper()
+    const { result } = renderHook(() => useViewData(MODEL_ID, salesQuery, topLeft), {
+      wrapper: Wrapper,
+    })
+    await waitFor(() => expect(result.current.isFetching).toBe(false))
+    await waitFor(() => expect(served.requests).toHaveLength(4))
+
+    const lookup = result.current.peek({ rowStart: 90, rowEnd: 110, colStart: 38, colEnd: 42 })
+
+    expect(lookup?.cell(105, 40)?.value).toEqual({ t: "number", v: 105040 })
+    expect(lookup?.rowHeaders(105)?.members[0].label).toBe("Product 106")
+    expect(served.requests).toHaveLength(4)
+  })
+
+  it("peeks at nothing while a block of the range is not cached", async () => {
+    const served = serveViewQuery()
+    const { Wrapper } = wrapper()
+    const { result } = renderHook(() => useViewData(MODEL_ID, salesQuery, topLeft), {
+      wrapper: Wrapper,
+    })
+    await waitFor(() => expect(result.current.isFetching).toBe(false))
+    await waitFor(() => expect(served.requests).toHaveLength(4))
+
+    expect(result.current.peek(far)).toBeUndefined()
+    await act(async () => {
+      await result.current.load(far)
+    })
+
+    expect(result.current.peek(far)?.cell(505, 2)?.value).toEqual({ t: "number", v: 505002 })
+  })
+
   it("rejects when a block cannot be loaded", async () => {
     server.use(
       http.post("/api/v1/models/:id/query", async ({ request }) => {
