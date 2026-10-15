@@ -2,7 +2,7 @@ import { screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { HttpResponse, delay, http } from "msw"
 import { toast } from "sonner"
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { globex, me, meInTwoWorkspaces, mockSession, renderApp, user, workspace } from "@/test/app"
 import { problem } from "@/test/problem"
 import { server } from "@/test/server"
@@ -119,6 +119,27 @@ describe("the members page", () => {
     await typist.hover(await screen.findByRole("button", { name: button }))
 
     expect(await screen.findByRole("tooltip")).toHaveTextContent(tip)
+  })
+
+  describe("below the width where the table gets its Email column", () => {
+    const desktopWidth = window.innerWidth
+
+    afterEach(() => {
+      window.innerWidth = desktopWidth
+    })
+
+    // The role select sits beside the button; a tooltip would only cover it.
+    it.each([375, 900, 1023])("leaves the button without a tooltip at %ipx", async (width) => {
+      window.innerWidth = width
+      mockSession()
+      serveMembers([ada, grace])
+      const typist = userEvent.setup()
+      renderApp(pageUrl)
+      await typist.hover(await screen.findByRole("button", { name: "Remove Grace Hopper" }))
+      await new Promise((resolve) => setTimeout(resolve, 150))
+
+      expect(screen.queryByRole("tooltip")).not.toBeInTheDocument()
+    })
   })
 
   it("shows placeholders, and no Add member button, while the members load", async () => {

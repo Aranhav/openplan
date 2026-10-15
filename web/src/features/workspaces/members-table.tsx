@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/table"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { useMe } from "@/features/auth/api"
-import { useIsMobile } from "@/hooks/use-mobile"
+import { LG_BREAKPOINT, useIsMobile } from "@/hooks/use-mobile"
 import { errorDetail } from "@/lib/api/client"
 import type { components } from "@/lib/api/schema"
 import { cn } from "@/lib/utils"
@@ -167,7 +167,8 @@ interface RemoveButtonProps {
 
 /** The icon button that opens the dialog for removing a member, or for leaving the workspace. */
 function RemoveButton({ isSelf, name, buttonRef, onClick }: RemoveButtonProps) {
-  const isMobile = useIsMobile()
+  // The table changes layout at `lg` (see `NAME_CELL`), and the button with it.
+  const isNarrow = useIsMobile(LG_BREAKPOINT)
   const label = isSelf ? "Leave workspace" : "Remove member"
   const button = (
     <Button
@@ -183,7 +184,7 @@ function RemoveButton({ isSelf, name, buttonRef, onClick }: RemoveButtonProps) {
 
   // A tooltip is for a pointer to hover. On a narrow screen it would only cover the role select
   // beside the button when focus comes back to the button after the dialog closes.
-  if (isMobile) {
+  if (isNarrow) {
     return button
   }
   return (
