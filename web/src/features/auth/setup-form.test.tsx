@@ -147,6 +147,19 @@ describe("SetupForm", () => {
     expect(queryClient.getQueryData(["setup-status"])).toEqual({ needs_setup: false })
   })
 
+  it("replaces the setup entry in the history, so Back does not return to it", async () => {
+    server.use(
+      http.post("/api/v1/setup", () => HttpResponse.json({ user, workspace }, { status: 201 })),
+    )
+    const typist = userEvent.setup()
+    const { router } = renderWithProviders(<SetupForm />)
+    await fillForm(typist)
+    await submit(typist)
+
+    await waitFor(() => expect(router.state.location.href).toBe("/"))
+    expect(router.history.length).toBe(1)
+  })
+
   it("disables the button while the request is pending", async () => {
     let release!: () => void
     const gate = new Promise<void>((resolve) => {
@@ -212,6 +225,7 @@ describe("SetupForm", () => {
     await submit(typist)
 
     await waitFor(() => expect(router.state.location.pathname).toBe("/login"))
+    expect(router.history.length).toBe(1)
     expect(toast.info).toHaveBeenCalledWith("OpenPlan is already set up. Sign in to continue.")
     expect(toast.error).not.toHaveBeenCalled()
     expect(queryClient.getQueryData(["setup-status"])).toEqual({ needs_setup: false })

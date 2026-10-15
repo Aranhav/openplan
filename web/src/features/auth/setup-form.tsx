@@ -68,13 +68,14 @@ export function SetupForm() {
     } catch (error) {
       if (error instanceof ApiError && error.code === "setup.already_done") {
         toast.info("OpenPlan is already set up. Sign in to continue.")
-        await navigate({ to: "/login" })
+        await navigate({ to: "/login", replace: true })
       } else {
         reportFormError(form, error)
       }
       return
     }
-    await navigate({ to: "/" })
+    // Back from the page that follows must not land on /setup, which would only bounce the user.
+    await navigate({ to: "/", replace: true })
   }
 
   return (

@@ -59,7 +59,8 @@ export function LoginForm({ redirectTo }: LoginFormProps) {
       }
       return
     }
-    await navigate({ href: safeRedirectPath(redirectTo) })
+    // Back from the page that follows must not land on /login, which would only bounce the user.
+    await navigate({ href: safeRedirectPath(redirectTo), replace: true })
   }
 
   return (

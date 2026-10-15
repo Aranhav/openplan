@@ -149,6 +149,16 @@ describe("LoginForm", () => {
     await waitFor(() => expect(router.state.location.href).toBe("/"))
   })
 
+  it("replaces the sign-in entry in the history, so Back does not return to it", async () => {
+    acceptLogin()
+    const typist = userEvent.setup()
+    const { router } = renderWithProviders(<LoginForm redirectTo="/models/42" />)
+    await signIn(typist)
+
+    await waitFor(() => expect(router.state.location.href).toBe("/models/42"))
+    expect(router.history.length).toBe(1)
+  })
+
   it("returns to the page the user came from", async () => {
     acceptLogin()
     const typist = userEvent.setup()
