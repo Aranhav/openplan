@@ -13,32 +13,37 @@ function range(from: [number, number], to: [number, number]): Selection {
 }
 
 describe("toTsv", () => {
-  it("joins cells with tabs and rows with newlines", () => {
+  it("joins cells with tabs and ends every row with a newline, as Excel does", () => {
     expect(
       toTsv([
         ["a", "b"],
         ["c", "d"],
       ]),
-    ).toBe("a\tb\nc\td")
+    ).toBe("a\tb\nc\td\n")
   })
 
-  it("writes a single cell as plain text", () => {
-    expect(toTsv([["1234.5"]])).toBe("1234.5")
+  it("writes a single cell as plain text and a newline", () => {
+    expect(toTsv([["1234.5"]])).toBe("1234.5\n")
   })
 
   it("keeps empty cells so columns stay aligned", () => {
-    expect(toTsv([["a", "", "c"]])).toBe("a\t\tc")
+    expect(toTsv([["a", "", "c"]])).toBe("a\t\tc\n")
+  })
+
+  it("writes a blank cell as a lone newline, so it is not an empty clipboard", () => {
+    expect(toTsv([[""]])).toBe("\n")
+    expect(toTsv([[""], [""]])).toBe("\n\n")
   })
 
   it("quotes a cell that holds a tab, a newline or a quote", () => {
-    expect(toTsv([["a\tb"]])).toBe('"a\tb"')
-    expect(toTsv([["line 1\nline 2"]])).toBe('"line 1\nline 2"')
-    expect(toTsv([["line 1\r\nline 2"]])).toBe('"line 1\r\nline 2"')
-    expect(toTsv([['say "hi"']])).toBe('"say ""hi"""')
+    expect(toTsv([["a\tb"]])).toBe('"a\tb"\n')
+    expect(toTsv([["line 1\nline 2"]])).toBe('"line 1\nline 2"\n')
+    expect(toTsv([["line 1\r\nline 2"]])).toBe('"line 1\r\nline 2"\n')
+    expect(toTsv([['say "hi"']])).toBe('"say ""hi"""\n')
   })
 
   it("leaves a cell with spaces or commas unquoted", () => {
-    expect(toTsv([["North America", "1,234.50"]])).toBe("North America\t1,234.50")
+    expect(toTsv([["North America", "1,234.50"]])).toBe("North America\t1,234.50\n")
   })
 
   it("is empty for no rows", () => {
@@ -135,6 +140,18 @@ describe("parseTsv", () => {
       ["plain", 'has "quotes"', "tab\there"],
       ["multi\nline", "", "end"],
     ]
+    expect(parseTsv(toTsv(rows))).toEqual(rows)
+  })
+
+  it.each([
+    [[["a"], [""]]],
+    [[[""]]],
+    [[[""], [""]]],
+    [[["", ""]]],
+    [[["a", ""], ["", "b"], ["", ""]]],
+    [[["", "x"], [""]]],
+    [[["tail"], ["\n"], [""]]],
+  ])("reads back blank cells in %j", (rows) => {
     expect(parseTsv(toTsv(rows))).toEqual(rows)
   })
 })

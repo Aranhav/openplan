@@ -4,9 +4,13 @@ export type PasteEdit = { pos: Pos; raw: string }
 
 export type FillEdit = { from: Pos; to: Pos }
 
-/** Rows of cells as tab-separated text. A cell with a tab, a line break or a quote is quoted. */
+/**
+ * Rows of cells as tab-separated text, every row ending in a line break as Excel writes it, so
+ * a blank cell is "\n" and not an empty clipboard. A cell with a tab, a line break or a quote
+ * is quoted.
+ */
 export function toTsv(rows: string[][]): string {
-  return rows.map((row) => row.map(quoteCell).join("\t")).join("\n")
+  return rows.map((row) => `${row.map(quoteCell).join("\t")}\n`).join("")
 }
 
 function quoteCell(cell: string): string {
