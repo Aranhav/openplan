@@ -371,6 +371,58 @@ async fn append_then_load_replays(pool: PgPool) {
     );
 }
 
+/// `count` numbers that use all 53 bits of an f64, from a fixed seed.
+fn full_precision_numbers(count: usize) -> Vec<f64> {
+    let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+    (0..count)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 11) as f64 / (1_u64 << 53) as f64 * 1_000_000.0
+        })
+        .collect()
+}
+
+fn number_bits(values: &[Value]) -> Vec<u64> {
+    values
+        .iter()
+        .map(|value| match value {
+            Value::Number(number) => number.to_bits(),
+            other => panic!("expected a number, found {other:?}"),
+        })
+        .collect()
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn replay_keeps_numbers_to_the_last_bit(pool: PgPool) {
+    let (stored, mut model) = stored_model(&pool).await;
+    let (plan, structure) = plan_structure();
+    commit(&pool, &stored, &mut model, structure).await;
+    let named = [0.1 + 0.2, 1.0 / 3.0, 123_456_789.123_456_79];
+    let numbers: Vec<f64> = named
+        .into_iter()
+        .chain(full_precision_numbers(69))
+        .collect();
+    let cells: Vec<(usize, usize, usize, f64)> = (0..2)
+        .flat_map(|product| {
+            (0..12).flat_map(move |month| (0..3).map(move |version| (product, month, version)))
+        })
+        .zip(numbers.iter())
+        .map(|((product, month, version), &number)| (product, month, version, number))
+        .collect();
+    assert_eq!(cells.len(), 72);
+    let edit = number_cells(&model, &plan, plan.units, &cells);
+    commit(&pool, &stored, &mut model, vec![edit]).await;
+
+    let (loaded, _) = engine_store::load(&pool, stored.id).await.unwrap();
+
+    let expected: Vec<u64> = numbers.iter().map(|number| number.to_bits()).collect();
+    assert_eq!(number_bits(&snapshot(&model, &plan)[0]), expected);
+    assert_eq!(number_bits(&snapshot(&loaded, &plan)[0]), expected);
+    assert_same(&loaded, &model, &plan);
+}
+
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn checkpoint_then_load_equals(pool: PgPool) {
     let (stored, mut model) = stored_model(&pool).await;
