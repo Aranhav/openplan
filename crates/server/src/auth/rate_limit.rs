@@ -4,8 +4,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// Tracking more keys than this triggers a sweep of expired entries.
-const SWEEP_THRESHOLD: usize = 10_000;
+/// The most keys tracked at once. Keys come from clients, so the map must not
+/// grow with the number of distinct emails they send.
+const MAX_KEYS: usize = 10_000;
 
 /// Sliding-window limiter for login attempts, held in memory.
 pub struct LoginLimiter {
@@ -44,8 +45,30 @@ impl LoginLimiter {
         now.saturating_duration_since(attempt) < self.window
     }
 
+    /// Frees a slot for a new key: drops the keys whose attempts have all
+    /// expired and, if that frees none, the key used least recently.
+    fn make_room(&self, tracked: &mut HashMap<String, Vec<Instant>>, now: Instant) {
+        tracked.retain(|_, attempts| {
+            attempts.retain(|&attempt| self.is_live(attempt, now));
+            !attempts.is_empty()
+        });
+        if tracked.len() < MAX_KEYS {
+            return;
+        }
+        let least_recent = tracked
+            .iter()
+            .min_by_key(|(_, attempts)| attempts.last().copied())
+            .map(|(key, _)| key.clone());
+        if let Some(key) = least_recent {
+            tracked.remove(&key);
+        }
+    }
+
     fn check_and_record_at(&self, key: &str, now: Instant) -> Result<(), u64> {
         let mut tracked = self.lock();
+        if tracked.len() >= MAX_KEYS && !tracked.contains_key(key) {
+            self.make_room(&mut tracked, now);
+        }
         let attempts = tracked.entry(key.to_string()).or_default();
         attempts.retain(|&attempt| self.is_live(attempt, now));
         let blocking = attempts
@@ -58,12 +81,6 @@ impl LoginLimiter {
             return Err((wait.as_secs() + u64::from(wait.subsec_nanos() > 0)).max(1));
         }
         attempts.push(now);
-        if tracked.len() > SWEEP_THRESHOLD {
-            tracked.retain(|_, attempts| {
-                attempts.retain(|&attempt| self.is_live(attempt, now));
-                !attempts.is_empty()
-            });
-        }
         Ok(())
     }
 }
@@ -203,21 +220,75 @@ mod tests {
         assert_eq!(allowed, 10);
     }
 
-    #[test]
-    fn expired_keys_are_swept_when_many_are_tracked() {
-        let limiter = limiter();
-        let start = Instant::now();
-        for n in 0..=SWEEP_THRESHOLD {
+    fn fill(limiter: &LoginLimiter, keys: std::ops::Range<usize>, at: impl Fn(usize) -> Instant) {
+        for n in keys {
             limiter
-                .check_and_record_at(&format!("{n}|1"), start)
+                .check_and_record_at(&format!("{n}|1"), at(n))
                 .unwrap();
         }
-        assert_eq!(limiter.lock().len(), SWEEP_THRESHOLD + 1);
+    }
+
+    #[test]
+    fn the_number_of_tracked_keys_is_capped() {
+        let limiter = limiter();
+        let start = Instant::now();
+
+        fill(&limiter, 0..MAX_KEYS + 500, |_| start);
+
+        assert_eq!(limiter.lock().len(), MAX_KEYS);
+    }
+
+    #[test]
+    fn expired_keys_are_swept_before_live_ones_are_evicted() {
+        let limiter = limiter();
+        let start = Instant::now();
+        let later = start + WINDOW - Duration::from_secs(1);
+        fill(&limiter, 0..MAX_KEYS / 2, |_| start);
+        fill(&limiter, MAX_KEYS / 2..MAX_KEYS, |_| later);
 
         limiter
             .check_and_record_at("fresh|1", start + WINDOW)
             .unwrap();
 
-        assert_eq!(limiter.lock().len(), 1);
+        let tracked = limiter.lock();
+        assert_eq!(tracked.len(), MAX_KEYS / 2 + 1);
+        assert!(tracked.contains_key("fresh|1"));
+        assert!(tracked.contains_key(&format!("{}|1", MAX_KEYS - 1)));
+        assert!(!tracked.contains_key("0|1"));
+    }
+
+    #[test]
+    fn the_least_recently_used_key_is_evicted_when_all_are_live() {
+        let limiter = limiter();
+        let start = Instant::now();
+        let at = |n: usize| start + Duration::from_millis(n as u64);
+        fill(&limiter, 0..MAX_KEYS, at);
+        limiter.check_and_record_at("0|1", at(MAX_KEYS)).unwrap();
+
+        limiter
+            .check_and_record_at("fresh|1", at(MAX_KEYS + 1))
+            .unwrap();
+
+        let tracked = limiter.lock();
+        assert_eq!(tracked.len(), MAX_KEYS);
+        assert!(tracked.contains_key("fresh|1"));
+        assert!(
+            tracked.contains_key("0|1"),
+            "a recently used key was evicted"
+        );
+        assert!(!tracked.contains_key("1|1"));
+        assert!(tracked.contains_key("2|1"));
+    }
+
+    #[test]
+    fn a_tracked_key_is_never_evicted_to_make_room_for_itself() {
+        let limiter = limiter();
+        let start = Instant::now();
+        fill(&limiter, 0..MAX_KEYS, |_| start);
+
+        limiter.check_and_record_at("0|1", start).unwrap();
+
+        assert_eq!(limiter.lock().len(), MAX_KEYS);
+        assert_eq!(limiter.lock()["0|1"].len(), 2);
     }
 }
