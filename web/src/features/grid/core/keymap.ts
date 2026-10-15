@@ -21,6 +21,11 @@ export type GridCommand =
   | { type: "edge"; edge: Edge; extend: boolean; jump: boolean }
   | { type: "page"; dir: "up" | "down"; extend: boolean }
   | { type: "selectAll" }
+  /**
+   * Collapse or expand the member that has children in the header of the active row or column.
+   * The keys are Alt+Shift+Left and Right for rows, Alt+Shift+Up and Down for columns.
+   */
+  | { type: "collapse"; axis: "row" | "column"; expand: boolean }
   | { type: "selectRow" }
   | { type: "selectColumn" }
   /** Open the editor on the active cell, keeping its value. */
@@ -81,8 +86,11 @@ function resolveNavigateKey(event: KeyInput): GridCommand {
   const jump = event.ctrlKey || event.metaKey
   const arrow = ARROWS.get(event.key)
   if (arrow) {
-    // Alt+Arrow is history navigation in the browser.
-    return event.altKey ? NONE : { type: "move", dir: arrow, extend: event.shiftKey, jump }
+    if (event.altKey) {
+      // Alt+Arrow alone is history navigation in the browser; with Shift it is free.
+      return event.shiftKey && !jump ? resolveCollapse(arrow) : NONE
+    }
+    return { type: "move", dir: arrow, extend: event.shiftKey, jump }
   }
 
   const plain = !hasShortcutModifier(event)
@@ -135,6 +143,19 @@ function resolveNavigateKey(event: KeyInput): GridCommand {
     return { type: "replace", text: event.key }
   }
   return jump ? resolveShortcut(event) : NONE
+}
+
+function resolveCollapse(arrow: Direction): GridCommand {
+  switch (arrow) {
+    case "left":
+      return { type: "collapse", axis: "row", expand: false }
+    case "right":
+      return { type: "collapse", axis: "row", expand: true }
+    case "up":
+      return { type: "collapse", axis: "column", expand: false }
+    case "down":
+      return { type: "collapse", axis: "column", expand: true }
+  }
 }
 
 function resolveShortcut(event: KeyInput): GridCommand {

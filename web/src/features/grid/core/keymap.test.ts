@@ -60,6 +60,31 @@ describe("resolveKey in navigate mode", () => {
 
     it("leaves Alt+arrow to the browser (history navigation)", () => {
       expect(navigate("ArrowLeft", { altKey: true })).toEqual(none)
+      expect(navigate("ArrowRight", { altKey: true })).toEqual(none)
+    })
+  })
+
+  describe("collapse and expand", () => {
+    it.each([
+      ["ArrowLeft", "row", false],
+      ["ArrowRight", "row", true],
+      ["ArrowUp", "column", false],
+      ["ArrowDown", "column", true],
+    ] as const)("%s with Alt and Shift is %s expand=%s", (key, axis, expand) => {
+      expect(navigate(key, { altKey: true, shiftKey: true })).toEqual({
+        type: "collapse",
+        axis,
+        expand,
+      })
+    })
+
+    it("leaves Alt+Shift+arrow alone when Ctrl or Command is held too", () => {
+      expect(navigate("ArrowLeft", { altKey: true, shiftKey: true, ctrlKey: true })).toEqual(none)
+      expect(navigate("ArrowLeft", { altKey: true, shiftKey: true, metaKey: true })).toEqual(none)
+    })
+
+    it("is not a key of the editor", () => {
+      expect(edit("ArrowLeft", { altKey: true, shiftKey: true })).toEqual(none)
     })
   })
 
