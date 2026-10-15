@@ -377,6 +377,45 @@ impl Structure {
         Ok(())
     }
 
+    /// Replaces the versions of a structure that nothing uses yet with `versions`, which are
+    /// held to the rules `UpsertVersion` keeps: distinct names, switchover months inside the
+    /// calendar and none for the actual version, and exactly one actual and one current version.
+    pub(crate) fn restore_versions(&mut self, versions: Vec<Version>) -> Result<(), EngineError> {
+        let mut restored: Vec<Version> = Vec::with_capacity(versions.len());
+        for version in versions {
+            let name = check_name(
+                "version",
+                &version.name,
+                restored.iter().map(|other| other.name.as_str()),
+            )?;
+            if restored.iter().any(|other| other.id == version.id) {
+                return Err(already_exists("version", version.id.0));
+            }
+            match version.switchover {
+                Some(month) if month >= self.calendar.months() => {
+                    return Err(invalid(
+                        "The switchover month must lie inside the calendar.",
+                    ));
+                }
+                Some(_) if version.is_actual => {
+                    return Err(invalid(
+                        "The actual version cannot have a switchover month.",
+                    ));
+                }
+                _ => {}
+            }
+            restored.push(Version { name, ..version });
+        }
+        if restored.iter().filter(|version| version.is_actual).count() != 1 {
+            return Err(invalid("Exactly one version must be the actual version."));
+        }
+        if restored.iter().filter(|version| version.is_current).count() != 1 {
+            return Err(invalid("Exactly one version must be the current version."));
+        }
+        self.versions = restored;
+        Ok(())
+    }
+
     fn create_time_range(
         &mut self,
         id: TimeRangeId,

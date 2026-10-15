@@ -50,6 +50,8 @@ pub struct Model {
     stats: RecalcStats,
     generation: u64,
     summaries: SummaryCache,
+    /// How many stored cells the model was loaded without.
+    load_warnings: usize,
 }
 
 impl Model {
@@ -66,11 +68,43 @@ impl Model {
             stats: RecalcStats::default(),
             generation: 0,
             summaries: SummaryCache::default(),
+            load_warnings: 0,
         }
+    }
+
+    /// A model over `structure` that holds `inputs` as the cells typed in, with every
+    /// calculated line item calculated. `load_warnings` is how many stored cells were left out
+    /// of `inputs`.
+    pub(crate) fn assemble(
+        structure: Structure,
+        inputs: HashMap<LineItemId, Column>,
+        load_warnings: usize,
+    ) -> Result<Model, EngineError> {
+        let mut model = Model::new(structure.calendar);
+        model.structure = Arc::new(structure);
+        model.inputs = inputs
+            .into_iter()
+            .map(|(id, column)| (id, Arc::new(column)))
+            .collect();
+        model.load_warnings = load_warnings;
+        model.recalc_all()?;
+        Ok(model)
     }
 
     pub fn structure(&self) -> &Structure {
         &self.structure
+    }
+
+    /// How many stored cells [`Model::from_parts`] left out because the coordinates, items or
+    /// line items they belong to are not in the structure it was given. Zero for a model that
+    /// was not loaded.
+    pub fn load_warnings(&self) -> usize {
+        self.load_warnings
+    }
+
+    /// The cells typed into an input line item, if it has any stored.
+    pub(crate) fn input_cells(&self, li: LineItemId) -> Option<&Column> {
+        self.inputs.get(&li).map(|column| &**column)
     }
 
     /// Counts the applied commands and batches.

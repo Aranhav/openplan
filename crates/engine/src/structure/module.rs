@@ -159,6 +159,22 @@ impl Structure {
         Ok(())
     }
 
+    /// Puts back the system module of the properties of a list, which exists before any of its
+    /// line items does once it has had one. `module` must be what the list makes of it, except
+    /// perhaps for its functional area.
+    pub(crate) fn restore_properties_module(&mut self, module: Module) -> Result<(), EngineError> {
+        let mut restored = self.new_properties_module(module.id)?;
+        if module.name != restored.name || module.axes != restored.axes {
+            return Err(invalid(
+                "The name and dimensions of a list's properties module follow the list.",
+            ));
+        }
+        restored.functional_area = clean_area(&module.functional_area)?;
+        self.modules.insert(restored.id, restored);
+        self.names.take();
+        Ok(())
+    }
+
     pub(super) fn update_module(
         &mut self,
         id: ModuleId,

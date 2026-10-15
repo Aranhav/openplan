@@ -13,6 +13,7 @@ anyhow = "1"
 axum = "0.8"
 chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
 clap = { version = "4", features = ["derive"] }
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 mime_guess = "2"
 proptest = { version = "1", default-features = false, features = ["std"] }
 rayon = "1"
@@ -39,3 +40,4 @@ unicode-properties = { version = "0.1", default-features = false, features = ["g
 utoipa = { version = "5", features = ["axum_extras", "uuid", "chrono"] }
 utoipa-scalar = { version = "0.3", features = ["axum"] }
 uuid = { version = "1", features = ["v7", "serde"] }
+zstd = { version = "0.14", default-features = false }

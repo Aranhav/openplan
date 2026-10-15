@@ -1,4 +1,5 @@
 mod calendar;
+mod codec;
 mod command;
 mod error;
 mod formula;
@@ -11,6 +12,7 @@ mod summary;
 mod value;
 
 pub use calendar::{Calendar, TimeLevel, TimeRange};
+pub use codec::{InputChunk, ItemDoc, ListDoc, StructureDoc};
 pub use command::{CellEdit, ChangeSet, Command, CoordToken, ItemSpec, LineItemPatch};
 pub use error::{CellIssue, EngineError, FormulaError};
 pub use formula::{
