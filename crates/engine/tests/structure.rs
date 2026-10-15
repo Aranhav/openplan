@@ -1522,8 +1522,100 @@ fn set_calendar_is_validated() {
         current_month: None,
         ..calendar()
     };
-    let result = model.apply(Command::SetCalendar { calendar: shorter });
-    assert_eq!(error_code(result), "structure.invalid");
+    model
+        .apply(Command::SetCalendar { calendar: shorter })
+        .unwrap();
+    assert_eq!(model.structure().version(budget).unwrap().switchover, None);
+}
+
+#[test]
+fn a_calendar_change_keeps_each_switchover_in_its_month() {
+    let mut model = model();
+    let budget = version_id(&model, "Budget");
+    let switchover = |model: &Model| model.structure().version(budget).unwrap().switchover;
+    // Month 14 of the calendar from January 2026 is March 2027.
+    model
+        .apply(Command::UpsertVersion {
+            id: budget,
+            name: "Budget".to_string(),
+            is_actual: false,
+            is_current: true,
+            switchover: Some(14),
+        })
+        .unwrap();
+
+    // Starting the fiscal year in April puts the first month in April 2025, so March 2027 is month 23.
+    let april = Calendar {
+        fiscal_year_start_month: 4,
+        ..calendar()
+    };
+    model
+        .apply(Command::SetCalendar { calendar: april })
+        .unwrap();
+    assert_eq!(switchover(&model), Some(23));
+    assert_eq!(
+        model
+            .structure()
+            .calendar
+            .month_start_date(switchover(&model).unwrap()),
+        NaiveDate::from_ymd_opt(2027, 3, 1).unwrap()
+    );
+
+    // With the first year moved on by one, the first month is April 2026 and March 2027 is month 11.
+    let next_year = Calendar {
+        first_year: 2027,
+        ..model.structure().calendar
+    };
+    model
+        .apply(Command::SetCalendar {
+            calendar: next_year,
+        })
+        .unwrap();
+    assert_eq!(switchover(&model), Some(11));
+}
+
+#[test]
+fn a_switchover_outside_the_new_timeline_is_cleared() {
+    let mut model = model();
+    let budget = version_id(&model, "Budget");
+    model
+        .apply(Command::UpsertVersion {
+            id: budget,
+            name: "Budget".to_string(),
+            is_actual: false,
+            is_current: true,
+            switchover: Some(14),
+        })
+        .unwrap();
+
+    // One year drops March 2027, which is month 14, off the timeline.
+    let one_year = Calendar {
+        years: 1,
+        ..calendar()
+    };
+    model
+        .apply(Command::SetCalendar { calendar: one_year })
+        .unwrap();
+    assert_eq!(model.structure().version(budget).unwrap().switchover, None);
+
+    // A calendar that starts after March 2027 has no month for it either.
+    model
+        .apply(Command::UpsertVersion {
+            id: budget,
+            name: "Budget".to_string(),
+            is_actual: false,
+            is_current: true,
+            switchover: Some(0),
+        })
+        .unwrap();
+    let later = Calendar {
+        first_year: 2030,
+        ..calendar()
+    };
+    model
+        .apply(Command::SetCalendar { calendar: later })
+        .unwrap();
+    assert_eq!(model.structure().version(budget).unwrap().switchover, None);
 }
 
 #[test]

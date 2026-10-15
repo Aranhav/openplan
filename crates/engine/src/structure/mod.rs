@@ -292,15 +292,13 @@ impl Structure {
         {
             return Err(invalid("The current month must lie inside the calendar."));
         }
-        if let Some(version) = self.versions.iter().find(|version| {
-            version
+        // A switchover is a month of the calendar: it stays on the same month when the calendar
+        // moves, and is cleared when that month is no longer on the timeline.
+        let previous = self.calendar;
+        for version in &mut self.versions {
+            version.switchover = version
                 .switchover
-                .is_some_and(|month| month >= calendar.months())
-        }) {
-            return Err(invalid(format!(
-                "The switchover month of version '{}' would lie outside the calendar.",
-                version.name
-            )));
+                .and_then(|month| calendar.month_of_date(previous.month_start_date(month)));
         }
         self.calendar = calendar;
         Ok(())
