@@ -930,6 +930,14 @@ pub(crate) async fn delete_items(
     ApiPath((model_id, list_id)): ApiPath<(Uuid, Uuid)>,
     ApiJson(body): ApiJson<DeleteItemsRequest>,
 ) -> AppResult<StatusCode> {
+    let handle = handle_for(
+        &state,
+        &user,
+        model_id,
+        WorkspaceRole::Builder,
+        ProdLock::Enforce,
+    )
+    .await?;
     if body.ids.is_empty() {
         return Err(AppError::Validation(vec![FieldError {
             field: "ids".to_string(),
@@ -937,24 +945,26 @@ pub(crate) async fn delete_items(
         }]));
     }
     let ids = body.ids;
-    delete_with(&state, &user, model_id, move |model| {
-        let list = model
-            .structure()
-            .list(ListId(list_id))
-            .ok_or(AppError::NotFound)?;
-        ensure_items(
-            list,
-            "The item does not exist in this list.",
-            ids.iter()
-                .enumerate()
-                .map(|(index, id)| (format!("ids[{index}]"), ItemId(*id))),
-        )?;
-        Ok(vec![Command::DeleteListItems {
-            list: ListId(list_id),
-            ids: item_ids(ids),
-        }])
-    })
-    .await
+    handle
+        .apply_with(user.id, move |model| {
+            let list = model
+                .structure()
+                .list(ListId(list_id))
+                .ok_or(AppError::NotFound)?;
+            ensure_items(
+                list,
+                "The item does not exist in this list.",
+                ids.iter()
+                    .enumerate()
+                    .map(|(index, id)| (format!("ids[{index}]"), ItemId(*id))),
+            )?;
+            Ok(vec![Command::DeleteListItems {
+                list: ListId(list_id),
+                ids: item_ids(ids),
+            }])
+        })
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[utoipa::path(
