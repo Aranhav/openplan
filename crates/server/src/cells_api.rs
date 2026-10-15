@@ -20,7 +20,6 @@ use openplan_engine::{
     Value,
 };
 use serde::{Deserialize, Serialize};
-use sqlx::types::Json as JsonColumn;
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
@@ -29,7 +28,7 @@ use crate::{
     app::AppState,
     auth::CurrentUser,
     authz::{WorkspaceRole, require_workspace_role},
-    engine_store::cell_key,
+    engine_store::{self, CellHistory, cell_key},
     error::{AppError, AppResult, FieldError},
     extract::{ApiJson, ApiPath, ApiQuery},
     structure_api::{model_row, read_handle},
@@ -185,31 +184,13 @@ pub struct CellChangeDto {
     new: ValueDto,
 }
 
-/// What the change log keeps of the change of a cell.
-#[derive(Deserialize)]
-struct StoredChange {
-    old: Value,
-    new: Value,
-}
-
-#[derive(sqlx::FromRow)]
-struct ChangeRow {
-    at: DateTime<Utc>,
-    user_id: Option<Uuid>,
-    user_name: Option<String>,
-    payload: JsonColumn<StoredChange>,
-}
-
-impl From<ChangeRow> for CellChangeDto {
-    fn from(row: ChangeRow) -> Self {
+impl From<CellHistory> for CellChangeDto {
+    fn from(change: CellHistory) -> Self {
         CellChangeDto {
-            at: row.at,
-            user: row
-                .user_id
-                .zip(row.user_name)
-                .map(|(id, name)| ChangedByDto { id, name }),
-            old: (&row.payload.0.old).into(),
-            new: (&row.payload.0.new).into(),
+            at: change.at,
+            user: change.user.map(|(id, name)| ChangedByDto { id, name }),
+            old: (&change.old).into(),
+            new: (&change.new).into(),
         }
     }
 }
@@ -491,19 +472,9 @@ pub(crate) async fn cell_history(
         )]));
     }
     let key = canonical_key(&model, line_item, &query.cell_key)?;
-    let rows = sqlx::query_as::<_, ChangeRow>(
-        "SELECT c.at, c.user_id, u.name AS user_name, c.payload
-         FROM change_log c LEFT JOIN users u ON u.id = c.user_id
-         WHERE c.model_id = $1 AND c.kind = 'cell' AND c.line_item_id = $2 AND c.cell_key = $3
-         ORDER BY c.seq DESC LIMIT $4",
-    )
-    .bind(model_id)
-    .bind(line_item.0)
-    .bind(key)
-    .bind(HISTORY_LIMIT)
-    .fetch_all(&state.db)
-    .await?;
-    Ok(Json(rows.into_iter().map(CellChangeDto::from).collect()))
+    let changes =
+        engine_store::cell_history(&state.db, model_id, line_item, &key, HISTORY_LIMIT).await?;
+    Ok(Json(changes.into_iter().map(CellChangeDto::from).collect()))
 }
 
 #[cfg(test)]

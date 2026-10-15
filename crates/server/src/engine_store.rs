@@ -9,10 +9,11 @@
 use std::collections::HashMap;
 
 use anyhow::{Context, anyhow};
+use chrono::{DateTime, Utc};
 use openplan_engine::{
     Calendar, CellEdit, Command, CoordToken, InputChunk, LineItemId, Model, StructureDoc, Value,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::{PgExecutor, PgPool, Postgres, Transaction, types::Json};
 use uuid::Uuid;
 
@@ -217,6 +218,64 @@ pub struct Appended {
 struct CellChange<'a> {
     old: &'a Value,
     new: &'a Value,
+}
+
+/// What the change log keeps of a change of a cell, read back.
+#[derive(Deserialize)]
+struct StoredChange {
+    old: Value,
+    new: Value,
+}
+
+/// The changes of one cell, newest first: the `cell` rows of the change log are read through
+/// `change_log_cell_idx`, whose last column is the order they are wanted in.
+const HISTORY_SQL: &str = "SELECT c.at, c.user_id, u.name, c.payload
+     FROM change_log c LEFT JOIN users u ON u.id = c.user_id
+     WHERE c.model_id = $1 AND c.kind = 'cell' AND c.line_item_id = $2 AND c.cell_key = $3
+     ORDER BY c.seq DESC LIMIT $4";
+
+/// A change of one cell.
+pub struct CellHistory {
+    pub at: DateTime<Utc>,
+    /// The user who made the change and their name; none once the user is gone.
+    pub user: Option<(Uuid, String)>,
+    pub old: Value,
+    pub new: Value,
+}
+
+/// The last `limit` changes of the cell of `line_item` that has the key `cell_key` (see
+/// [`cell_key`]), newest first. A write that left the cell as it was is not a change.
+pub async fn cell_history(
+    db: &PgPool,
+    model_id: Uuid,
+    line_item: LineItemId,
+    cell_key: &str,
+    limit: i64,
+) -> AppResult<Vec<CellHistory>> {
+    let rows = sqlx::query_as::<
+        _,
+        (
+            DateTime<Utc>,
+            Option<Uuid>,
+            Option<String>,
+            Json<StoredChange>,
+        ),
+    >(HISTORY_SQL)
+    .bind(model_id)
+    .bind(line_item.0)
+    .bind(cell_key)
+    .bind(limit)
+    .fetch_all(db)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(at, user_id, user_name, Json(change))| CellHistory {
+            at,
+            user: user_id.zip(user_name),
+            old: change.old,
+            new: change.new,
+        })
+        .collect())
 }
 
 /// Records a batch of commands that was applied to the model, in the caller's transaction, and
@@ -470,6 +529,67 @@ mod tests {
         let plan = plan_of(&pool, &format!("EXPLAIN {BATCHES_SQL}"), model_id, true).await;
 
         assert!(plan.contains("change_log_replay_idx"), "{plan}");
+    }
+
+    /// A model whose change log has 100,000 changes of cells, 2,000 of them of one cell that is
+    /// changed every 50th time. Returns the model and the line item of that cell, whose key is
+    /// `hot`.
+    async fn log_with_a_hot_cell(pool: &PgPool) -> (Uuid, Uuid) {
+        let workspace = Uuid::now_v7();
+        sqlx::query("INSERT INTO workspaces (id, name) VALUES ($1, 'Acme')")
+            .bind(workspace)
+            .execute(pool)
+            .await
+            .unwrap();
+        let (model_id, line_item) = (Uuid::now_v7(), Uuid::now_v7());
+        sqlx::query(
+            "INSERT INTO models (id, workspace_id, name, calendar) VALUES ($1, $2, 'Plan', '{}')",
+        )
+        .bind(model_id)
+        .bind(workspace)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO change_log (model_id, kind, payload, line_item_id, cell_key)
+             SELECT $1, 'cell', '{}', $2, CASE WHEN n % 50 = 0 THEN 'hot' ELSE 'cold ' || n % 997 END
+             FROM generate_series(1, 100000) n",
+        )
+        .bind(model_id)
+        .bind(line_item)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query("ANALYZE change_log")
+            .execute(pool)
+            .await
+            .unwrap();
+        (model_id, line_item)
+    }
+
+    /// The newest changes of a cell are an index range read backwards in the order they are
+    /// wanted in, however many changes the model's other cells have: no sort, and no walk
+    /// down the whole log looking for them.
+    #[sqlx::test(migrator = "crate::db::MIGRATOR")]
+    async fn history_reads_a_range_of_the_cell_index_newest_first(pool: PgPool) {
+        let (model_id, line_item) = log_with_a_hot_cell(&pool).await;
+
+        let plan: Vec<String> = sqlx::query_scalar(&format!("EXPLAIN {HISTORY_SQL}"))
+            .bind(model_id)
+            .bind(line_item)
+            .bind("hot")
+            .bind(100_i64)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        let plan = plan.join("\n");
+
+        assert!(
+            plan.contains("Index Scan Backward using change_log_cell_idx"),
+            "{plan}"
+        );
+        assert!(!plan.contains("Sort"), "{plan}");
+        assert!(!plan.contains("change_log_pkey"), "{plan}");
     }
 
     /// The count a model's actor starts from when it loads is over the same rows and reads
