@@ -10,14 +10,12 @@ use axum::{
 };
 use openplan_server::{
     app::{AppState, build_router},
+    auth::{CSRF_COOKIE, CSRF_HEADER},
     config::Config,
 };
 use serde_json::Value;
 use sqlx::PgPool;
 use tower::ServiceExt;
-
-const CSRF_COOKIE: &str = "op_csrf";
-const CSRF_HEADER: &str = "x-openplan-csrf";
 
 pub struct TestApp {
     pub router: Router,
@@ -28,6 +26,9 @@ pub struct TestApp {
 pub struct TestResponse {
     pub status: StatusCode,
     pub headers: HeaderMap,
+    /// The raw response body.
+    pub text: String,
+    /// The body parsed as JSON, or `Value::Null` when it is not JSON.
     pub json: Value,
 }
 
@@ -136,10 +137,12 @@ impl TestApp {
         let status = response.status();
         let headers = response.headers().clone();
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let text = String::from_utf8_lossy(&bytes).into_owned();
         let json = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
         TestResponse {
             status,
             headers,
+            text,
             json,
         }
     }

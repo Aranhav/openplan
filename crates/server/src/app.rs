@@ -1,8 +1,9 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use axum::{
     Json, Router,
     http::{HeaderName, HeaderValue, Request},
+    middleware,
     routing::get,
 };
 use serde::Serialize;
@@ -16,14 +17,23 @@ use utoipa::{OpenApi, ToSchema};
 use utoipa_scalar::{Scalar, Servable};
 use uuid::Uuid;
 
-use crate::{config::Config, error::AppError, openapi::ApiDoc, static_files};
+use crate::{
+    auth::{self, csrf, rate_limit::LoginLimiter},
+    config::Config,
+    error::AppError,
+    openapi::ApiDoc,
+    static_files,
+};
 
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
+const LOGIN_MAX_FAILURES: u32 = 10;
+const LOGIN_FAILURE_WINDOW: Duration = Duration::from_secs(15 * 60);
 
 #[derive(Clone)]
 pub struct AppState {
     pub db: PgPool,
     pub config: Arc<Config>,
+    pub login_limiter: Arc<LoginLimiter>,
 }
 
 impl AppState {
@@ -31,6 +41,7 @@ impl AppState {
         AppState {
             db,
             config: Arc::new(config),
+            login_limiter: Arc::new(LoginLimiter::new(LOGIN_MAX_FAILURES, LOGIN_FAILURE_WINDOW)),
         }
     }
 }
@@ -65,7 +76,8 @@ pub(crate) async fn health() -> Json<HealthResponse> {
 }
 
 pub fn build_router(state: AppState) -> Router {
-    let api_v1: Router<AppState> = Router::new();
+    let api_v1: Router<AppState> =
+        auth::routes::router().layer(middleware::from_fn(csrf::require_csrf));
 
     Router::new()
         .route("/api/health", get(health))

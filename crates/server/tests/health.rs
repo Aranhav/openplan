@@ -105,4 +105,31 @@ async fn wrong_method_on_api_route_is_problem_json(pool: PgPool) {
     let content_type = response.headers[header::CONTENT_TYPE].to_str().unwrap();
     assert!(content_type.starts_with("application/problem+json"));
     assert_eq!(response.json["code"], "method_not_allowed");
+    let allow = response.headers[header::ALLOW].to_str().unwrap();
+    assert!(allow.contains("GET"), "Allow header was {allow:?}");
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn wrong_method_on_v1_route_is_problem_json(pool: PgPool) {
+    let mut app = TestApp::new(pool);
+
+    let response = app.get("/api/v1/auth/logout").await;
+
+    assert_eq!(response.status, StatusCode::METHOD_NOT_ALLOWED);
+    let content_type = response.headers[header::CONTENT_TYPE].to_str().unwrap();
+    assert!(content_type.starts_with("application/problem+json"));
+    assert_eq!(response.json["code"], "method_not_allowed");
+    let allow = response.headers[header::ALLOW].to_str().unwrap();
+    assert!(allow.contains("POST"), "Allow header was {allow:?}");
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn non_json_body_is_exposed_as_text(pool: PgPool) {
+    let mut app = TestApp::new(pool);
+
+    let response = app.get("/assets/missing.js").await;
+
+    assert_eq!(response.status, StatusCode::NOT_FOUND);
+    assert_eq!(response.text, "Not found");
+    assert_eq!(response.json, Value::Null);
 }

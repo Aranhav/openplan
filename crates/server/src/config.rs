@@ -20,7 +20,7 @@ impl fmt::Debug for Config {
             .field("public_url", &self.public_url)
             .field("bind", &self.bind)
             .field("log", &self.log)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -136,5 +136,6 @@ mod tests {
         let debug = format!("{config:?}");
         assert!(!debug.contains("hunter2"));
         assert!(debug.contains("\"<redacted>\""));
+        assert!(debug.ends_with(", .. }"), "{debug}");
     }
 }

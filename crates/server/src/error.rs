@@ -49,6 +49,12 @@ impl From<sqlx::Error> for AppError {
     }
 }
 
+impl From<FieldError> for AppError {
+    fn from(err: FieldError) -> Self {
+        AppError::Validation(vec![err])
+    }
+}
+
 #[derive(Serialize)]
 struct Problem {
     #[serde(rename = "type")]
@@ -231,6 +237,20 @@ mod tests {
         let json = body_json(response).await;
         assert_eq!(json["code"], "internal");
         assert_eq!(json["detail"], "Something went wrong.");
+    }
+
+    #[test]
+    fn single_field_error_converts_to_validation() {
+        let err = AppError::from(FieldError {
+            field: "email".into(),
+            message: "Enter a valid email address.".into(),
+        });
+
+        let AppError::Validation(errors) = err else {
+            panic!("expected a validation error");
+        };
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].field, "email");
     }
 
     #[test]

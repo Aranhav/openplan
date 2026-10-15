@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::{io::Write, net::SocketAddr};
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
@@ -54,10 +54,13 @@ async fn serve() -> anyhow::Result<()> {
         .await
         .with_context(|| format!("failed to bind {bind}"))?;
     tracing::info!(%bind, "openplan listening");
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .context("server error")
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .context("server error")
 }
 
 async fn shutdown_signal() {
