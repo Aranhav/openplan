@@ -16,6 +16,7 @@ The browser only talks to the Vercel origin. Vercel rewrites `/api/*` to the Ren
 3. Copy the **Session pooler** URI. Its port is 5432. The transaction pooler (port 6543) is not supported.
 4. Append `?sslmode=require` to the URI. The server connects with TLS.
 5. Percent-encode the password in the URI. An unencoded `#`, `?` or `/` ends the address early, which shows up as a URL parse error (for example an invalid port) or a connection to the wrong host — not as a rejected password. Percent-encode every reserved character, including `%` itself. Percent-encode every reserved character (`: / ? # [ ] @ ! $ & ' ( ) * + , ; =`), and `%` and spaces too. For example, `@` becomes `%40`.
+6. Turn off the Data API (Project Settings → Data API), or confirm it exposes nothing. OpenPlan reaches the database only through the connection string, never through the Data API. The migrations enable row level security on every table, so the Data API could not read them without a policy, but it should not be on at all.
 
 ### 2. Render (API)
 
@@ -24,6 +25,7 @@ The browser only talks to the Vercel origin. Vercel rewrites `/api/*` to the Ren
    - `DATABASE_URL`: the URI from step 1.
    - `OPENPLAN_PUBLIC_URL`: a placeholder such as `https://placeholder.example`. It must start with `https://` so cookies are marked `Secure`. The Vercel domain is not known until step 3, so update this variable in step 3.
 3. Check the deploy with `https://openplan-api.onrender.com/api/health`. It returns `{"status":"ok",...}`.
+4. In Supabase, open Advisors → Security Advisor and run it after this first deploy. It should report no `RLS Disabled in Public` errors for `users`, `sessions`, `workspaces`, `workspace_members`, `models` or `_sqlx_migrations`.
 
 `render.yaml` also sets `OPENPLAN_LOG=info` and `OPENPLAN_TRUSTED_PROXY_HOPS=2` (see [Trusted proxy hops](#trusted-proxy-hops)).
 

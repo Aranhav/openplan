@@ -97,6 +97,21 @@ async fn migrations_create_tables(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn migrations_enable_row_level_security_on_every_public_table(pool: PgPool) {
+    let unprotected = sqlx::query_scalar::<_, String>(
+        "SELECT c.relname::text FROM pg_class c
+         JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE n.nspname = 'public' AND c.relkind = 'r' AND NOT c.relrowsecurity
+         ORDER BY c.relname",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+
+    assert_eq!(unprotected, Vec::<String>::new());
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn wrong_method_on_api_route_is_problem_json(pool: PgPool) {
     let mut app = TestApp::new(pool);
 
