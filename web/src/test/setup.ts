@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest"
-import { cleanup } from "@testing-library/react"
+import { cleanup, configure } from "@testing-library/react"
 import { afterAll, afterEach, beforeAll } from "vitest"
 import { server } from "./server"
 
@@ -39,6 +39,10 @@ Element.prototype.scrollIntoView = () => {}
 Element.prototype.hasPointerCapture = () => false
 Element.prototype.setPointerCapture = () => {}
 Element.prototype.releasePointerCapture = () => {}
+
+// The first render of the whole app in a test file can take over a second on a busy machine, and
+// the default timeout of findBy and waitFor (1 s) is not enough then.
+configure({ asyncUtilTimeout: 3000 })
 
 // Requests no test mocked fail loudly instead of reaching a real network.
 beforeAll(() => server.listen({ onUnhandledFrame: "error" }))

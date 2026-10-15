@@ -1,5 +1,5 @@
 import type { QueryClient } from "@tanstack/react-query"
-import { act, configure, screen, waitFor, within } from "@testing-library/react"
+import { act, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { HttpResponse, delay, http } from "msw"
 import { toast } from "sonner"
@@ -8,9 +8,6 @@ import { queryKeys } from "@/lib/api/keys"
 import { makeModel, me, mockSession, renderApp, serveModels, workspace } from "@/test/app"
 import { problem } from "@/test/problem"
 import { server } from "@/test/server"
-
-// The first render of the whole app in a test file can take over a second on a busy machine.
-configure({ asyncUtilTimeout: 3000 })
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 
