@@ -192,9 +192,7 @@ impl Model {
         if src.trim().is_empty() {
             return Ok(ty);
         }
-        if let Err(errors) = parse(src) {
-            return Err(errors);
-        }
+        parse(src)?;
         let patch = LineItemPatch {
             formula: Some(Some(src.to_string())),
             ..LineItemPatch::default()
