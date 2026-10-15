@@ -1,4 +1,7 @@
 import { Outlet, createFileRoute, redirect } from "@tanstack/react-router"
+import { AppSidebar } from "@/components/app-sidebar"
+import { SiteHeader } from "@/components/site-header"
+import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
 import { meQuery, setupStatusQuery } from "@/features/auth/api"
 import { loginSearch } from "@/features/auth/redirect"
 import { ApiError } from "@/lib/api/client"
@@ -18,5 +21,20 @@ export const Route = createFileRoute("/_app")({
       throw error
     }
   },
-  component: Outlet,
+  component: AppLayout,
 })
+
+function AppLayout() {
+  // The sidebar provider saves its state in a cookie; reading it back keeps a collapsed sidebar collapsed.
+  return (
+    <SidebarProvider defaultOpen={!document.cookie.includes("sidebar_state=false")}>
+      <AppSidebar />
+      <SidebarInset>
+        <SiteHeader />
+        <div className="flex-1 p-4 md:p-6">
+          <Outlet />
+        </div>
+      </SidebarInset>
+    </SidebarProvider>
+  )
+}

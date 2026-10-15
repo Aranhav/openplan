@@ -4,7 +4,7 @@ import { renderHook, screen, waitFor } from "@testing-library/react"
 import { HttpResponse, http } from "msw"
 import type { ReactNode } from "react"
 import { describe, expect, it, vi } from "vitest"
-import { me, mockSession, renderApp } from "@/test/app"
+import { me, mockSession, renderApp, workspace } from "@/test/app"
 import { server } from "@/test/server"
 import { useLogout, useMe } from "./api"
 
@@ -56,10 +56,10 @@ describe("the app guard", () => {
 
   it("lets a signed-in user through and exposes them on the route context", async () => {
     mockSession()
-    const { router } = renderApp("/")
+    const { router } = renderApp("/profile")
 
     await waitFor(() => expect(router.state.status).toBe("idle"))
-    expect(router.state.location.pathname).toBe("/")
+    expect(router.state.location.pathname).toBe("/profile")
     expect(appContext(router)?.me).toEqual(me)
   })
 })
@@ -105,22 +105,22 @@ describe("the sign-in page", () => {
     mockSession()
     const { router } = renderApp("/login")
 
-    await waitFor(() => expect(router.state.location.href).toBe("/"))
+    await waitFor(() => expect(router.state.location.href).toBe(`/w/${workspace.id}`))
     expect(screen.queryByRole("heading", { name: "Sign in" })).not.toBeInTheDocument()
   })
 
   it("sends a signed-in user on to the page in the redirect parameter", async () => {
     mockSession()
-    const { router } = renderApp("/login?redirect=%2F%3Ftab%3Dplan")
+    const { router } = renderApp("/login?redirect=%2Fprofile%3Ftab%3Dplan")
 
-    await waitFor(() => expect(router.state.location.href).toBe("/?tab=plan"))
+    await waitFor(() => expect(router.state.location.href).toBe("/profile?tab=plan"))
   })
 
   it("does not follow a redirect parameter that leaves the app", async () => {
     mockSession()
     const { router } = renderApp("/login?redirect=https%3A%2F%2Fevil.example")
 
-    await waitFor(() => expect(router.state.location.href).toBe("/"))
+    await waitFor(() => expect(router.state.location.href).toBe(`/w/${workspace.id}`))
   })
 })
 

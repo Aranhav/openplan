@@ -37,7 +37,7 @@ describe("when the guards cannot reach a working server", () => {
     mockSession()
     server.use(http.get("/api/v1/auth/me", () => problem(503, "internal", "Starting up.")))
     const typist = userEvent.setup()
-    const { router } = renderApp("/")
+    const { router } = renderApp("/profile")
     await screen.findByRole("heading", { name: "Can't load OpenPlan" })
 
     server.use(http.get("/api/v1/auth/me", () => HttpResponse.json(me)))
@@ -48,7 +48,7 @@ describe("when the guards cannot reach a working server", () => {
       expect(appMatch?.context.me).toEqual(me)
     })
     expect(screen.queryByRole("heading", { name: "Can't load OpenPlan" })).not.toBeInTheDocument()
-    expect(router.state.location.pathname).toBe("/")
+    expect(router.state.location.pathname).toBe("/profile")
   })
 })
 
@@ -82,25 +82,23 @@ describe("when the session expires", () => {
   it("sends the user to sign in after a protected query gets a 401", async () => {
     const session = mockSession()
     server.use(
-      http.get("/api/v1/workspaces", () =>
-        problem(401, "auth.unauthenticated", "Sign in to continue."),
-      ),
+      http.get("/api/v1/users", () => problem(401, "auth.unauthenticated", "Sign in to continue.")),
     )
-    const { queryClient, router } = renderApp("/")
+    const { queryClient, router } = renderApp("/profile")
     await waitFor(() => expect(router.state.status).toBe("idle"))
     queryClient.setQueryData(["models"], [{ id: "1" }])
     session.signedIn = false
 
     await expect(
       queryClient.fetchQuery({
-        queryKey: ["workspaces"],
-        queryFn: () => unwrap(api.GET("/workspaces")),
+        queryKey: ["users"],
+        queryFn: () => unwrap(api.GET("/users")),
       }),
     ).rejects.toMatchObject({ status: 401 })
 
     expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument()
     expect(router.state.location.pathname).toBe("/login")
-    expect(router.state.location.search).toEqual({})
+    expect(router.state.location.search).toEqual({ redirect: "/profile" })
     expect(router.history.length).toBe(1)
     expect(queryClient.getQueryData(["models"])).toBeUndefined()
     expect(queryClient.getQueryData(["me"])).toBeUndefined()
@@ -113,7 +111,7 @@ describe("when the session expires", () => {
         problem(401, "auth.unauthenticated", "Sign in to continue."),
       ),
     )
-    const { queryClient, router } = renderApp("/?tab=plan")
+    const { queryClient, router } = renderApp("/profile?tab=plan")
     await waitFor(() => expect(router.state.status).toBe("idle"))
     session.signedIn = false
 
@@ -123,7 +121,7 @@ describe("when the session expires", () => {
     await expect(mutation.mutate()).rejects.toMatchObject({ status: 401 })
 
     expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument()
-    expect(router.state.location.search).toEqual({ redirect: "/?tab=plan" })
+    expect(router.state.location.search).toEqual({ redirect: "/profile?tab=plan" })
     expect(router.history.length).toBe(1)
   })
 
@@ -134,7 +132,7 @@ describe("when the session expires", () => {
         problem(401, "auth.invalid_credentials", "Email or password is incorrect."),
       ),
     )
-    const { queryClient, router } = renderApp("/")
+    const { queryClient, router } = renderApp("/profile")
     await waitFor(() => expect(router.state.status).toBe("idle"))
 
     const body = { email: "ada@example.com", password: "wrong-password" }
@@ -143,7 +141,7 @@ describe("when the session expires", () => {
     })
     await expect(mutation.mutate()).rejects.toMatchObject({ code: "auth.invalid_credentials" })
 
-    expect(router.state.location.pathname).toBe("/")
+    expect(router.state.location.pathname).toBe("/profile")
     expect(queryClient.getQueryData(["me"])).toEqual(me)
   })
 })

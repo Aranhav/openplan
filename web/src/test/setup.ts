@@ -29,12 +29,25 @@ Object.defineProperty(window, "matchMedia", {
 // jsdom does not implement scrolling; the router restores scroll on navigation.
 window.scrollTo = () => {}
 
+// Radix menus and cmdk measure and scroll elements, which jsdom cannot do.
+globalThis.ResizeObserver = class {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+Element.prototype.scrollIntoView = () => {}
+Element.prototype.hasPointerCapture = () => false
+Element.prototype.setPointerCapture = () => {}
+Element.prototype.releasePointerCapture = () => {}
+
 // Requests no test mocked fail loudly instead of reaching a real network.
 beforeAll(() => server.listen({ onUnhandledFrame: "error" }))
 
 afterEach(() => {
   cleanup()
   server.resetHandlers()
+  window.localStorage.clear()
+  document.documentElement.classList.remove("dark")
 })
 
 afterAll(() => server.close())

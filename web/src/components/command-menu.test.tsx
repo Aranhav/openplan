@@ -1,0 +1,173 @@
+import { screen, waitFor, within } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
+import { HttpResponse, http } from "msw"
+import { describe, expect, it } from "vitest"
+import {
+  globex,
+  makeModel,
+  me,
+  meInTwoWorkspaces,
+  mockSession,
+  renderApp,
+  user,
+  workspace,
+} from "@/test/app"
+import { problem } from "@/test/problem"
+import { server } from "@/test/server"
+
+const revenue = makeModel({ id: "0192f3a0-0000-7000-8000-000000000011", name: "Revenue plan" })
+const headcount = makeModel({ id: "0192f3a0-0000-7000-8000-000000000012", name: "Headcount plan" })
+
+function mockModels(models = [revenue, headcount]) {
+  server.use(
+    http.get(`/api/v1/workspaces/${workspace.id}/models`, () => HttpResponse.json(models)),
+    http.get("/api/v1/models/:id", ({ params }) =>
+      HttpResponse.json(models.find((model) => model.id === params.id)),
+    ),
+  )
+}
+
+async function openPalette(typist: ReturnType<typeof userEvent.setup>) {
+  await screen.findByRole("button", { name: /^Search/ })
+  await typist.keyboard("{Control>}k{/Control}")
+  return screen.findByRole("dialog", { name: "Command palette" })
+}
+
+describe("the command palette", () => {
+  it("opens with Ctrl+K and lists models", async () => {
+    mockSession()
+    mockModels()
+    const typist = userEvent.setup()
+    renderApp(`/w/${workspace.id}`)
+    const palette = await openPalette(typist)
+
+    expect(await within(palette).findByRole("option", { name: "Revenue plan" })).toBeVisible()
+    expect(within(palette).getByRole("option", { name: "Headcount plan" })).toBeVisible()
+  })
+
+  it("opens from the search button in the header", async () => {
+    mockSession()
+    mockModels()
+    const typist = userEvent.setup()
+    renderApp(`/w/${workspace.id}`)
+    await typist.click(await screen.findByRole("button", { name: /^Search/ }))
+
+    expect(await screen.findByRole("dialog", { name: "Command palette" })).toBeVisible()
+  })
+
+  it("closes when Ctrl+K is pressed again", async () => {
+    mockSession()
+    mockModels()
+    const typist = userEvent.setup()
+    renderApp(`/w/${workspace.id}`)
+    await openPalette(typist)
+    await typist.keyboard("{Control>}k{/Control}")
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument())
+  })
+
+  it("selecting a model navigates to /m/<id> and closes the palette", async () => {
+    mockSession()
+    mockModels()
+    const typist = userEvent.setup()
+    const { router } = renderApp(`/w/${workspace.id}`)
+    const palette = await openPalette(typist)
+    await typist.click(await within(palette).findByRole("option", { name: "Headcount plan" }))
+
+    await waitFor(() => expect(router.state.location.pathname).toBe(`/m/${headcount.id}`))
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+  })
+
+  it("narrows the results as you type", async () => {
+    mockSession()
+    mockModels()
+    const typist = userEvent.setup()
+    renderApp(`/w/${workspace.id}`)
+    const palette = await openPalette(typist)
+    await within(palette).findByRole("option", { name: "Revenue plan" })
+    await typist.keyboard("headcount")
+
+    expect(within(palette).getByRole("option", { name: "Headcount plan" })).toBeVisible()
+    expect(within(palette).queryByRole("option", { name: "Revenue plan" })).not.toBeInTheDocument()
+    await typist.keyboard("zzz")
+    expect(await within(palette).findByText("No results found.")).toBeVisible()
+  })
+
+  it("goes to the pages of the current workspace", async () => {
+    mockSession()
+    mockModels()
+    const typist = userEvent.setup()
+    const { router } = renderApp(`/w/${workspace.id}`)
+    const palette = await openPalette(typist)
+    await typist.click(within(palette).getByRole("option", { name: "Members" }))
+
+    await waitFor(() => expect(router.state.location.pathname).toBe(`/w/${workspace.id}/members`))
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+  })
+
+  it("lists the instance pages for an instance admin", async () => {
+    mockSession()
+    mockModels()
+    const typist = userEvent.setup()
+    const { router } = renderApp(`/w/${workspace.id}`)
+    const palette = await openPalette(typist)
+    await typist.click(within(palette).getByRole("option", { name: "Users" }))
+
+    await waitFor(() => expect(router.state.location.pathname).toBe("/admin/users"))
+  })
+
+  it("leaves out the instance pages for everyone else", async () => {
+    mockSession({ me: { ...me, user: { ...user, is_instance_admin: false } } })
+    mockModels()
+    const typist = userEvent.setup()
+    renderApp(`/w/${workspace.id}`)
+    const palette = await openPalette(typist)
+
+    expect(within(palette).getByRole("option", { name: "Profile" })).toBeVisible()
+    expect(within(palette).queryByRole("option", { name: "Users" })).not.toBeInTheDocument()
+  })
+
+  it("switches workspace", async () => {
+    mockSession({ me: meInTwoWorkspaces })
+    mockModels()
+    const typist = userEvent.setup()
+    const { router } = renderApp(`/w/${workspace.id}`)
+    const palette = await openPalette(typist)
+    await typist.click(within(palette).getByRole("option", { name: /Globex/ }))
+
+    await waitFor(() => expect(router.state.location.pathname).toBe(`/w/${globex.id}`))
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+  })
+
+  it("changes the theme", async () => {
+    mockSession()
+    mockModels()
+    const typist = userEvent.setup()
+    renderApp(`/w/${workspace.id}`)
+    const palette = await openPalette(typist)
+    await typist.click(within(palette).getByRole("option", { name: "Dark" }))
+
+    await waitFor(() => expect(document.documentElement).toHaveClass("dark"))
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+  })
+
+  it("says so and offers a retry when the models cannot be loaded", async () => {
+    mockSession()
+    server.use(
+      http.get(`/api/v1/workspaces/${workspace.id}/models`, () =>
+        problem(500, "internal", "The database is starting up."),
+      ),
+    )
+    const typist = userEvent.setup()
+    renderApp(`/w/${workspace.id}`)
+    const palette = await openPalette(typist)
+
+    expect(await within(palette).findByRole("alert")).toHaveTextContent(
+      "The database is starting up.",
+    )
+    mockModels()
+    await typist.click(within(palette).getByRole("button", { name: "Retry" }))
+
+    expect(await within(palette).findByRole("option", { name: "Revenue plan" })).toBeVisible()
+  })
+})
