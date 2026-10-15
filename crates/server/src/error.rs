@@ -643,6 +643,7 @@ mod tests {
             (
                 EngineError::InvalidCoordinate {
                     message: "Cell 2: no such period".to_string(),
+                    index: None,
                 },
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "cells.invalid_coordinate",

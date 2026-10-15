@@ -53,13 +53,14 @@ impl Model {
             .map(|(index, tokens)| {
                 let at = |message: String| EngineError::InvalidCoordinate {
                     message: format!("Cell {index}: {message}"),
+                    index: None,
                 };
                 let levels = self.levels_of(&layout, tokens).map_err(at)?;
                 if levels != layout.axes {
                     return self
                         .read_summary(li, tokens, &LevelSpec(levels))
                         .map_err(|error| match error {
-                            EngineError::InvalidCoordinate { message } => at(message),
+                            EngineError::InvalidCoordinate { message, .. } => at(message),
                             other => other,
                         });
                 }

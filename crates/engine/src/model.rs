@@ -241,6 +241,7 @@ impl Model {
                     .resolve_cell(&layout, tokens)
                     .map_err(|message| EngineError::InvalidCoordinate {
                         message: format!("Cell {index}: {message}"),
+                        index: None,
                     })?;
                 Ok(match column {
                     Some(column) => {
@@ -279,7 +280,10 @@ impl Model {
         let position = self
             .structure
             .resolve_cell(&target, coords)
-            .map_err(|message| EngineError::InvalidCoordinate { message })?;
+            .map_err(|message| EngineError::InvalidCoordinate {
+                message,
+                index: None,
+            })?;
         Ok(decode(
             &self.structure,
             &line_item.format.value_type(),
@@ -607,7 +611,8 @@ impl Model {
             let position = structure
                 .resolve_cell(&layout, &edit.coords)
                 .map_err(|message| EngineError::InvalidCoordinate {
-                    message: format!("Edit {index}: {message}"),
+                    message,
+                    index: Some(index),
                 })?;
             if structure.is_before_switchover(&layout, &position) {
                 issues.push(CellIssue {

@@ -338,23 +338,14 @@ fn located(error: EngineError, requests: &[usize]) -> AppError {
                 errors: capped(problems, "edits"),
             }
         }
-        EngineError::InvalidCoordinate { message } => {
+        EngineError::InvalidCoordinate { message, index } => {
             AppError::Engine(EngineError::InvalidCoordinate {
-                message: renumbered(&message, request),
+                message,
+                index: index.map(request),
             })
         }
         other => other.into(),
     }
-}
-
-/// The message of an `InvalidCoordinate` error, which starts with the position of the edit
-/// (`Edit 3: `), with the position that `request` gives it.
-fn renumbered(message: &str, request: impl Fn(usize) -> usize) -> String {
-    message
-        .strip_prefix("Edit ")
-        .and_then(|rest| rest.split_once(": "))
-        .and_then(|(edit, text)| Some(format!("Edit {}: {text}", request(edit.parse().ok()?))))
-        .unwrap_or_else(|| message.to_string())
 }
 
 #[utoipa::path(
