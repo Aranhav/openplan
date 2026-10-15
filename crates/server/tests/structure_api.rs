@@ -3,7 +3,7 @@ mod common;
 use axum::http::{Method, StatusCode};
 use common::{
     TestApp, TestResponse, assert_problem, create_items, create_list, create_member, create_user,
-    id_of, plan, sign_in, url,
+    id_of, plan, sign_in, structure, url,
 };
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -11,12 +11,6 @@ use uuid::Uuid;
 
 const PRODUCTION_LOCKED: &str =
     "This model is in production mode. Structural changes arrive through ALM sync.";
-
-async fn structure(app: &mut TestApp, model: &str) -> Value {
-    let response = app.get(&url(model, "/structure")).await;
-    assert_eq!(response.status, StatusCode::OK, "{}", response.text);
-    response.json
-}
 
 async fn put(app: &mut TestApp, path: &str, body: Value) -> TestResponse {
     app.request(Method::PUT, path, Some(body)).await

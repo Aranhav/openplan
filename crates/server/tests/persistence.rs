@@ -7,18 +7,18 @@ use std::{
 };
 
 use axum::http::StatusCode;
-use common::TestApp;
+use common::{Stored, TestApp, insert_model, line_item, setup_admin};
 use openplan_engine::{
-    AxisSpec, Calendar, CellEdit, Command, CoordToken, Format, ItemId, ItemSpec, LineItem,
-    LineItemId, LineItemPatch, ListId, Model, ModuleId, SummaryMethod, TimeLevel, TimeScale, Value,
-    VersionsScope,
+    AxisSpec, Calendar, CellEdit, Command, CoordToken, Format, ItemId, ItemSpec, LineItemId,
+    LineItemPatch, ListId, Model, ModuleId, TimeLevel, Value,
 };
 use openplan_server::{
+    actor::previous_values,
     engine_store::{self, cell_key},
     error::AppError,
 };
 use serde_json::json;
-use sqlx::{PgPool, types::Json};
+use sqlx::PgPool;
 use tracing_subscriber::fmt::MakeWriter;
 use uuid::Uuid;
 
@@ -33,42 +33,6 @@ fn calendar() -> Calendar {
         years: 1,
         current_month: None,
     }
-}
-
-/// A model row, and the user who edits it, in a database of their own.
-struct Stored {
-    id: Uuid,
-    user: Uuid,
-}
-
-/// Inserts a user, a workspace and a model with no stored state, as a model created before
-/// the engine existed would be.
-async fn insert_model(pool: &PgPool) -> Stored {
-    let user = Uuid::now_v7();
-    let workspace = Uuid::now_v7();
-    let id = Uuid::now_v7();
-    sqlx::query("INSERT INTO users (id, email, name) VALUES ($1, 'ada@acme.com', 'Ada')")
-        .bind(user)
-        .execute(pool)
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO workspaces (id, name) VALUES ($1, 'Acme')")
-        .bind(workspace)
-        .execute(pool)
-        .await
-        .unwrap();
-    sqlx::query(
-        "INSERT INTO models (id, workspace_id, name, calendar) VALUES ($1, $2, 'Plan', $3)",
-    )
-    .bind(id)
-    .bind(workspace)
-    .bind(Json(
-        json!({ "fiscal_year_start_month": 1, "first_year": 2026, "years": 1 }),
-    ))
-    .execute(pool)
-    .await
-    .unwrap();
-    Stored { id, user }
 }
 
 /// A model row with the state a new model gets, loaded as the engine would hold it.
@@ -90,26 +54,6 @@ struct Plan {
     price: LineItemId,
     revenue: LineItemId,
     note: LineItemId,
-}
-
-fn line_item(module: ModuleId, name: &str, format: Format, formula: Option<&str>) -> LineItem {
-    LineItem {
-        id: LineItemId::new(),
-        module,
-        name: name.to_string(),
-        ordinal: 0,
-        format,
-        formula: formula.map(str::to_string),
-        summary: SummaryMethod::Sum,
-        time_summary: None,
-        applies_to: None,
-        time_scale: TimeScale::Module,
-        versions: VersionsScope::Module,
-        notes: String::new(),
-        code: None,
-        read_access_driver: None,
-        write_access_driver: None,
-    }
 }
 
 /// A structure batch: two products and a Sales module over products, months and versions with
@@ -229,20 +173,6 @@ fn assert_same(loaded: &Model, expected: &Model, plan: &Plan) {
     assert_eq!(snapshot(loaded, plan), snapshot(expected, plan));
 }
 
-/// The old values the batch will overwrite, one per edited cell, read before it is applied.
-fn previous_values(model: &Model, cmds: &[Command]) -> Vec<Value> {
-    cmds.iter()
-        .flat_map(|cmd| match cmd {
-            Command::SetCells { line_item, edits } => {
-                let coords: Vec<Vec<CoordToken>> =
-                    edits.iter().map(|edit| edit.coords.clone()).collect();
-                model.read_cells(*line_item, &coords).unwrap()
-            }
-            _ => Vec::new(),
-        })
-        .collect()
-}
-
 /// Applies the batch to the model and records it in the change log, as a model's editor does.
 /// Returns the sequence number of the batch.
 async fn commit(pool: &PgPool, stored: &Stored, model: &mut Model, cmds: Vec<Command>) -> i64 {
@@ -274,25 +204,6 @@ async fn count_where(pool: &PgPool, model_id: Uuid, condition: &str, bound: i64)
     .fetch_one(pool)
     .await
     .unwrap()
-}
-
-async fn setup_admin(app: &mut TestApp) -> String {
-    let response = app
-        .post(
-            "/api/v1/setup",
-            Some(json!({
-                "email": "admin@acme.com",
-                "name": "Ada Admin",
-                "password": "correct horse battery",
-                "workspace_name": "Acme",
-            })),
-        )
-        .await;
-    assert_eq!(response.status, StatusCode::CREATED, "{}", response.text);
-    response.json["workspace"]["id"]
-        .as_str()
-        .unwrap()
-        .to_string()
 }
 
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]

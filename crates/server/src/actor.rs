@@ -479,7 +479,7 @@ async fn run_engine(model: &Arc<Model>, build: Build) -> AppResult<Option<Engine
 /// The value each cell that `cmds` set has in `model`, one for every edit, in order. A cell that
 /// `model` does not have because the batch creates its line item or one of its items reads as
 /// the blank of the kind of value it is given.
-fn previous_values(model: &Model, cmds: &[Command]) -> Vec<Value> {
+pub fn previous_values(model: &Model, cmds: &[Command]) -> Vec<Value> {
     let mut previous = Vec::new();
     for cmd in cmds {
         let Command::SetCells { line_item, edits } = cmd else {

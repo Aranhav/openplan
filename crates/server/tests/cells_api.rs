@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 
 use axum::http::{Method, StatusCode};
 use common::{
-    TestApp, TestResponse, assert_problem, create_items, create_list, create_member, create_module,
-    create_user, id_of, list_axis, month, plan, sign_in, sign_in_beside, url,
+    TestApp, TestResponse, assert_problem, change_rows, create_items, create_list, create_member,
+    create_module, create_user, id_of, list_axis, month, plan, sign_in, sign_in_beside, url,
 };
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -132,15 +132,6 @@ fn error_fields(response: &TestResponse) -> Vec<String> {
         .iter()
         .map(|error| error["field"].as_str().unwrap().to_string())
         .collect()
-}
-
-/// Every change-log row of a model, whatever its kind.
-async fn change_rows(pool: &PgPool, model: &str) -> i64 {
-    sqlx::query_scalar("SELECT count(*) FROM change_log WHERE model_id = $1")
-        .bind(Uuid::parse_str(model).unwrap())
-        .fetch_one(pool)
-        .await
-        .unwrap()
 }
 
 async fn history(app: &mut TestApp, model: &str, line_item: &str, cell_key: &str) -> TestResponse {

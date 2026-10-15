@@ -8,14 +8,18 @@ use axum::{
     body::{Body, to_bytes},
     http::{HeaderMap, Method, Request, StatusCode, header},
 };
+use openplan_engine::{
+    Format, LineItem, LineItemId, ModuleId, SummaryMethod, TimeScale, VersionsScope,
+};
 use openplan_server::{
     app::{AppState, build_router},
     auth::{CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE},
     config::Config,
 };
 use serde_json::{Value, json};
-use sqlx::{PgPool, postgres::PgPoolOptions};
+use sqlx::{PgPool, postgres::PgPoolOptions, types::Json};
 use tower::ServiceExt;
+use uuid::Uuid;
 
 pub struct TestApp {
     pub router: Router,
@@ -234,11 +238,16 @@ pub async fn post_setup(app: &mut TestApp) -> TestResponse {
 
 /// Completes first-run setup and returns the id of the "Acme" workspace it creates.
 pub async fn setup_admin(app: &mut TestApp) -> String {
+    setup_admin_with_id(app).await.0
+}
+
+/// Completes first-run setup and returns the ids of the "Acme" workspace it creates and of the
+/// admin.
+pub async fn setup_admin_with_id(app: &mut TestApp) -> (String, Uuid) {
     let response = post_setup(app).await;
-    response.json["workspace"]["id"]
-        .as_str()
-        .unwrap()
-        .to_string()
+    let workspace = response.json["workspace"]["id"].as_str().unwrap();
+    let admin = response.json["user"]["id"].as_str().unwrap();
+    (workspace.to_string(), admin.parse().unwrap())
 }
 
 /// Creates a user as the signed-in `admin` and returns their id.
@@ -409,4 +418,79 @@ pub async fn create_line_item(app: &mut TestApp, model: &str, module: &str, body
         .await;
     assert_eq!(response.status, StatusCode::CREATED, "{}", response.text);
     response.json
+}
+
+/// The structure of a model, as the API shows it.
+pub async fn structure(app: &mut TestApp, model: &str) -> Value {
+    let response = app.get(&url(model, "/structure")).await;
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text);
+    response.json
+}
+
+/// Every change-log row of a model, whatever its kind.
+pub async fn change_rows(pool: &PgPool, model: &str) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM change_log WHERE model_id = $1")
+        .bind(Uuid::parse_str(model).unwrap())
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// A model row, and the user who edits it, in a database of their own.
+pub struct Stored {
+    pub id: Uuid,
+    pub user: Uuid,
+}
+
+/// Inserts a user, a workspace and a model with no stored state, as a model created before the
+/// engine existed would be, over a calendar of the twelve months of 2026.
+pub async fn insert_model(pool: &PgPool) -> Stored {
+    let user = Uuid::now_v7();
+    let workspace = Uuid::now_v7();
+    let id = Uuid::now_v7();
+    sqlx::query("INSERT INTO users (id, email, name) VALUES ($1, $2, 'Ada')")
+        .bind(user)
+        .bind(format!("ada-{user}@acme.com"))
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO workspaces (id, name) VALUES ($1, $2)")
+        .bind(workspace)
+        .bind(format!("Acme {workspace}"))
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO models (id, workspace_id, name, calendar) VALUES ($1, $2, 'Plan', $3)",
+    )
+    .bind(id)
+    .bind(workspace)
+    .bind(Json(
+        json!({ "fiscal_year_start_month": 1, "first_year": 2026, "years": 1 }),
+    ))
+    .execute(pool)
+    .await
+    .unwrap();
+    Stored { id, user }
+}
+
+/// A line item of the engine, summed over every dimension, with the defaults of a new one.
+pub fn line_item(module: ModuleId, name: &str, format: Format, formula: Option<&str>) -> LineItem {
+    LineItem {
+        id: LineItemId::new(),
+        module,
+        name: name.to_string(),
+        ordinal: 0,
+        format,
+        formula: formula.map(str::to_string),
+        summary: SummaryMethod::Sum,
+        time_summary: None,
+        applies_to: None,
+        time_scale: TimeScale::Module,
+        versions: VersionsScope::Module,
+        notes: String::new(),
+        code: None,
+        read_access_driver: None,
+        write_access_driver: None,
+    }
 }
