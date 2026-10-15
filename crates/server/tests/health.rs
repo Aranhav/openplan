@@ -61,6 +61,7 @@ async fn unknown_api_path_is_problem_json() {
     let content_type = headers[header::CONTENT_TYPE].to_str().unwrap();
     assert!(content_type.starts_with("application/problem+json"));
     assert_eq!(json["code"], "not_found");
+    assert_eq!(headers[header::CACHE_CONTROL], "no-store");
 }
 
 #[tokio::test]
@@ -121,6 +122,7 @@ async fn wrong_method_on_v1_route_is_problem_json(pool: PgPool) {
     assert_eq!(response.json["code"], "method_not_allowed");
     let allow = response.headers[header::ALLOW].to_str().unwrap();
     assert!(allow.contains("POST"), "Allow header was {allow:?}");
+    assert_eq!(response.headers[header::CACHE_CONTROL], "no-store");
 }
 
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]

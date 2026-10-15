@@ -2,8 +2,9 @@ use std::{sync::Arc, time::Duration};
 
 use axum::{
     Json, Router,
-    http::{HeaderName, HeaderValue, Request, header},
-    middleware,
+    extract::Request,
+    http::{HeaderName, HeaderValue, header},
+    middleware::{self, Next},
     response::Response,
     routing::get,
 };
@@ -23,7 +24,7 @@ use crate::{
     config::Config,
     error::AppError,
     openapi::ApiDoc,
-    static_files, users,
+    static_files, users, workspaces,
 };
 
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
@@ -76,20 +77,25 @@ pub(crate) async fn health() -> Json<HealthResponse> {
     })
 }
 
-/// Keeps every API response, including CSRF rejections, out of shared caches.
-async fn no_store(mut response: Response) -> Response {
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+/// Keeps every `/api/v1` response out of shared caches, including CSRF
+/// rejections and the 404s and 405s that the outer router's fallbacks produce.
+async fn no_store_for_api(request: Request, next: Next) -> Response {
+    let is_api = request.uri().path().starts_with("/api/v1");
+    let mut response = next.run(request).await;
+    if is_api {
+        response
+            .headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
     response
 }
 
 pub fn build_router(state: AppState) -> Router {
     let api_v1: Router<AppState> = auth::routes::router()
         .merge(users::router())
+        .merge(workspaces::router())
         .layer(middleware::from_fn(csrf::require_csrf))
-        .layer(middleware::from_fn(renewal::reissue_cookies))
-        .layer(middleware::map_response(no_store));
+        .layer(middleware::from_fn(renewal::reissue_cookies));
 
     Router::new()
         .route("/api/health", get(health))
@@ -119,7 +125,8 @@ pub fn build_router(state: AppState) -> Router {
                         )
                     }),
                 )
-                .layer(PropagateRequestIdLayer::new(REQUEST_ID_HEADER)),
+                .layer(PropagateRequestIdLayer::new(REQUEST_ID_HEADER))
+                .layer(middleware::from_fn(no_store_for_api)),
         )
         .with_state(state)
 }

@@ -13,6 +13,7 @@ use uuid::Uuid;
 use crate::{
     app::AppState,
     auth::{CurrentUser, password, session},
+    authz::require_instance_admin,
     error::{AppError, AppResult, FieldError},
     extract::{ApiJson, ApiPath},
     validate,
@@ -51,14 +52,6 @@ pub struct UpdateUserRequest {
     is_instance_admin: Option<bool>,
     disabled: Option<bool>,
     password: Option<String>,
-}
-
-fn require_instance_admin(user: &CurrentUser) -> AppResult<()> {
-    if user.is_instance_admin {
-        Ok(())
-    } else {
-        Err(AppError::Forbidden)
-    }
 }
 
 fn email_taken() -> AppError {

@@ -1,5 +1,6 @@
 pub mod app;
 pub mod auth;
+pub mod authz;
 pub mod config;
 pub mod db;
 pub mod error;
@@ -8,3 +9,4 @@ pub mod openapi;
 pub mod static_files;
 pub mod users;
 pub mod validate;
+pub mod workspaces;

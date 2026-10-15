@@ -6,11 +6,14 @@ use crate::{
         CurrentUser,
         routes::{
             ChangePasswordRequest, LoginRequest, LoginResponse, MeResponse, SetupRequest,
-            SetupResponse, SetupStatus, UpdateProfileRequest, WorkspaceMembership,
-            WorkspaceSummary,
+            SetupResponse, SetupStatus, UpdateProfileRequest,
         },
     },
+    authz::WorkspaceRole,
     users::{CreateUserRequest, UpdateUserRequest, UserDto},
+    workspaces::{
+        AddMemberRequest, ChangeRoleRequest, MemberDto, WorkspaceNameRequest, WorkspaceSummary,
+    },
 };
 
 #[derive(OpenApi)]
@@ -28,6 +31,14 @@ use crate::{
         crate::users::list_users,
         crate::users::create_user,
         crate::users::update_user,
+        crate::workspaces::list_workspaces,
+        crate::workspaces::create_workspace,
+        crate::workspaces::rename_workspace,
+        crate::workspaces::delete_workspace,
+        crate::workspaces::list_members,
+        crate::workspaces::add_member,
+        crate::workspaces::change_member_role,
+        crate::workspaces::remove_member,
     ),
     components(schemas(
         HealthResponse,
@@ -35,16 +46,20 @@ use crate::{
         SetupStatus,
         SetupRequest,
         SetupResponse,
-        WorkspaceSummary,
         LoginRequest,
         LoginResponse,
-        WorkspaceMembership,
         MeResponse,
         UpdateProfileRequest,
         ChangePasswordRequest,
         UserDto,
         CreateUserRequest,
         UpdateUserRequest,
+        WorkspaceRole,
+        WorkspaceSummary,
+        MemberDto,
+        WorkspaceNameRequest,
+        AddMemberRequest,
+        ChangeRoleRequest,
     ))
 )]
 pub struct ApiDoc;

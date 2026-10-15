@@ -142,6 +142,7 @@ async fn setup_creates_admin_workspace_and_session(pool: PgPool) {
     assert!(Uuid::parse_str(user["id"].as_str().unwrap()).is_ok());
     assert!(user.get("password_hash").is_none());
     assert_eq!(created.json["workspace"]["name"], "Acme");
+    assert_eq!(created.json["workspace"]["role"], "admin");
 
     let session = set_cookie(&created, "op_session");
     assert!(session.contains("HttpOnly"), "{session}");

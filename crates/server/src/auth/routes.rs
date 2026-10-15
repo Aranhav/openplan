@@ -14,9 +14,11 @@ use uuid::Uuid;
 
 use crate::{
     app::AppState,
+    authz::WorkspaceRole,
     error::{AppError, AppResult, FieldError},
     extract::ApiJson,
     validate,
+    workspaces::{self, WorkspaceSummary},
 };
 
 use super::{CurrentUser, SESSION_COOKIE, clear_cookies, password, session, session_cookies};
@@ -48,12 +50,6 @@ pub struct SetupRequest {
 }
 
 #[derive(Serialize, ToSchema)]
-pub struct WorkspaceSummary {
-    id: Uuid,
-    name: String,
-}
-
-#[derive(Serialize, ToSchema)]
 pub struct SetupResponse {
     user: CurrentUser,
     workspace: WorkspaceSummary,
@@ -70,17 +66,10 @@ pub struct LoginResponse {
     user: CurrentUser,
 }
 
-#[derive(Serialize, FromRow, ToSchema)]
-pub struct WorkspaceMembership {
-    id: Uuid,
-    name: String,
-    role: String,
-}
-
 #[derive(Serialize, ToSchema)]
 pub struct MeResponse {
     user: CurrentUser,
-    workspaces: Vec<WorkspaceMembership>,
+    workspaces: Vec<WorkspaceSummary>,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -173,6 +162,7 @@ pub(crate) async fn setup(
     let workspace = WorkspaceSummary {
         id: Uuid::now_v7(),
         name: workspace_name,
+        role: WorkspaceRole::Admin,
     };
 
     let mut tx = state.db.begin().await?;
@@ -305,24 +295,7 @@ pub(crate) async fn me(
     State(state): State<AppState>,
     user: CurrentUser,
 ) -> AppResult<Json<MeResponse>> {
-    let workspaces = if user.is_instance_admin {
-        sqlx::query_as::<_, WorkspaceMembership>(
-            "SELECT id, name, 'admin' AS role FROM workspaces ORDER BY name, id",
-        )
-        .fetch_all(&state.db)
-        .await?
-    } else {
-        sqlx::query_as::<_, WorkspaceMembership>(
-            "SELECT w.id, w.name, m.role
-             FROM workspaces w
-             JOIN workspace_members m ON m.workspace_id = w.id
-             WHERE m.user_id = $1
-             ORDER BY w.name, w.id",
-        )
-        .bind(user.id)
-        .fetch_all(&state.db)
-        .await?
-    };
+    let workspaces = workspaces::list_for_user(&state.db, &user).await?;
     Ok(Json(MeResponse { user, workspaces }))
 }
 
