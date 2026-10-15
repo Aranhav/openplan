@@ -12,6 +12,7 @@ mod layout;
 mod list;
 mod module;
 
+pub(crate) use layout::Layout;
 pub use list::{Item, List};
 pub use module::{AxisSpec, LineItem, Module, SummaryMethod, TimeScale, VersionsScope};
 
@@ -372,7 +373,10 @@ impl Structure {
 
     /// The calendar a time axis counts its periods in: the model calendar, or the calendar
     /// of the range that starts at the range's first fiscal year.
-    fn time_calendar(&self, range: Option<TimeRangeId>) -> Result<Calendar, EngineError> {
+    pub(crate) fn time_calendar(
+        &self,
+        range: Option<TimeRangeId>,
+    ) -> Result<Calendar, EngineError> {
         let Some(id) = range else {
             return Ok(self.calendar);
         };

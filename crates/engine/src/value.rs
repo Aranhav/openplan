@@ -132,6 +132,18 @@ impl Column {
         }
     }
 
+    /// A column of `len` blank cells of the same kind as this one.
+    pub(crate) fn blank_like(&self, len: usize) -> Column {
+        match self {
+            Column::Number(_) => Column::Number(vec![0.0; len]),
+            Column::Boolean(_) => Column::Boolean(vec![false; len]),
+            Column::Text(_) => Column::Text(vec![Arc::from(""); len]),
+            Column::Date(_) => Column::Date(vec![BLANK_DATE; len]),
+            Column::Item(_) => Column::Item(vec![BLANK_ITEM; len]),
+            Column::Period(_) => Column::Period(vec![BLANK_PERIOD; len]),
+        }
+    }
+
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         match self {

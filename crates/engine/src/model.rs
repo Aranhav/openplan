@@ -8,8 +8,9 @@ use crate::calendar::Calendar;
 use crate::command::{CellEdit, ChangeSet, Command, CoordToken};
 use crate::error::{CellIssue, EngineError};
 use crate::ids::{LineItemId, ListId, VersionId};
-use crate::shape::Axis;
-use crate::structure::{Structure, level_name};
+use crate::shape::{Axis, Shape};
+use crate::structure::{Layout, LineItem, Structure, level_name};
+use crate::summary::{LevelSpec, Summary, SummaryCache, aggregate, ratio_parts};
 use crate::value::{BLANK_DATE, BLANK_ITEM, BLANK_PERIOD, Cell, Column, Format, Value, ValueType};
 
 /// Days from 0001-01-01 (day 1 of the common era) to 1970-01-01.
@@ -23,6 +24,7 @@ pub struct Model {
     structure: Arc<Structure>,
     inputs: HashMap<LineItemId, Arc<Column>>,
     generation: u64,
+    summaries: SummaryCache,
 }
 
 impl Model {
@@ -34,6 +36,7 @@ impl Model {
             structure: Arc::new(Structure::new(calendar)),
             inputs: HashMap::new(),
             generation: 0,
+            summaries: SummaryCache::default(),
         }
     }
 
@@ -52,6 +55,7 @@ impl Model {
         self.apply_command(cmd, &mut changes)?;
         self.generation += 1;
         changes.generation = self.generation;
+        self.summaries.record(&self.structure, &changes);
         Ok(changes)
     }
 
@@ -67,6 +71,7 @@ impl Model {
         }
         work.generation += 1;
         changes.generation = work.generation;
+        work.summaries.record(&work.structure, &changes);
         *self = work;
         Ok(changes)
     }
@@ -105,6 +110,113 @@ impl Model {
                 })
             })
             .collect()
+    }
+
+    /// Reads one cell of a line item rolled up to `levels`, addressed by one token per axis of
+    /// `levels`. A list axis rolled up to an ancestor list takes an item of that list, one
+    /// rolled up to its top level the token `"top"`, and a Time axis a period label at its
+    /// level.
+    ///
+    /// The rolled-up cells are cached until the line item, or anything the roll-up depends
+    /// on, changes.
+    pub fn read_summary(
+        &self,
+        li: LineItemId,
+        coords: &[CoordToken],
+        levels: &LevelSpec,
+    ) -> Result<Value, EngineError> {
+        let line_item = self
+            .structure
+            .line_item(li)
+            .ok_or_else(|| missing_line_item(li))?;
+        let summary = self.summary_column(line_item, levels)?;
+        let (shape, column) = &*summary;
+        let layout = self.structure.layout(line_item)?;
+        let target = Layout {
+            axes: levels.0.clone(),
+            restriction: layout.restriction,
+        };
+        let position = self
+            .structure
+            .resolve_cell(&target, coords)
+            .map_err(|message| EngineError::InvalidCoordinate { message })?;
+        Ok(decode(
+            &self.structure,
+            &line_item.format.value_type(),
+            column.get(shape.index(&position)),
+        ))
+    }
+
+    /// The cells of a line item rolled up to `levels`, from the cache when it is current.
+    pub(crate) fn summary_column(
+        &self,
+        line_item: &LineItem,
+        levels: &LevelSpec,
+    ) -> Result<Arc<Summary>, EngineError> {
+        let parts = ratio_parts(line_item)?;
+        let fingerprint = self.summaries.fingerprint(line_item.id, parts);
+        if let Some(cached) = self.summaries.get(line_item.id, levels, &fingerprint) {
+            return Ok(cached);
+        }
+        let shape = self.structure.line_item_shape(line_item.id)?;
+        let src = self.stored_column(line_item, &shape);
+        let part_columns = parts
+            .map(|(numerator, denominator)| {
+                Ok::<_, EngineError>((
+                    self.part_column(numerator, &shape)?,
+                    self.part_column(denominator, &shape)?,
+                ))
+            })
+            .transpose()?;
+        let time_method = line_item
+            .time_summary
+            .as_ref()
+            .unwrap_or(&line_item.summary);
+        let rolled_up = aggregate(
+            &self.structure,
+            &shape,
+            &src,
+            &line_item.summary,
+            time_method,
+            levels,
+            part_columns
+                .as_ref()
+                .map(|(numerator, denominator)| (&**numerator, &**denominator)),
+        )?;
+        let summary = Arc::new(rolled_up);
+        self.summaries
+            .insert(line_item.id, levels, fingerprint, Arc::clone(&summary));
+        Ok(summary)
+    }
+
+    /// The stored cells of a line item over `shape`; blank for a calculated line item.
+    fn stored_column(&self, line_item: &LineItem, shape: &Shape) -> Arc<Column> {
+        self.inputs.get(&line_item.id).map_or_else(
+            || {
+                Arc::new(Column::new_blank(
+                    &line_item.format.value_type(),
+                    shape.size(),
+                ))
+            },
+            Arc::clone,
+        )
+    }
+
+    /// The cells of a ratio part, which must be laid out like the ratio's own.
+    fn part_column(&self, id: LineItemId, shape: &Shape) -> Result<Arc<Column>, EngineError> {
+        let part = self
+            .structure
+            .line_item(id)
+            .ok_or_else(|| missing_line_item(id))?;
+        if self.structure.line_item_shape(id)? != *shape {
+            return Err(EngineError::Invalid {
+                message: format!(
+                    "Ratio part '{}' must have the same dimensions as the line item that divides it.",
+                    part.name
+                ),
+            });
+        }
+        Ok(self.stored_column(part, shape))
     }
 
     fn empty_change_set(&self) -> ChangeSet {

@@ -5,6 +5,7 @@ mod ids;
 mod model;
 mod shape;
 mod structure;
+mod summary;
 mod value;
 
 pub use calendar::{Calendar, TimeLevel, TimeRange};
@@ -17,4 +18,5 @@ pub use structure::{
     AxisSpec, Item, LineItem, List, Module, Structure, Subset, SummaryMethod, TimeScale, Version,
     VersionsScope,
 };
+pub use summary::{LevelSpec, aggregate};
 pub use value::{Column, Format, NegativeStyle, NumberUnit, Value, ValueType};

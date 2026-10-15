@@ -185,6 +185,13 @@ impl Structure {
                     )),
                 }
             }
+            (Axis::ListTop(id), CoordToken::Period(label))
+                if label.trim().eq_ignore_ascii_case("top") =>
+            {
+                self.require_list(*id)
+                    .map(|_| 0)
+                    .map_err(|error| error.to_string())
+            }
             (Axis::Versions, CoordToken::Item(item)) => {
                 let position = match restriction {
                     Some(only) => only.iter().position(|id| id.0 == item.0),
@@ -241,7 +248,8 @@ impl Structure {
 
 fn describe(axis: &Axis) -> &'static str {
     match axis {
-        Axis::List(_) | Axis::ListTop(_) | Axis::Subset(_) => "an item id",
+        Axis::List(_) | Axis::Subset(_) => "an item id",
+        Axis::ListTop(_) => "the token \"top\"",
         Axis::Time { .. } => "a period label",
         Axis::Versions => "a version id",
     }
