@@ -399,6 +399,28 @@ fn round_survives_extreme_places_and_never_gives_negative_zero() {
 }
 
 #[test]
+fn round_of_large_numbers_is_exact() {
+    let mut book = Book::new();
+    // Above 2^50 the spacing of numbers is a quarter, so a fraction is rounded as it is.
+    assert_eq!(
+        book.numbers("ROUND(1125899906842624.25, 0)", 1),
+        [1125899906842624.0]
+    );
+    assert_eq!(
+        book.numbers("ROUND(1125899906842624.75, 0, DOWN)", 1),
+        [1125899906842624.0]
+    );
+    // Below 2^50 a scaled number is snapped to a half only within four units in the last place
+    // of it. The typed number is 0.3125 above a whole one, which is outside that.
+    assert_eq!(
+        book.numbers("ROUND(250000000000000.3, 0)", 1),
+        [250000000000000.0]
+    );
+    // Scaled by 10^5 this is past 2^52, where a number has no fraction, so it is left alone.
+    assert_eq!(book.numbers("ROUND(1e300, 5)", 1), [1e300]);
+}
+
+#[test]
 fn mod_takes_the_sign_of_the_divisor() {
     let mut book = Book::new();
     book.numbers_in("A", &[7.0, -7.0, 7.0, -7.0, 5.5, 5.0, 0.0]);
@@ -750,6 +772,33 @@ impl Customers {
     }
 }
 
+/// Whether each customer is the first with its value of the input `name` of `format`, which
+/// holds `values` for the customers in order.
+fn first_occurrences(
+    book: &mut Book,
+    customers: &Customers,
+    name: &str,
+    format: Format,
+    values: Vec<Value>,
+) -> Vec<bool> {
+    let input = book.line_item(customers.module, name, format, None);
+    let cells = customers
+        .ids
+        .iter()
+        .zip(values)
+        .map(|(&id, value)| (vec![item(id)], value))
+        .collect();
+    book.set_all(input, cells);
+    let first = book.line_item(
+        customers.module,
+        &format!("First {name}"),
+        Format::Boolean,
+        Some(&format!("ISFIRSTOCCURRENCE({name}, Customers)")),
+    );
+    book.model.recalc_all().unwrap();
+    customers.flags(book, first)
+}
+
 #[test]
 fn isfirstoccurrence() {
     let mut book = Book::new();
@@ -827,6 +876,114 @@ fn isfirstoccurrence_looks_back_past_the_start_of_a_chunk() {
     book.model.recalc_all().unwrap();
     let expected: Vec<bool> = (0..5000).map(|i| i % 1000 == 0).collect();
     assert_eq!(customers.flags(&book, first), expected);
+}
+
+#[test]
+fn isfirstoccurrence_compares_booleans_dates_items_periods_and_numbers() {
+    let mut book = Book::new();
+    let customers = Customers::new(&mut book, 6, |_| String::new());
+    let (us, de, countries) = (book.us, book.de, book.countries);
+    let flags = first_occurrences(
+        &mut book,
+        &customers,
+        "Flag Key",
+        Format::Boolean,
+        [true, false, true, false, false, true]
+            .map(Value::Boolean)
+            .to_vec(),
+    );
+    assert_eq!(flags, [true, true, false, false, false, false]);
+    let days = first_occurrences(
+        &mut book,
+        &customers,
+        "Date Key",
+        Format::Date,
+        dates(&[
+            date(2026, 1, 1),
+            None,
+            date(2026, 1, 1),
+            date(2026, 2, 1),
+            None,
+            date(2026, 2, 1),
+        ]),
+    );
+    assert_eq!(days, [true, true, false, true, false, false]);
+    let home = first_occurrences(
+        &mut book,
+        &customers,
+        "Country Key",
+        Format::List { list: countries },
+        [Some(us), None, Some(us), None, Some(de), Some(de)]
+            .map(Value::Item)
+            .to_vec(),
+    );
+    assert_eq!(home, [true, true, false, false, true, false]);
+    let quarters = first_occurrences(
+        &mut book,
+        &customers,
+        "Quarter Key",
+        Format::TimePeriod {
+            level: TimeLevel::Quarter,
+        },
+        [Some(1), None, Some(1), Some(2), None, Some(2)]
+            .map(|index| Value::Period(index.map(|index| (TimeLevel::Quarter, index))))
+            .to_vec(),
+    );
+    assert_eq!(quarters, [true, true, false, true, false, false]);
+    // Zero is zero whichever sign it has.
+    let scores = first_occurrences(
+        &mut book,
+        &customers,
+        "Score Key",
+        Format::number(),
+        numbers(&[0.0, -0.0, 1.5, -0.0, 0.0, -1.5]),
+    );
+    assert_eq!(scores, [true, false, true, false, false, true]);
+}
+
+#[test]
+fn isfirstoccurrence_over_several_lines_and_chunks() {
+    let mut book = Book::new();
+    let customers = Customers::new(&mut book, 5000, |_| String::new());
+    let grid = book.module(
+        "Grid",
+        vec![
+            AxisSpec::List {
+                list: customers.list,
+            },
+            book.time(),
+        ],
+    );
+    let tier = book.line_item(grid, "Tier", Format::number(), None);
+    // Each month is a line of its own, and the tier of a customer differs from month to month.
+    let tier_of = |customer: usize, m: usize| ((customer * customer + m * 7) % 151) as f64;
+    let cells = (0..3)
+        .flat_map(|m| (0..5000).map(move |c| (m, c)))
+        .map(|(m, c)| {
+            (
+                vec![item(customers.ids[c]), month(m)],
+                Value::Number(tier_of(c, m)),
+            )
+        })
+        .collect();
+    book.set_all(tier, cells);
+    let first = book.line_item(
+        grid,
+        "First Tier",
+        Format::Boolean,
+        Some("ISFIRSTOCCURRENCE(Tier, Customers)"),
+    );
+    book.model.recalc_all().unwrap();
+    for m in 0..3 {
+        for c in 0..5000 {
+            let expected = !(0..c).any(|earlier| tier_of(earlier, m) == tier_of(c, m));
+            assert_eq!(
+                book.get(first, vec![item(customers.ids[c]), month(m)]),
+                Value::Boolean(expected),
+                "customer {c}, month {m}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -946,6 +1103,15 @@ fn left_right_and_mid_count_characters_from_one() {
 }
 
 #[test]
+fn mid_start_before_one_uses_up_part_of_the_length() {
+    let mut book = Book::new();
+    assert_eq!(book.texts("MID(\"hello\", 0, 3)", 1), ["he"]);
+    assert_eq!(book.texts("MID(\"hello\", -1, 4)", 1), ["he"]);
+    assert_eq!(book.texts("MID(\"hello\", 0, 1)", 1), [""]);
+    assert_eq!(book.texts("MID(\"hello\", 1, 3)", 1), ["hel"]);
+}
+
+#[test]
 fn len_counts_characters() {
     let mut book = Book::new();
     book.texts_in("T", &["hello", "héllo", "", "日本語"]);
@@ -977,12 +1143,27 @@ fn find_is_one_based() {
 }
 
 #[test]
+fn find_of_an_empty_text_is_the_start() {
+    let mut book = Book::new();
+    book.texts_in("Hay", &["a-b-c", "abc"]);
+    assert_eq!(book.numbers("FIND(\"\", Hay)", 2), [1.0, 1.0]);
+    assert_eq!(book.numbers("FIND(\"\", Hay, 3)", 2), [3.0, 3.0]);
+}
+
+#[test]
 fn case_and_spacing() {
     let mut book = Book::new();
     book.texts_in("T", &["  a b  ", "Héllo", "   ", ""]);
     assert_eq!(book.texts("TRIM(T)", 4), ["a b", "Héllo", "", ""]);
     assert_eq!(book.texts("UPPER(T)", 4), ["  A B  ", "HÉLLO", "   ", ""]);
     assert_eq!(book.texts("LOWER(T)", 4), ["  a b  ", "héllo", "   ", ""]);
+}
+
+#[test]
+fn trim_removes_whitespace_of_every_kind() {
+    let mut book = Book::new();
+    book.texts_in("T", &["\t a b \n", "\u{a0}x\u{3000}", "\r\n", "a\tb"]);
+    assert_eq!(book.texts("TRIM(T)", 4), ["a b", "x", "", "a\tb"]);
 }
 
 #[test]
@@ -1042,6 +1223,17 @@ fn value_parses_numbers_and_gives_zero_otherwise() {
         ]
     );
     assert_eq!(book.numbers("VALUE(TEXT(2.25)) * 2", 1), [4.5]);
+}
+
+#[test]
+fn value_of_negative_zero_is_positive_zero() {
+    let mut book = Book::new();
+    book.texts_in("T", &["-0", " -0.0 ", "-0e5"]);
+    let values = book.numbers("VALUE(T)", 3);
+    assert_eq!(values, [0.0; 3]);
+    assert!(values.iter().all(|value| value.is_sign_positive()));
+    // The sign of the zero is also what TEXT of it writes, before the cells are sanitized.
+    assert_eq!(book.texts("TEXT(VALUE(T))", 3), ["0", "0", "0"]);
 }
 
 #[test]
@@ -1401,6 +1593,79 @@ fn finditem_finds_every_item_by_its_name_over_more_than_one_chunk() {
             "customer {i}"
         );
     }
+}
+
+#[test]
+fn finditem_agrees_with_list_find_over_more_than_one_chunk() {
+    let mut book = Book::new();
+    let customers = Customers::new(&mut book, 5000, |_| String::new());
+    // Even customers have the code "Customer" followed by the number of the next customer; odd
+    // customers have codes of their own, which keeps the codes exact and unique.
+    let items = (0..5000)
+        .map(|i| ItemSpec {
+            id: customers.ids[i],
+            code: Some(if i % 2 == 0 {
+                format!("Customer {}", (i + 1) % 5000)
+            } else {
+                format!("K{i}")
+            }),
+            name: format!("Customer {i}"),
+            parent: None,
+        })
+        .collect();
+    book.model
+        .apply(Command::UpsertListItems {
+            list: customers.list,
+            items,
+        })
+        .unwrap();
+    // Each sampled customer contributes a name, a code, a name in other case and spacing, the
+    // name of the next customer, and two keys that are none of them. The cells cycle through
+    // these keys, so that every chunk sees all kinds.
+    let keys: Vec<String> = [0, 1, 2, 3, 4, 5, 6, 7, 2500, 2501, 4998, 4999]
+        .iter()
+        .flat_map(|&i| {
+            [
+                format!("Customer {i}"),
+                format!("K{i}"),
+                format!("  customer {i}  "),
+                format!("Customer {}", i + 1),
+                format!("Customer {}", i + 5000),
+                format!("k{i}"),
+                String::new(),
+            ]
+        })
+        .collect();
+    let lookups = book.line_item(customers.module, "Lookup Key", Format::Text, None);
+    let cells = customers
+        .ids
+        .iter()
+        .enumerate()
+        .map(|(i, &id)| (vec![item(id)], text(&keys[i % keys.len()])))
+        .collect();
+    book.set_all(lookups, cells);
+    let found = book.line_item(
+        customers.module,
+        "Found",
+        Format::List {
+            list: customers.list,
+        },
+        Some("FINDITEM(Customers, Lookup Key)"),
+    );
+    book.model.recalc_all().unwrap();
+    let coords: Vec<Vec<CoordToken>> = customers.ids.iter().map(|&id| vec![item(id)]).collect();
+    let actual = book.model.read_cells(found, &coords).unwrap();
+    let list = book.model.structure().list(customers.list).unwrap();
+    let found_by_key: Vec<Value> = keys
+        .iter()
+        .map(|key| Value::Item(list.find(key).map(|idx| list.item(idx).id)))
+        .collect();
+    let expected: Vec<Value> = (0..5000)
+        .map(|i| found_by_key[i % keys.len()].clone())
+        .collect();
+    assert_eq!(actual, expected);
+    assert!(expected.contains(&Value::Item(None)));
+    assert!(expected.contains(&Value::Item(Some(customers.ids[1]))));
 }
 
 #[test]

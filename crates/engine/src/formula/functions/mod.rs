@@ -196,7 +196,7 @@ functions! {
         name: "ISANCESTOR",
         category: "Logic",
         signature: [Item, Item] => Ret::Boolean,
-        doc: "Returns TRUE if the first item is an ancestor of the second in the list hierarchy.",
+        doc: "Returns TRUE if the first item is an ancestor of the second in the list hierarchy, or is the second item itself.",
         example: "ISANCESTOR(Regions.EMEA, ITEM(Countries))",
     }
     IsFirstOccurrence {
@@ -226,7 +226,7 @@ functions! {
         name: "MID",
         category: "Text",
         signature: [Text, Number, Number] => Ret::Text,
-        doc: "Returns a number of characters from a text, starting at a position counted from 1.",
+        doc: "Returns a number of characters from a text, starting at a position counted from 1; a start before 1 uses up part of the length.",
         example: "MID(Product Code, 2, 3)",
     }
     Len {
@@ -240,7 +240,7 @@ functions! {
         name: "FIND",
         category: "Text",
         signature: [Text, Text] | [Text, Text, Number] => Ret::Number,
-        doc: "Returns the position, counted from 1, at which a text first occurs inside another, or 0 if it does not.",
+        doc: "Returns the position, counted from 1, at which a text first occurs inside another, or 0 if it does not; an empty search text returns 1 unless a start is given.",
         example: "FIND(\"-\", Product Code)",
     }
     Upper {
@@ -261,7 +261,7 @@ functions! {
         name: "TRIM",
         category: "Text",
         signature: [Text] => Ret::Text,
-        doc: "Removes the spaces at both ends of a text.",
+        doc: "Removes whitespace of any kind, such as spaces, tabs and line breaks, from both ends of a text.",
         example: "TRIM(Description)",
     }
     Substitute {
@@ -684,6 +684,7 @@ pub(crate) fn warm_fn(
 ) -> Result<(), EngineError> {
     match func {
         FuncId::IsFirstOccurrence
+        | FuncId::FindItem
         | FuncId::Cumulate
         | FuncId::MovingSum
         | FuncId::YearValue

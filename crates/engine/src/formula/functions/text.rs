@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::error::EngineError;
 use crate::shape::Shape;
-use crate::value::Column;
+use crate::value::{Column, sanitize_number};
 
 use crate::formula::eval::{eval, ops};
 use crate::formula::{EvalCtx, TExpr};
@@ -213,13 +213,25 @@ pub(super) fn eval_value(args: &[Column]) -> Result<Column, EngineError> {
     };
     let cells = texts
         .iter()
-        .map(|text| {
-            text.trim()
-                .parse::<f64>()
-                .ok()
-                .filter(|number| number.is_finite())
-                .unwrap_or(0.0)
-        })
+        .map(|text| text.trim().parse::<f64>().map_or(0.0, sanitize_number))
         .collect();
     Ok(Column::Number(cells))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn value_of_negative_zero_is_positive_zero() {
+        let texts = Column::Text(vec![Arc::from("-0"), Arc::from("-0.0e3")]);
+        let Ok(Column::Number(cells)) = eval_value(&[texts]) else {
+            panic!("VALUE should give numbers");
+        };
+        assert!(
+            cells
+                .iter()
+                .all(|cell| *cell == 0.0 && cell.is_sign_positive())
+        );
+    }
 }

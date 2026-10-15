@@ -149,12 +149,21 @@ pub(super) fn eval_round(
     }
 }
 
-/// `x` rounded to `places` decimals, where `whole` rounds a scaled number to a whole one.
+/// Scaled numbers from 2^52 up are whole numbers already, since the spacing of numbers there is 1.
+const WHOLE_FROM: f64 = (1u64 << 52) as f64;
+
+/// Scaled numbers from 2^50 up are not snapped by [`settle`]: there the spacing of numbers is a
+/// quarter, too coarse to tell a fraction from the representation error of scaling.
+const SNAP_BELOW: f64 = (1u64 << 50) as f64;
+
+/// `x` rounded to `places` decimals, where `whole` rounds a scaled number to a whole one. A
+/// scaled number with nothing to round is `x` itself, so that no round trip through scaling
+/// changes it.
 fn round(x: f64, places: f64, whole: impl Fn(f64) -> f64) -> f64 {
     let places = places.trunc().clamp(-400.0, 400.0) as i32;
     let factor = 10f64.powi(places.abs());
     let scaled = if places >= 0 { x * factor } else { x / factor };
-    if !scaled.is_finite() {
+    if !scaled.is_finite() || scaled.abs() >= WHOLE_FROM {
         return x;
     }
     let rounded = whole(settle(scaled));
@@ -165,13 +174,18 @@ fn round(x: f64, places: f64, whole: impl Fn(f64) -> f64) -> f64 {
     }
 }
 
-/// A scaled number without the representation error of scaling: one within a few units of the
+/// A scaled number without the representation error of scaling: one within four units in the
 /// last place of a whole or half number is that number. `1.005 * 100` is `100.49999999999999`
 /// and `12.35 * 100` is `1235.0000000000002`, but they are the numbers typed, and they round
-/// as such.
+/// as such. Above `SNAP_BELOW` the number is kept as it is.
 fn settle(scaled: f64) -> f64 {
+    let magnitude = scaled.abs();
+    if magnitude >= SNAP_BELOW {
+        return scaled;
+    }
     let half = (scaled * 2.0).round() / 2.0;
-    if (scaled - half).abs() <= scaled.abs() * 4.0 * f64::EPSILON {
+    let ulp = f64::from_bits(magnitude.to_bits() + 1) - magnitude;
+    if (scaled - half).abs() <= 4.0 * ulp {
         half
     } else {
         scaled

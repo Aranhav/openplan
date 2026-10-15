@@ -92,14 +92,19 @@ impl List {
 
     /// Dense index of the live item with this name, ignoring case, or else this exact code.
     pub fn find(&self, name_or_code: &str) -> Option<u32> {
-        let needle = name_or_code.trim();
-        self.items()
-            .find(|(_, item)| same_name(&item.name, needle))
-            .or_else(|| {
+        find_by(
+            name_or_code,
+            |name| {
                 self.items()
-                    .find(|(_, item)| item.code.as_deref() == Some(needle))
-            })
-            .map(|(idx, _)| idx)
+                    .find(|(_, item)| same_name(&item.name, name))
+                    .map(|(idx, _)| idx)
+            },
+            |code| {
+                self.items()
+                    .find(|(_, item)| item.code.as_deref() == Some(code))
+                    .map(|(idx, _)| idx)
+            },
+        )
     }
 
     fn was_deleted(&self, id: ItemId) -> bool {
@@ -107,6 +112,48 @@ impl List {
             .get(&id)
             .is_some_and(|&idx| self.items[idx as usize].deleted)
     }
+}
+
+/// The items of a list by name, ignoring case, and by code, indexed for many lookups in a row.
+/// Each lookup gives what [`List::find`] gives, without a scan of the list.
+pub struct Lookup<'a> {
+    names: HashMap<String, u32>,
+    codes: HashMap<&'a str, u32>,
+}
+
+impl<'a> Lookup<'a> {
+    /// The index of the live items of `list`; the first item of a name or code is the one found.
+    pub fn new(list: &'a List) -> Lookup<'a> {
+        let mut names = HashMap::new();
+        let mut codes = HashMap::new();
+        for (idx, item) in list.items() {
+            names.entry(fold(&item.name)).or_insert(idx);
+            if let Some(code) = &item.code {
+                codes.entry(code.as_str()).or_insert(idx);
+            }
+        }
+        Lookup { names, codes }
+    }
+
+    /// Dense index of the item that [`List::find`] finds for `name_or_code`.
+    pub fn find(&self, name_or_code: &str) -> Option<u32> {
+        find_by(
+            name_or_code,
+            |name| self.names.get(&fold(name)).copied(),
+            |code| self.codes.get(code).copied(),
+        )
+    }
+}
+
+/// The rule of [`List::find`], over the two ways of looking an item up: the text is trimmed,
+/// the name is tried first, and the code only when no item has the name.
+fn find_by(
+    name_or_code: &str,
+    by_name: impl Fn(&str) -> Option<u32>,
+    by_code: impl Fn(&str) -> Option<u32>,
+) -> Option<u32> {
+    let needle = name_or_code.trim();
+    by_name(needle).or_else(|| by_code(needle))
 }
 
 /// A validated item to add or update.

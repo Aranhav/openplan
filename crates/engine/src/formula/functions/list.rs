@@ -1,18 +1,17 @@
 //! `PARENT`, `NAME`, `CODE` and `FINDITEM`. (`ITEM` is in `dimension`.)
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::error::EngineError;
 use crate::ids::ListId;
 use crate::shape::Shape;
-use crate::structure::{List, Structure, fold};
+use crate::structure::{List, Lookup, Structure};
 use crate::value::{BLANK_ITEM, Column, ValueType};
 
-use crate::formula::eval::{eval, ops};
+use crate::formula::eval::{eval, eval_whole, ops};
 use crate::formula::{EvalCtx, TExpr};
 
-use super::{items_of, mismatch};
+use super::{items_of, mismatch, shared};
 
 /// The parent of the item at dense index `item` of `list`: the list above and the item's dense
 /// index in it. There is none for a blank or deleted item.
@@ -117,43 +116,9 @@ pub(super) fn eval_code(
     Ok(Column::Text(codes))
 }
 
-/// The live items of a list by name, ignoring case, and by code, for the lookups of
-/// `FINDITEM`. When two items share a name or a code the first one is found, as in
-/// [`List::find`].
-struct Index<'a> {
-    names: HashMap<String, u32>,
-    codes: HashMap<&'a str, u32>,
-}
-
-impl<'a> Index<'a> {
-    fn new(list: &'a List) -> Index<'a> {
-        let mut names = HashMap::new();
-        let mut codes = HashMap::new();
-        for (idx, item) in list.items() {
-            names.entry(fold(&item.name)).or_insert(idx);
-            if let Some(code) = &item.code {
-                codes.entry(code.as_str()).or_insert(idx);
-            }
-        }
-        Index { names, codes }
-    }
-
-    /// The item named `key`, else the one with the code `key`, ignoring spaces around it.
-    fn find(&self, key: &str) -> u32 {
-        let key = key.trim();
-        if key.is_empty() {
-            return BLANK_ITEM;
-        }
-        self.names
-            .get(&fold(key))
-            .or_else(|| self.codes.get(key))
-            .copied()
-            .unwrap_or(BLANK_ITEM)
-    }
-}
-
 /// `FINDITEM(List, text)`: the item of the list with the name `text`, else the one with the
-/// code `text`; blank if there is none.
+/// code `text`; blank if there is none. The lookups of the whole target share one index of the
+/// list, which is built once rather than for every chunk.
 pub(super) fn eval_find_item(
     ctx: &EvalCtx,
     target: &Shape,
@@ -164,21 +129,15 @@ pub(super) fn eval_find_item(
         return Err(mismatch());
     };
     let list = ctx.structure.list(*list).ok_or_else(mismatch)?;
-    let Column::Text(keys) = eval(ctx, target, key, idx)? else {
-        return Err(mismatch());
-    };
-    let index = Index::new(list);
-    let mut last: Option<(&Arc<str>, u32)> = None;
-    let items = keys
-        .iter()
-        .map(|key| match last {
-            Some((previous, item)) if previous == key => item,
-            _ => {
-                let item = index.find(key);
-                last = Some((key, item));
-                item
-            }
-        })
-        .collect();
-    Ok(Column::Item(items))
+    shared(ctx, target, args, idx, || {
+        let Column::Text(keys) = eval_whole(ctx, target, key)? else {
+            return Err(mismatch());
+        };
+        let lookup = Lookup::new(list);
+        Ok(Column::Item(
+            keys.iter()
+                .map(|text| lookup.find(text).unwrap_or(BLANK_ITEM))
+                .collect(),
+        ))
+    })
 }
