@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::error::EngineError;
 use crate::shape::Shape;
-use crate::value::{Column, sanitize_number};
+use crate::value::{Column, MAX_TEXT_CHARS, clamp_text, sanitize_number};
 
 use crate::formula::eval::{eval, ops};
 use crate::formula::{EvalCtx, TExpr};
@@ -178,15 +178,30 @@ pub(super) fn eval_substitute(args: &[Column]) -> Result<Column, EngineError> {
         .iter()
         .zip(olds)
         .zip(news)
-        .map(|((text, old), new)| {
-            if old.is_empty() || !text.contains(&**old) {
-                Arc::clone(text)
-            } else {
-                Arc::from(text.replace(&**old, new))
-            }
-        })
+        .map(|((text, old), new)| substitute(text, old, new))
         .collect();
     Ok(Column::Text(cells))
+}
+
+/// `text` with every `old` in it replaced by `new`, cut to the length of a text cell. The
+/// replacing stops once the result is past that length, so that the replacement of a long text
+/// by a long text is not built whole just to be cut.
+fn substitute(text: &Arc<str>, old: &str, new: &str) -> Arc<str> {
+    if old.is_empty() || !text.contains(old) {
+        return Arc::clone(text);
+    }
+    let mut out = String::new();
+    let mut rest: &str = text;
+    while let Some(at) = rest.find(old) {
+        out.push_str(&rest[..at]);
+        out.push_str(new);
+        rest = &rest[at + old.len()..];
+        if out.len() >= MAX_TEXT_CHARS * char::MAX_LEN_UTF8 {
+            return Arc::from(clamp_text(&out));
+        }
+    }
+    out.push_str(rest);
+    Arc::from(clamp_text(&out))
 }
 
 /// `TEXT(x)`: a number, date or list item as text, the way `&` writes it.

@@ -3,7 +3,6 @@ use super::members::{Frame, Id, Node, split};
 use super::{Cx, FilterOp, MAX_FILTERED_ROWS, Place, RowFilter, ViewDim, invalid};
 use crate::calendar::TimeLevel;
 use crate::error::EngineError;
-use crate::model::blank_value;
 use crate::structure::fold;
 use crate::value::{Value, ValueType};
 use std::cmp::Ordering;
@@ -152,7 +151,7 @@ impl<'a> Cx<'a> {
     ) -> Result<(), EngineError> {
         let plan = &filter.plan;
         let wanted: Vec<usize> = chunk.filter(|&at| passes[at]).collect();
-        let mut values = vec![blank_value(&plan.line_item.format.value_type()); wanted.len()];
+        let mut values = vec![plan.line_item.format.value_type().blank(); wanted.len()];
         let mut reads = Vec::new();
         let mut coords = Vec::new();
         for (at, &key) in wanted.iter().enumerate() {

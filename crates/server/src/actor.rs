@@ -136,6 +136,28 @@ impl ModelHandle {
         outcome.await.map_err(|_| self.stopped())?
     }
 
+    /// Applies the commands that `build` makes from the model, as `apply_with` does, and returns
+    /// the answer that `build` made along with them: what the change did, such as the item as it
+    /// is now. Both come from the model the batch is applied to, so the answer is what this change
+    /// made whatever else is applied meanwhile.
+    pub async fn apply_with_answer<T: Send + 'static>(
+        &self,
+        user_id: Uuid,
+        build: impl FnOnce(&Model) -> AppResult<(Vec<Command>, T)> + Send + 'static,
+    ) -> AppResult<T> {
+        let (send, receive) = oneshot::channel();
+        self.apply_with(user_id, move |model| {
+            let (commands, answer) = build(model)?;
+            // Nobody waiting for the answer is no reason not to apply the batch.
+            let _ = send.send(answer);
+            Ok(commands)
+        })
+        .await?;
+        receive
+            .await
+            .map_err(|_| AppError::Internal(anyhow!("the change was applied without an answer")))
+    }
+
     /// The model as of the last batch applied.
     pub fn snapshot(&self) -> Arc<Model> {
         Arc::clone(&self.published.borrow().model)
@@ -457,7 +479,7 @@ async fn run_engine(model: &Arc<Model>, build: Build) -> AppResult<Option<Engine
 /// The value each cell that `cmds` set has in `model`, one for every edit, in order. A cell that
 /// `model` does not have because the batch creates its line item or one of its items reads as
 /// the blank of the kind of value it is given.
-fn previous_values(model: &Model, cmds: &[Command]) -> Vec<Value> {
+pub fn previous_values(model: &Model, cmds: &[Command]) -> Vec<Value> {
     let mut previous = Vec::new();
     for cmd in cmds {
         let Command::SetCells { line_item, edits } = cmd else {

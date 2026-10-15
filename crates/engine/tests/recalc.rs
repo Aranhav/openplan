@@ -1142,6 +1142,101 @@ fn a_source_without_time_is_switched_by_the_periods_of_the_line_item_reading_it(
     assert_eq!(fx.number_at(priced, at(&budget, 11)), 8.0);
 }
 
+#[test]
+fn the_line_items_of_a_change_are_listed_in_id_order() {
+    let mut fx = Fx::new(1);
+    let products = fx.list("Products", None);
+    fx.named_items(products, "P", 3);
+    let sheet = fx.module("Sheet", vec![list_axis(products)]);
+    let (mut all, mut calculated) = (Vec::new(), Vec::new());
+    for n in 0..12 {
+        all.push(fx.number(sheet, &format!("Input{n}")));
+        let calc = fx.calc(sheet, &format!("Calc{n}"), &format!("Input{n} * 2"));
+        all.push(calc);
+        calculated.push(calc);
+    }
+
+    // Every line item of the module is laid out again, and every calculated one calculated.
+    let reshaped = fx
+        .model
+        .apply(Command::UpdateModule {
+            id: sheet,
+            name: None,
+            axes: Some(vec![list_axis(products), month_axis()]),
+            functional_area: None,
+        })
+        .unwrap();
+    let recalculated = fx.model.recalc_all().unwrap();
+
+    assert_eq!(reshaped.changed_line_items, sorted(all));
+    assert_eq!(recalculated.changed_line_items, sorted(calculated));
+}
+
+/// A scalar module with a Text line item `Step0` that holds `seed` and Text line items
+/// `Step1`, `Step2`, ... that each write the one before it twice.
+fn doubling_text(fx: &mut Fx, seed: &str, steps: usize) -> LineItemId {
+    let sheet = fx.module("Sheet", vec![]);
+    let mut last = fx.add(line_item(
+        sheet,
+        "Step0",
+        Format::Text,
+        Some(&format!("\"{seed}\"")),
+    ));
+    for step in 1..=steps {
+        let formula = format!("Step{0} & Step{0}", step - 1);
+        last = fx.add(line_item(
+            sheet,
+            &format!("Step{step}"),
+            Format::Text,
+            Some(&formula),
+        ));
+    }
+    last
+}
+
+#[test]
+fn computed_text_stops_growing_at_the_length_of_a_text_cell() {
+    for (seed, steps) in [("abcdefghij", 18), ("\u{e9}\u{e0}\u{65e5}\u{672c}", 13)] {
+        let mut fx = Fx::new(1);
+
+        let last = doubling_text(&mut fx, seed, steps);
+
+        let text = fx.text_at(last, vec![]);
+        assert_eq!(text.chars().count(), 10_000, "{seed}");
+        assert!(
+            text.chars().eq(seed.chars().cycle().take(10_000)),
+            "{seed}: the text is not the start of the doubled seed"
+        );
+    }
+}
+
+#[test]
+fn text_that_a_substitution_writes_into_its_own_result_cannot_outgrow_a_cell() {
+    let mut fx = Fx::new(1);
+    let sheet = fx.module("Sheet", vec![]);
+    let source = fx.add(line_item(sheet, "Source", Format::Text, None));
+    fx.model
+        .apply(Command::SetCells {
+            line_item: source,
+            edits: vec![CellEdit {
+                coords: vec![],
+                value: Value::Text("a".repeat(10_000).into()),
+            }],
+        })
+        .unwrap();
+
+    let grown = fx.add(line_item(
+        sheet,
+        "Grown",
+        Format::Text,
+        Some("SUBSTITUTE(SUBSTITUTE(Source, \"a\", Source), \"a\", Source)"),
+    ));
+
+    let text = fx.text_at(grown, vec![]);
+    assert_eq!(text.chars().count(), 10_000);
+    assert!(text.chars().all(|c| c == 'a'));
+}
+
 /// The benchmark shape of the engine: 10,000 products by 36 months by 3 versions, about 1.08
 /// million cells in every line item, with the Forecast showing the Actual version for the
 /// months before `switchover`.
@@ -1240,41 +1335,107 @@ impl Benchmark {
         ]
     }
 
-    /// Edits one cell of Units five times and returns the best time, which must be within the
-    /// target of the engine.
-    fn timed_edit(&mut self, product: usize, m: usize, version: usize) -> std::time::Duration {
-        let mut best = std::time::Duration::MAX;
+    /// Edits one cell of Units `ROUNDS` times, each the way the server applies a batch: on a
+    /// clone of the model, while the model it was cloned from is still alive, as it is for the
+    /// readers that hold a snapshot of it. Every column the edit touches is then copied whole
+    /// before it is written, the cost that applying in place never pays. The clone is part of
+    /// the time and dropping the model it replaces is not. Returns the time of every edit.
+    fn timed_edit(&mut self, product: usize, m: usize, version: usize) -> Timings {
+        let mut times = Vec::new();
         for round in 0..ROUNDS {
+            let edit = Command::SetCells {
+                line_item: self.units,
+                edits: vec![CellEdit {
+                    coords: self.coords(product, m, version),
+                    value: Value::Number(100.0 + f64::from(round)),
+                }],
+            };
             let started = std::time::Instant::now();
-            let coords = self.coords(product, m, version);
-            self.fx
-                .set_number(self.units, coords, 100.0 + f64::from(round));
+            let mut next = self.fx.model.clone();
+            next.apply_batch(vec![edit]).unwrap();
             let elapsed = started.elapsed();
+            self.fx.model = next;
             println!("edit {round}: {elapsed:?}");
-            best = best.min(elapsed);
+            times.push(elapsed);
         }
         let stats = self.fx.model.last_recalc_stats();
-        println!("last edit: {stats:?}, best {best:?}");
         assert_eq!(stats.line_items, 4);
-        best
+        let timings = Timings::of(times);
+        println!(
+            "last edit: {stats:?}, best {:?}, median {:?}",
+            timings.best(),
+            timings.median()
+        );
+        timings
     }
 }
 
+/// The times of the edits of one run, in order of size.
+struct Timings(Vec<std::time::Duration>);
+
+impl Timings {
+    fn of(mut times: Vec<std::time::Duration>) -> Timings {
+        times.sort();
+        Timings(times)
+    }
+
+    fn best(&self) -> std::time::Duration {
+        self.0[0]
+    }
+
+    fn median(&self) -> std::time::Duration {
+        self.0[self.0.len() / 2]
+    }
+
+    /// Fails unless the best edit is within `TARGET` and the median within `TYPICAL`.
+    fn assert_within_target(&self, what: &str) {
+        let count = self.0.len();
+        assert!(
+            self.best() < TARGET,
+            "the best of {count} edits ({what}) took {:?}, over the {TARGET:?} target",
+            self.best()
+        );
+        assert!(
+            self.median() < TYPICAL,
+            "the median of {count} edits ({what}) took {:?}, over {TYPICAL:?}",
+            self.median()
+        );
+    }
+}
+
+/// What the engine promises: one edit of a million-cell model recalculates in under 50 ms.
 const TARGET: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// How long the median edit may take. It is looser than `TARGET` because the box the tests run
+/// on shares its cores: on a 4-core box that was building other things the median of 15 edits
+/// came out between 25 and 61 ms, over `TARGET` in the model with a switchover in every run,
+/// while the best stayed under 40 ms.
+const TYPICAL: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Held by a timing test while it runs, so that the two do not slow each other down.
+static TIMING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Edits of one cell timed in a row; the cell ends up with `100 + ROUNDS - 1`.
 const ROUNDS: u32 = 15;
 const EDITED: f64 = 100.0 + (ROUNDS - 1) as f64;
 
+/// An edit of a model of 1.08 million cells per line item, applied the way the server applies
+/// one (see `Benchmark::timed_edit`), recalculates in under 50 ms.
+///
+/// This asserts that the best of 15 edits is under 50 ms (the engine can meet its target) and
+/// that the median is under 100 ms (a typical edit is not far over it), and not that the median
+/// is under 50 ms, which a box that shares its cores does not hold to. CI runs it in a release
+/// build with the other ignored timing test: `cargo test --release -p openplan-engine --test
+/// recalc -- --ignored`.
 #[test]
-#[cfg_attr(
-    debug_assertions,
-    ignore = "needs an optimized build: cargo test --release -p openplan-engine edit_1m_cells -- --nocapture"
-)]
+#[ignore = "timing needs an optimized build: cargo test --release -p openplan-engine --test recalc -- --ignored"]
 fn edit_1m_cells_recalculates_in_milliseconds() {
+    let _alone = TIMING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut big = Benchmark::new(None);
 
-    let best = big.timed_edit(4_321, 7, 1);
+    let times = big.timed_edit(4_321, 7, 1);
 
     assert_eq!(
         big.fx.model.last_recalc_stats().evaluated_cells,
@@ -1303,18 +1464,18 @@ fn edit_1m_cells_recalculates_in_milliseconds() {
         })
         .sum();
     assert_close(big.fx.number_at(big.cumulative, there), margins);
-    assert!(
-        best < TARGET,
-        "one edit took {best:?}, over the 50 ms target"
-    );
+    times.assert_within_target("an edit");
 }
 
+/// The same with the Forecast showing the Actual version before month 6, so that an edit of the
+/// Actual also reaches the Forecast and the columns formulas read are copied as well. The best
+/// and the median are held to the same limits.
 #[test]
-#[cfg_attr(
-    debug_assertions,
-    ignore = "needs an optimized build: cargo test --release -p openplan-engine edit_1m_cells -- --nocapture"
-)]
+#[ignore = "timing needs an optimized build: cargo test --release -p openplan-engine --test recalc -- --ignored"]
 fn edit_1m_cells_with_a_switchover_recalculates_in_milliseconds() {
+    let _alone = TIMING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut big = Benchmark::new(Some(6));
 
     // An edit of the Budget stays in its own cell; one of the Actual before the Forecast's
@@ -1334,11 +1495,8 @@ fn edit_1m_cells_with_a_switchover_recalculates_in_milliseconds() {
     );
     let later = big.coords(4_321, 7, 2);
     assert_eq!(big.fx.number_at(big.revenue, later), 12.0 * 4.0);
-    assert!(budget < TARGET, "a Budget edit took {budget:?}, over 50 ms");
-    assert!(
-        before < TARGET,
-        "an Actual edit took {before:?}, over 50 ms"
-    );
+    budget.assert_within_target("a Budget edit");
+    before.assert_within_target("an Actual edit");
 }
 
 #[test]

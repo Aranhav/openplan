@@ -11,11 +11,10 @@ use std::{
 };
 
 use axum::http::StatusCode;
-use common::TestApp;
+use common::{Stored, TestApp, insert_model, line_item, setup_admin_with_id};
 use openplan_engine::{
-    AxisSpec, CellEdit, Command, CoordToken, EngineError, Format, ItemId, ItemSpec, LineItem,
-    LineItemId, LineItemPatch, ListId, Model, ModuleId, SummaryMethod, TimeLevel, TimeScale, Value,
-    VersionsScope,
+    AxisSpec, CellEdit, Command, CoordToken, EngineError, Format, ItemId, ItemSpec, LineItemId,
+    LineItemPatch, ListId, Model, ModuleId, TimeLevel, Value,
 };
 use openplan_server::{
     actor::{ApplyOutcome, ModelEvent, ModelHandle, ModelRegistry},
@@ -41,64 +40,6 @@ const MONTHS: [&str; 12] = [
 const LONG: Duration = Duration::from_secs(30 * 60);
 /// How long a test waits for something that should happen at once before it calls it a hang.
 const WAIT: Duration = Duration::from_secs(5);
-
-/// A model row, and the user who edits it.
-struct Stored {
-    id: Uuid,
-    user: Uuid,
-}
-
-/// Inserts a user, a workspace and a model with no stored state, over a calendar of the twelve
-/// months of 2026.
-async fn insert_model(pool: &PgPool) -> Stored {
-    let user = Uuid::now_v7();
-    let workspace = Uuid::now_v7();
-    let id = Uuid::now_v7();
-    sqlx::query("INSERT INTO users (id, email, name) VALUES ($1, $2, 'Ada')")
-        .bind(user)
-        .bind(format!("ada-{user}@acme.com"))
-        .execute(pool)
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO workspaces (id, name) VALUES ($1, $2)")
-        .bind(workspace)
-        .bind(format!("Acme {workspace}"))
-        .execute(pool)
-        .await
-        .unwrap();
-    sqlx::query(
-        "INSERT INTO models (id, workspace_id, name, calendar) VALUES ($1, $2, 'Plan', $3)",
-    )
-    .bind(id)
-    .bind(workspace)
-    .bind(Json(
-        json!({ "fiscal_year_start_month": 1, "first_year": 2026, "years": 1 }),
-    ))
-    .execute(pool)
-    .await
-    .unwrap();
-    Stored { id, user }
-}
-
-fn line_item(module: ModuleId, name: &str, format: Format, formula: Option<&str>) -> LineItem {
-    LineItem {
-        id: LineItemId::new(),
-        module,
-        name: name.to_string(),
-        ordinal: 0,
-        format,
-        formula: formula.map(str::to_string),
-        summary: SummaryMethod::Sum,
-        time_summary: None,
-        applies_to: None,
-        time_scale: TimeScale::Module,
-        versions: VersionsScope::Module,
-        notes: String::new(),
-        code: None,
-        read_access_driver: None,
-        write_access_driver: None,
-    }
-}
 
 fn create_list(list: ListId, name: &str, items: &[ItemId]) -> Vec<Command> {
     vec![
@@ -1791,32 +1732,6 @@ async fn the_checkpoint_covers_every_acknowledged_write_while_models_are_evicted
     assert!(acknowledged > 0);
 }
 
-async fn setup_admin(app: &mut TestApp) -> (String, Uuid) {
-    let response = app
-        .post(
-            "/api/v1/setup",
-            Some(json!({
-                "email": "admin@acme.com",
-                "name": "Ada Admin",
-                "password": "correct horse battery",
-                "workspace_name": "Acme",
-            })),
-        )
-        .await;
-    assert_eq!(response.status, StatusCode::CREATED, "{}", response.text);
-    (
-        response.json["workspace"]["id"]
-            .as_str()
-            .unwrap()
-            .to_string(),
-        response.json["user"]["id"]
-            .as_str()
-            .unwrap()
-            .parse()
-            .unwrap(),
-    )
-}
-
 /// Creates a model through the API and has the registry load it and edit it.
 async fn model_in_use(app: &mut TestApp, workspace_id: &str, user: Uuid) -> (Uuid, ModelHandle) {
     let created = app
@@ -1840,7 +1755,7 @@ async fn model_in_use(app: &mut TestApp, workspace_id: &str, user: Uuid) -> (Uui
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn deleting_a_model_drops_its_actor(pool: PgPool) {
     let mut app = TestApp::new(pool);
-    let (workspace_id, admin) = setup_admin(&mut app).await;
+    let (workspace_id, admin) = setup_admin_with_id(&mut app).await;
     let (id, handle) = model_in_use(&mut app, &workspace_id, admin).await;
     let mut events = handle.subscribe();
 
@@ -1858,7 +1773,7 @@ async fn deleting_a_model_drops_its_actor(pool: PgPool) {
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn deleting_a_workspace_drops_the_actors_of_its_models(pool: PgPool) {
     let mut app = TestApp::new(pool);
-    let (workspace_id, admin) = setup_admin(&mut app).await;
+    let (workspace_id, admin) = setup_admin_with_id(&mut app).await;
     let (id, handle) = model_in_use(&mut app, &workspace_id, admin).await;
     let mut events = handle.subscribe();
 
@@ -1877,7 +1792,7 @@ async fn deleting_a_workspace_drops_the_actors_of_its_models(pool: PgPool) {
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn deleting_a_workspace_drops_the_actors_of_all_its_models(pool: PgPool) {
     let mut app = TestApp::new(pool);
-    let (workspace_id, admin) = setup_admin(&mut app).await;
+    let (workspace_id, admin) = setup_admin_with_id(&mut app).await;
     let (_, first) = model_in_use(&mut app, &workspace_id, admin).await;
     let created = app
         .post(

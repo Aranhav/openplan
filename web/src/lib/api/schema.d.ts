@@ -1141,7 +1141,8 @@ export interface components {
         };
         /**
          * @description The structure document of a model: calendar, lists with their items, subsets, versions, time
-         *     ranges, modules and line items. Months and periods are indices from the start of the calendar.
+         *     ranges, modules and line items, as the engine writes it, and the labels of the months. Months
+         *     and periods are indices from the start of the calendar.
          */
         StructureDto: {
             calendar: components["schemas"]["StructureCalendarDto"];
@@ -1153,6 +1154,12 @@ export interface components {
             line_items: components["schemas"]["LineItemDto"][];
             lists: components["schemas"]["StructureListDto"][];
             modules: components["schemas"]["ModuleDto"][];
+            /**
+             * @description The label of each month of the calendar, by the month's index, such as `Jan 26`. It is how
+             *     a month is named in a request: the switchover of a version, the current period and the
+             *     coordinates of a cell. A client looks the label up here and never works it out.
+             */
+            month_labels: string[];
             subsets: components["schemas"]["StructureSubsetDto"][];
             time_ranges: components["schemas"]["StructureTimeRangeDto"][];
             versions: components["schemas"]["StructureVersionDto"][];
@@ -1985,7 +1992,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description A field is out of range, or the current period is not a month of the calendar (validation) */
+            /** @description A field is out of range, or the current period is not a month of the calendar (validation, structure.invalid) */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -3259,7 +3266,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description The structure: calendar, lists with their items, subsets, versions, time ranges, modules and line items. Months and periods are indices from the start of the calendar. */
+            /** @description The structure: calendar, lists with their items, subsets, versions, time ranges, modules and line items. Months and periods are indices from the start of the calendar, and `month_labels` gives the label of each month by its index. */
             200: {
                 headers: {
                     [name: string]: unknown;

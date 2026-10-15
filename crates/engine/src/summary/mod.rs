@@ -60,7 +60,7 @@ pub fn aggregate(
 ) -> Result<(Shape, Column), EngineError> {
     let plan = Plan::new(structure, src_shape, target)?;
     if src.len() != src_shape.size() {
-        return Err(invalid(format!(
+        return Err(EngineError::invalid(format!(
             "The column has {} cells but its shape has {}.",
             src.len(),
             src_shape.size()
@@ -197,7 +197,7 @@ fn number_parts<'a>(
         {
             Ok((Cow::Borrowed(numerator), Cow::Borrowed(denominator)))
         }
-        _ => Err(invalid(
+        _ => Err(EngineError::invalid(
             "A ratio summary needs a numerator and a denominator number column with the same cells as the line item.",
         )),
     }
@@ -218,7 +218,7 @@ pub(crate) fn ratio_parts(
         parts(&line_item.summary),
         line_item.time_summary.as_ref().and_then(parts),
     ) {
-        (Some(summary), Some(time)) if summary != time => Err(invalid(format!(
+        (Some(summary), Some(time)) if summary != time => Err(EngineError::invalid(format!(
             "The summary and time summary of line item '{}' must divide the same line items.",
             line_item.name
         ))),
@@ -292,7 +292,7 @@ fn reducer_for(
     };
     let fold = match (method, boolean) {
         (M::Formula, _) => {
-            return Err(invalid(
+            return Err(EngineError::invalid(
                 "Formula summaries are evaluated by the formula engine and cannot be aggregated.",
             ));
         }
@@ -501,7 +501,7 @@ impl Plan {
         target: &LevelSpec,
     ) -> Result<Plan, EngineError> {
         if target.0.len() != src_shape.axes.len() {
-            return Err(invalid(format!(
+            return Err(EngineError::invalid(format!(
                 "The levels need one axis for each of the {} axes of the grid but have {}.",
                 src_shape.axes.len(),
                 target.0.len()
@@ -592,7 +592,7 @@ fn plan_axis(
         (Axis::Subset(id), _) => {
             let subset = structure
                 .subset(*id)
-                .ok_or_else(|| not_found("subset", id.0))?;
+                .ok_or_else(|| EngineError::not_found("subset", id.0))?;
             let from = list_of(structure, subset.list)?;
             let members = subset.items.iter().map(|item| from.idx(*item)).collect();
             plan_list_axis(structure, source, subset.list, members, wanted)?
@@ -600,7 +600,7 @@ fn plan_axis(
         _ => return Err(unsupported(structure, source, wanted)),
     };
     if plan.group.positions.len() != len as usize {
-        return Err(invalid(format!(
+        return Err(EngineError::invalid(format!(
             "The grid has {len} positions along {} but the model has {}.",
             describe(structure, source),
             plan.group.positions.len()
@@ -651,7 +651,7 @@ fn plan_list_axis(
 }
 
 fn unsupported(structure: &Structure, source: &Axis, wanted: &Axis) -> EngineError {
-    invalid(format!(
+    EngineError::invalid(format!(
         "Cannot summarize {} to {}.",
         describe(structure, source),
         describe(structure, wanted)
@@ -680,9 +680,9 @@ pub(crate) fn lift(
     let mut current = from;
     while current != to {
         let list = list_of(structure, current)?;
-        let parent_id = list
-            .parent
-            .ok_or_else(|| invalid(format!("List '{}' has no parent list.", list.name)))?;
+        let parent_id = list.parent.ok_or_else(|| {
+            EngineError::invalid(format!("List '{}' has no parent list.", list.name))
+        })?;
         let parent = list_of(structure, parent_id)?;
         let step = (0..list.len_dense())
             .map(|idx| {
@@ -694,7 +694,7 @@ pub(crate) fn lift(
                     .and_then(|parent_item| parent.idx(parent_item))
                     .map(Some)
                     .ok_or_else(|| {
-                        invalid(format!(
+                        EngineError::invalid(format!(
                             "Item '{}' has no parent item in list '{}'.",
                             item.name, parent.name
                         ))
@@ -710,7 +710,9 @@ pub(crate) fn lift(
 }
 
 fn list_of(structure: &Structure, id: ListId) -> Result<&List, EngineError> {
-    structure.list(id).ok_or_else(|| not_found("list", id.0))
+    structure
+        .list(id)
+        .ok_or_else(|| EngineError::not_found("list", id.0))
 }
 
 fn describe(structure: &Structure, axis: &Axis) -> String {
@@ -726,18 +728,5 @@ fn describe(structure: &Structure, axis: &Axis) -> String {
         ),
         Axis::Time { level, .. } => format!("{} periods", level_name(*level)),
         Axis::Versions => "versions".to_string(),
-    }
-}
-
-fn invalid(message: impl Into<String>) -> EngineError {
-    EngineError::Invalid {
-        message: message.into(),
-    }
-}
-
-fn not_found(what: &'static str, id: uuid::Uuid) -> EngineError {
-    EngineError::NotFound {
-        what,
-        id: id.to_string(),
     }
 }

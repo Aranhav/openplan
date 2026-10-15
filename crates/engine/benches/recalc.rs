@@ -2,6 +2,13 @@
 //! model recalculates in under 50 ms, ten million stored cells load in under 5 s, a
 //! calculated line item of a hundred thousand cells rounds in under 10 ms, and a window of 100
 //! rows by 40 columns of a view of the million-cell model is queried in under 50 ms.
+//!
+//! An edit is measured three ways. `edit_1m_cells` applies it in place to a model that nothing
+//! else holds, which is the least work. `edit_1m_cells_shared_snapshot` applies it the way the
+//! server does: to a clone of the model while the model it was cloned from is still alive, as
+//! it is for the readers that hold a snapshot of it, so that every column the edit touches is
+//! copied. `edit_1m_cells_switchover` does that in a model whose Forecast shows the Actual
+//! version before month 6, with an edit that also reaches the Forecast.
 
 use std::sync::{LazyLock, Mutex};
 
@@ -167,8 +174,9 @@ impl Sales {
 }
 
 /// 10,000 products over 36 months and 3 versions, with two input line items filled and four
-/// calculated ones over them: a million cells each.
-fn million_cells() -> (Sales, LineItemId) {
+/// calculated ones over them: a million cells each. The Forecast shows the Actual version
+/// before the month `switchover`, if there is one.
+fn million_cells(switchover: Option<u32>) -> (Sales, LineItemId) {
     let mut sales = sales(10_000, 3);
     let units = create(&mut sales.model, line_item(sales.module, "Units", None));
     let price = create(&mut sales.model, line_item(sales.module, "Price", None));
@@ -176,6 +184,24 @@ fn million_cells() -> (Sales, LineItemId) {
         10.0 + ((product + month) % 5) as f64
     });
     sales.fill(price, |_, month| 2.0 + (month % 5) as f64);
+    if let Some(month) = switchover {
+        let forecast = sales
+            .model
+            .structure()
+            .version_by_name("Forecast")
+            .unwrap()
+            .clone();
+        sales
+            .model
+            .apply(Command::UpsertVersion {
+                id: forecast.id,
+                name: forecast.name,
+                is_actual: false,
+                is_current: false,
+                switchover: Some(month),
+            })
+            .unwrap();
+    }
     for (name, formula) in [
         ("Revenue", "Units * Price"),
         ("Cost", "Revenue * 0.6"),
@@ -195,49 +221,75 @@ struct Edit {
     model: Model,
     units: LineItemId,
     at: Vec<CoordToken>,
-    next: f64,
 }
 
-fn edit_fixture() -> Edit {
-    let (sales, units) = million_cells();
-    let at = sales.coords(4_321, 7, 1);
+/// The model of a million cells and the product, month and version of the cell that is edited.
+fn edit_fixture(switchover: Option<u32>, (product, month, version): (usize, usize, usize)) -> Edit {
+    let (sales, units) = million_cells(switchover);
+    let at = sales.coords(product, month, version);
     Edit {
         model: sales.model,
         units,
         at,
-        next: 100.0,
+    }
+}
+
+/// The command that types `value` into the edited cell.
+fn set_units(edit: &Edit, value: f64) -> Command {
+    Command::SetCells {
+        line_item: edit.units,
+        edits: vec![CellEdit {
+            coords: edit.at.clone(),
+            value: Value::Number(value),
+        }],
     }
 }
 
 fn edit_1m_cells(c: &mut Criterion) {
-    let fixture = LazyLock::new(|| Mutex::new(edit_fixture()));
+    let fixture = LazyLock::new(|| Mutex::new(edit_fixture(None, (4_321, 7, 1))));
     c.bench_function("edit_1m_cells", |b| {
-        let mut guard = fixture.lock().unwrap();
-        let Edit {
-            model,
-            units,
-            at,
-            next,
-        } = &mut *guard;
+        let mut edit = fixture.lock().unwrap();
+        let mut value = 100.0;
         b.iter(|| {
-            *next += 1.0;
-            model
-                .apply(Command::SetCells {
-                    line_item: *units,
-                    edits: vec![CellEdit {
-                        coords: at.clone(),
-                        value: Value::Number(*next),
-                    }],
-                })
-                .unwrap()
+            value += 1.0;
+            let command = set_units(&edit, value);
+            edit.model.apply(command).unwrap()
         })
+    });
+}
+
+/// Benchmarks an edit applied to a clone of a model that stays alive. The clone, and the copy
+/// of every column the edit touches, are part of the time; dropping the result is not.
+fn bench_on_a_clone(c: &mut Criterion, name: &str, build: fn() -> Edit) {
+    let fixture = LazyLock::new(build);
+    c.bench_function(name, |b| {
+        let mut value = 100.0;
+        b.iter_with_large_drop(|| {
+            value += 1.0;
+            let command = set_units(&fixture, value);
+            let mut next = fixture.model.clone();
+            next.apply_batch(vec![command]).unwrap();
+            next
+        })
+    });
+}
+
+fn edit_1m_cells_shared_snapshot(c: &mut Criterion) {
+    bench_on_a_clone(c, "edit_1m_cells_shared_snapshot", || {
+        edit_fixture(None, (4_321, 7, 1))
+    });
+}
+
+fn edit_1m_cells_switchover(c: &mut Criterion) {
+    bench_on_a_clone(c, "edit_1m_cells_switchover", || {
+        edit_fixture(Some(6), (4_321, 3, 0))
     });
 }
 
 /// The million-cell model and a query for a window of its products over the periods of its
 /// time, years and total included, at the current version and the first line item.
 fn query_fixture() -> (Model, ViewQuery) {
-    let (sales, _) = million_cells();
+    let (sales, _) = million_cells(None);
     let q = ViewQuery {
         module: sales.module,
         line_items: None,
@@ -429,6 +481,6 @@ fn create_400_chained_line_items(c: &mut Criterion) {
 criterion_group! {
     name = benches;
     config = Criterion::default().sample_size(10);
-    targets = edit_1m_cells, query_window, load_10m_cells, round_100k_cells, create_400_chained_line_items
+    targets = edit_1m_cells, edit_1m_cells_shared_snapshot, edit_1m_cells_switchover, query_window, load_10m_cells, round_100k_cells, create_400_chained_line_items
 }
 criterion_main!(benches);

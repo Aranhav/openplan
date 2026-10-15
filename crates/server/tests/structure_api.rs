@@ -3,7 +3,7 @@ mod common;
 use axum::http::{Method, StatusCode};
 use common::{
     TestApp, TestResponse, assert_problem, create_items, create_list, create_member, create_user,
-    id_of, plan, sign_in, url,
+    id_of, plan, sign_in, structure, url,
 };
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -11,12 +11,6 @@ use uuid::Uuid;
 
 const PRODUCTION_LOCKED: &str =
     "This model is in production mode. Structural changes arrive through ALM sync.";
-
-async fn structure(app: &mut TestApp, model: &str) -> Value {
-    let response = app.get(&url(model, "/structure")).await;
-    assert_eq!(response.status, StatusCode::OK, "{}", response.text);
-    response.json
-}
 
 async fn put(app: &mut TestApp, path: &str, body: Value) -> TestResponse {
     app.request(Method::PUT, path, Some(body)).await
@@ -40,6 +34,11 @@ async fn structure_reads_show_the_default_versions_and_the_calendar(pool: PgPool
     assert_eq!(doc["format_version"], 1);
     assert_eq!(doc["calendar"]["first_year"], 2026);
     assert_eq!(doc["calendar"]["years"], 3);
+    let labels = doc["month_labels"].as_array().unwrap();
+    assert_eq!(labels.len(), 36);
+    assert_eq!(labels[0], "Jan 26");
+    assert_eq!(labels[11], "Dec 26");
+    assert_eq!(labels[35], "Dec 28");
     let names: Vec<&str> = doc["versions"]
         .as_array()
         .unwrap()
@@ -495,6 +494,11 @@ async fn calendar_is_updated_and_stored(pool: PgPool) {
         doc["calendar"]["current_month"], 2,
         "FY27 starts in April 2026, so June 2026 is its third month"
     );
+    let labels = doc["month_labels"].as_array().unwrap();
+    assert_eq!(labels.len(), 24);
+    assert_eq!(labels[0], "Apr 26");
+    assert_eq!(labels[2], updated.json["current_period"]);
+    assert_eq!(labels[23], "Mar 28");
     let stored: Value = sqlx::query_scalar("SELECT calendar FROM models WHERE id = $1")
         .bind(Uuid::parse_str(&model).unwrap())
         .fetch_one(&pool)

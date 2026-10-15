@@ -13,7 +13,6 @@ use std::{
     sync::{Arc, LazyLock, Mutex, PoisonError, Weak},
 };
 
-use anyhow::anyhow;
 use axum::{
     Json, Router,
     extract::State,
@@ -25,7 +24,7 @@ use openplan_engine::{
     ListId, Model, Module, ModuleId, Structure, SummaryMethod, TimeScale, VersionsScope, functions,
 };
 use serde::{Deserialize, Serialize};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use utoipa::{
     IntoParams, ToSchema,
     openapi::{ObjectBuilder, Type, schema::Schema},
@@ -33,13 +32,12 @@ use utoipa::{
 use uuid::Uuid;
 
 use crate::{
-    actor::ModelHandle,
     app::AppState,
     auth::CurrentUser,
-    authz::{WorkspaceRole, require_workspace_role},
+    authz::WorkspaceRole,
     error::{AppError, AppResult, FieldError, FormulaProblem},
     extract::{ApiJson, ApiPath, ApiQuery, nullable},
-    structure_api::{model_row, read_handle, write_handle},
+    structure_api::{ProdLock, handle_for},
     structure_dto::{
         AxisDto, FormatDto, LineItemDto, ModuleDto, NumberUnitDto, SummaryMethodDto, TimeScaleDto,
         ValueTypeDto, VersionsScopeDto,
@@ -328,28 +326,6 @@ fn functional_area_of(raw: Option<&str>) -> Result<Option<String>, FieldError> {
     .transpose()
 }
 
-/// Applies the commands that `build` makes from the model, as [`ModelHandle::apply_with`] does,
-/// and returns the answer that `build` made along with them. Both come from the model the batch
-/// is applied to, so the answer is what the change made, whatever else is applied meanwhile.
-async fn apply_building<T: Send + 'static>(
-    handle: &ModelHandle,
-    user_id: Uuid,
-    build: impl FnOnce(&Model) -> AppResult<(Vec<Command>, T)> + Send + 'static,
-) -> AppResult<T> {
-    let (send, receive) = oneshot::channel();
-    handle
-        .apply_with(user_id, move |model| {
-            let (commands, answer) = build(model)?;
-            // Nobody waiting for the answer is no reason not to apply the batch.
-            let _ = send.send(answer);
-            Ok(commands)
-        })
-        .await?;
-    receive
-        .await
-        .map_err(|_| AppError::Internal(anyhow!("the change was applied without an answer")))
-}
-
 /// Who may check formulas of a model right now: a check tries the formula on a copy of the model,
 /// which can take long on a large one, so at most [`CONCURRENT_CHECKS`] of a model run at once
 /// and the others wait.
@@ -498,18 +474,6 @@ impl<'a> References<'a> {
     }
 }
 
-/// The model's actor, for a caller who may build in the model, in production mode too: for what
-/// does not change it.
-async fn build_handle(
-    state: &AppState,
-    user: &CurrentUser,
-    model_id: Uuid,
-) -> AppResult<ModelHandle> {
-    let (workspace_id, _) = model_row(&state.db, model_id).await?;
-    require_workspace_role(&state.db, user, workspace_id, WorkspaceRole::Builder).await?;
-    state.models.get(model_id).await
-}
-
 /// The ordinal after the last line item of a module.
 fn next_ordinal(structure: &Structure, module: ModuleId) -> i32 {
     structure
@@ -593,7 +557,14 @@ pub(crate) async fn create_module(
     ApiPath(model_id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<CreateModuleRequest>,
 ) -> AppResult<(StatusCode, Json<ModuleDto>)> {
-    let handle = write_handle(&state, &user, model_id).await?;
+    let handle = handle_for(
+        &state,
+        &user,
+        model_id,
+        WorkspaceRole::Builder,
+        ProdLock::Enforce,
+    )
+    .await?;
     let name = validate::entity_name("name", &body.name);
     let area = functional_area_of(body.functional_area.as_deref());
     validate::collect(vec![name.clone().map(drop), area.clone().map(drop)])?;
@@ -601,27 +572,28 @@ pub(crate) async fn create_module(
     let axes = axes_of(body.axes);
 
     let id = ModuleId::new();
-    let module = apply_building(&handle, user.id, move |model| {
-        let mut references = References::new(model.structure());
-        references.axes("axes", &axes);
-        references.finish()?;
-        let answer = ModuleDto::from(&Module {
-            id,
-            name: name.clone(),
-            axes: axes.clone(),
-            functional_area: functional_area.clone(),
-        });
-        Ok((
-            vec![Command::CreateModule {
+    let module = handle
+        .apply_with_answer(user.id, move |model| {
+            let mut references = References::new(model.structure());
+            references.axes("axes", &axes);
+            references.finish()?;
+            let answer = ModuleDto::from(&Module {
                 id,
-                name,
-                axes,
-                functional_area,
-            }],
-            answer,
-        ))
-    })
-    .await?;
+                name: name.clone(),
+                axes: axes.clone(),
+                functional_area: functional_area.clone(),
+            });
+            Ok((
+                vec![Command::CreateModule {
+                    id,
+                    name,
+                    axes,
+                    functional_area,
+                }],
+                answer,
+            ))
+        })
+        .await?;
     Ok((StatusCode::CREATED, Json(module)))
 }
 
@@ -649,7 +621,14 @@ pub(crate) async fn update_module(
     ApiPath((model_id, module_id)): ApiPath<(Uuid, Uuid)>,
     ApiJson(body): ApiJson<UpdateModuleRequest>,
 ) -> AppResult<Json<ModuleDto>> {
-    let handle = write_handle(&state, &user, model_id).await?;
+    let handle = handle_for(
+        &state,
+        &user,
+        model_id,
+        WorkspaceRole::Builder,
+        ProdLock::Enforce,
+    )
+    .await?;
     let name = body
         .name
         .as_deref()
@@ -663,33 +642,34 @@ pub(crate) async fn update_module(
     let axes = body.axes.map(axes_of);
 
     let id = ModuleId(module_id);
-    let module = apply_building(&handle, user.id, move |model| {
-        let structure = model.structure();
-        let current = structure.module(id).ok_or(AppError::NotFound)?;
-        if let Some(axes) = &axes {
-            let mut references = References::new(structure);
-            references.axes("axes", axes);
-            references.finish()?;
-        }
-        let answer = ModuleDto::from(&Module {
-            id,
-            name: name.clone().unwrap_or_else(|| current.name.clone()),
-            axes: axes.clone().unwrap_or_else(|| current.axes.clone()),
-            functional_area: functional_area
-                .clone()
-                .unwrap_or_else(|| current.functional_area.clone()),
-        });
-        Ok((
-            vec![Command::UpdateModule {
+    let module = handle
+        .apply_with_answer(user.id, move |model| {
+            let structure = model.structure();
+            let current = structure.module(id).ok_or(AppError::NotFound)?;
+            if let Some(axes) = &axes {
+                let mut references = References::new(structure);
+                references.axes("axes", axes);
+                references.finish()?;
+            }
+            let answer = ModuleDto::from(&Module {
                 id,
-                name,
-                axes,
-                functional_area,
-            }],
-            answer,
-        ))
-    })
-    .await?;
+                name: name.clone().unwrap_or_else(|| current.name.clone()),
+                axes: axes.clone().unwrap_or_else(|| current.axes.clone()),
+                functional_area: functional_area
+                    .clone()
+                    .unwrap_or_else(|| current.functional_area.clone()),
+            });
+            Ok((
+                vec![Command::UpdateModule {
+                    id,
+                    name,
+                    axes,
+                    functional_area,
+                }],
+                answer,
+            ))
+        })
+        .await?;
     Ok(Json(module))
 }
 
@@ -714,7 +694,14 @@ pub(crate) async fn delete_module(
     user: CurrentUser,
     ApiPath((model_id, module_id)): ApiPath<(Uuid, Uuid)>,
 ) -> AppResult<StatusCode> {
-    let handle = write_handle(&state, &user, model_id).await?;
+    let handle = handle_for(
+        &state,
+        &user,
+        model_id,
+        WorkspaceRole::Builder,
+        ProdLock::Enforce,
+    )
+    .await?;
     handle
         .apply(
             user.id,
@@ -753,7 +740,14 @@ pub(crate) async fn create_line_item(
     ApiPath((model_id, module_id)): ApiPath<(Uuid, Uuid)>,
     ApiJson(body): ApiJson<CreateLineItemRequest>,
 ) -> AppResult<(StatusCode, Json<LineItemDto>)> {
-    let handle = write_handle(&state, &user, model_id).await?;
+    let handle = handle_for(
+        &state,
+        &user,
+        model_id,
+        WorkspaceRole::Builder,
+        ProdLock::Enforce,
+    )
+    .await?;
     let name = validate::entity_name("name", &body.name);
     let mut checks = vec![name.clone().map(drop)];
     checks.extend(body.format.iter().flat_map(format_checks));
@@ -786,33 +780,34 @@ pub(crate) async fn create_line_item(
         read_access_driver: body.read_access_driver.map(LineItemId),
         write_access_driver: body.write_access_driver.map(LineItemId),
     };
-    let created = apply_building(&handle, user.id, move |model| {
-        let structure = model.structure();
-        // A list's id names the module of its properties, which exists once it has a line item.
-        if structure.module(module).is_none() && structure.list(ListId(module_id)).is_none() {
-            return Err(AppError::NotFound);
-        }
-        let line_item = LineItem {
-            ordinal: ordinal.unwrap_or_else(|| next_ordinal(structure, module)),
-            ..line_item
-        };
-        let mut references = References::new(structure);
-        references.format(&line_item.format);
-        references.summary("summary", &line_item.summary);
-        if let Some(method) = &line_item.time_summary {
-            references.summary("time_summary", method);
-        }
-        if let Some(axes) = &line_item.applies_to {
-            references.axes("applies_to", axes);
-        }
-        references.versions(&line_item.versions);
-        references.line_item("read_access_driver", line_item.read_access_driver);
-        references.line_item("write_access_driver", line_item.write_access_driver);
-        references.finish()?;
-        let answer = LineItemDto::from(&line_item);
-        Ok((vec![Command::CreateLineItem(line_item)], answer))
-    })
-    .await?;
+    let created = handle
+        .apply_with_answer(user.id, move |model| {
+            let structure = model.structure();
+            // A list's id names the module of its properties, which exists once it has a line item.
+            if structure.module(module).is_none() && structure.list(ListId(module_id)).is_none() {
+                return Err(AppError::NotFound);
+            }
+            let line_item = LineItem {
+                ordinal: ordinal.unwrap_or_else(|| next_ordinal(structure, module)),
+                ..line_item
+            };
+            let mut references = References::new(structure);
+            references.format(&line_item.format);
+            references.summary("summary", &line_item.summary);
+            if let Some(method) = &line_item.time_summary {
+                references.summary("time_summary", method);
+            }
+            if let Some(axes) = &line_item.applies_to {
+                references.axes("applies_to", axes);
+            }
+            references.versions(&line_item.versions);
+            references.line_item("read_access_driver", line_item.read_access_driver);
+            references.line_item("write_access_driver", line_item.write_access_driver);
+            references.finish()?;
+            let answer = LineItemDto::from(&line_item);
+            Ok((vec![Command::CreateLineItem(line_item)], answer))
+        })
+        .await?;
     Ok((StatusCode::CREATED, Json(created)))
 }
 
@@ -840,7 +835,14 @@ pub(crate) async fn update_line_item(
     ApiPath((model_id, line_item_id)): ApiPath<(Uuid, Uuid)>,
     ApiJson(body): ApiJson<UpdateLineItemRequest>,
 ) -> AppResult<Json<LineItemDto>> {
-    let handle = write_handle(&state, &user, model_id).await?;
+    let handle = handle_for(
+        &state,
+        &user,
+        model_id,
+        WorkspaceRole::Builder,
+        ProdLock::Enforce,
+    )
+    .await?;
     let name = body
         .name
         .as_deref()
@@ -876,40 +878,41 @@ pub(crate) async fn update_line_item(
             .map(|driver| driver.map(LineItemId)),
     };
     let id = LineItemId(line_item_id);
-    let updated = apply_building(&handle, user.id, move |model| {
-        let structure = model.structure();
-        let current = structure.line_item(id).ok_or(AppError::NotFound)?;
-        let mut references = References::new(structure);
-        if let Some(format) = &patch.format {
-            references.format(format);
-        }
-        if let Some(method) = &patch.summary {
-            references.summary("summary", method);
-        }
-        if let Some(Some(method)) = &patch.time_summary {
-            references.summary("time_summary", method);
-        }
-        if let Some(Some(axes)) = &patch.applies_to {
-            references.axes("applies_to", axes);
-        }
-        if let Some(versions) = &patch.versions {
-            references.versions(versions);
-        }
-        if let Some(driver) = patch.read_access_driver {
-            references.line_item("read_access_driver", driver);
-        }
-        if let Some(driver) = patch.write_access_driver {
-            references.line_item("write_access_driver", driver);
-        }
-        references.finish()?;
-        let mut updated = current.clone();
-        patch.clone().apply_to(&mut updated);
-        Ok((
-            vec![Command::UpdateLineItem { id, patch }],
-            LineItemDto::from(&updated),
-        ))
-    })
-    .await?;
+    let updated = handle
+        .apply_with_answer(user.id, move |model| {
+            let structure = model.structure();
+            let current = structure.line_item(id).ok_or(AppError::NotFound)?;
+            let mut references = References::new(structure);
+            if let Some(format) = &patch.format {
+                references.format(format);
+            }
+            if let Some(method) = &patch.summary {
+                references.summary("summary", method);
+            }
+            if let Some(Some(method)) = &patch.time_summary {
+                references.summary("time_summary", method);
+            }
+            if let Some(Some(axes)) = &patch.applies_to {
+                references.axes("applies_to", axes);
+            }
+            if let Some(versions) = &patch.versions {
+                references.versions(versions);
+            }
+            if let Some(driver) = patch.read_access_driver {
+                references.line_item("read_access_driver", driver);
+            }
+            if let Some(driver) = patch.write_access_driver {
+                references.line_item("write_access_driver", driver);
+            }
+            references.finish()?;
+            let mut updated = current.clone();
+            patch.clone().apply_to(&mut updated);
+            Ok((
+                vec![Command::UpdateLineItem { id, patch }],
+                LineItemDto::from(&updated),
+            ))
+        })
+        .await?;
     Ok(Json(updated))
 }
 
@@ -934,7 +937,14 @@ pub(crate) async fn delete_line_item(
     user: CurrentUser,
     ApiPath((model_id, line_item_id)): ApiPath<(Uuid, Uuid)>,
 ) -> AppResult<StatusCode> {
-    let handle = write_handle(&state, &user, model_id).await?;
+    let handle = handle_for(
+        &state,
+        &user,
+        model_id,
+        WorkspaceRole::Builder,
+        ProdLock::Enforce,
+    )
+    .await?;
     handle
         .apply(
             user.id,
@@ -967,7 +977,14 @@ pub(crate) async fn reorder_line_items(
     ApiPath(model_id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<ReorderLineItemsRequest>,
 ) -> AppResult<StatusCode> {
-    let handle = write_handle(&state, &user, model_id).await?;
+    let handle = handle_for(
+        &state,
+        &user,
+        model_id,
+        WorkspaceRole::Builder,
+        ProdLock::Enforce,
+    )
+    .await?;
     handle
         .apply_with(user.id, move |model| reorder_commands(model, &body))
         .await?;
@@ -994,7 +1011,14 @@ pub(crate) async fn check_formula(
     ApiPath(model_id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<CheckFormulaRequest>,
 ) -> AppResult<Json<CheckFormulaResponse>> {
-    let handle = build_handle(&state, &user, model_id).await?;
+    let handle = handle_for(
+        &state,
+        &user,
+        model_id,
+        WorkspaceRole::Builder,
+        ProdLock::Ignore,
+    )
+    .await?;
     at_most("formula", &body.formula, FORMULA_MAX)?;
     let model = handle.snapshot();
     let id = LineItemId(body.line_item_id);
@@ -1044,7 +1068,14 @@ pub(crate) async fn completions(
     ApiPath(model_id): ApiPath<Uuid>,
     ApiQuery(query): ApiQuery<CompletionsQuery>,
 ) -> AppResult<Json<Vec<CompletionDto>>> {
-    let handle = read_handle(&state, &user, model_id).await?;
+    let handle = handle_for(
+        &state,
+        &user,
+        model_id,
+        WorkspaceRole::Viewer,
+        ProdLock::Ignore,
+    )
+    .await?;
     let model = handle.snapshot();
     let id = LineItemId(query.line_item_id);
     if model.structure().line_item(id).is_none() {

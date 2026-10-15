@@ -10,7 +10,7 @@ use crate::structure::{Layout, level_name};
 use crate::summary::{LevelSpec, ancestors};
 use crate::value::Value;
 
-use super::{Model, blank_value, decode, missing_line_item};
+use super::{Model, decode};
 
 /// Where the actual version lies in the cells of a line item with both a Time and a Versions
 /// axis: the position of the Versions axis among the axes, and the position of the version
@@ -41,7 +41,7 @@ impl Model {
         let line_item = self
             .structure
             .line_item(li)
-            .ok_or_else(|| missing_line_item(li))?;
+            .ok_or_else(|| EngineError::not_found("line item", li.0))?;
         let layout = self.structure.layout(line_item)?;
         let shape = self.structure.shape_of(&layout)?;
         let ty = line_item.format.value_type();
@@ -53,13 +53,14 @@ impl Model {
             .map(|(index, tokens)| {
                 let at = |message: String| EngineError::InvalidCoordinate {
                     message: format!("Cell {index}: {message}"),
+                    index: None,
                 };
                 let levels = self.levels_of(&layout, tokens).map_err(at)?;
                 if levels != layout.axes {
                     return self
                         .read_summary(li, tokens, &LevelSpec(levels))
                         .map_err(|error| match error {
-                            EngineError::InvalidCoordinate { message } => at(message),
+                            EngineError::InvalidCoordinate { message, .. } => at(message),
                             other => other,
                         });
                 }
@@ -70,7 +71,7 @@ impl Model {
                     position[actual.axis] = actual.position;
                 }
                 Ok(column.map_or_else(
-                    || blank_value(&ty),
+                    || ty.blank(),
                     |column| decode(&self.structure, &ty, column.get(shape.index(&position))),
                 ))
             })
@@ -89,7 +90,7 @@ impl Model {
         let line_item = self
             .structure
             .line_item(li)
-            .ok_or_else(|| missing_line_item(li))?;
+            .ok_or_else(|| EngineError::not_found("line item", li.0))?;
         let layout = self.structure.layout(line_item)?;
         let calendars = layout
             .axes

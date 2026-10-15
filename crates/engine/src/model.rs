@@ -13,7 +13,9 @@ use crate::ids::{LineItemId, ListId, VersionId};
 use crate::shape::{Axis, Shape};
 use crate::structure::{Layout, LineItem, Structure, level_name};
 use crate::summary::{LevelSpec, Summary, SummaryCache, ratio_parts, roll_up};
-use crate::value::{BLANK_DATE, BLANK_ITEM, BLANK_PERIOD, Cell, Column, Format, Value, ValueType};
+use crate::value::{
+    BLANK_DATE, BLANK_ITEM, BLANK_PERIOD, Cell, Column, Format, MAX_TEXT_CHARS, Value, ValueType,
+};
 
 mod read;
 mod recalc;
@@ -26,9 +28,6 @@ use working::{Working, summarised_by_formula};
 pub(crate) const EPOCH_DAYS_FROM_CE: i32 = 719_163;
 
 const SWITCHOVER_MESSAGE: &str = "Periods before the switchover show Actual values.";
-
-/// The most characters a text cell holds.
-const MAX_TEXT_CHARS: usize = 10_000;
 
 /// What the last command, batch or full recalculation calculated.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -125,6 +124,9 @@ impl Model {
     /// Applies one command and calculates what it changes. A rejected command leaves the model
     /// unchanged.
     ///
+    /// A command that would give a line item more than [`crate::MAX_LINE_ITEM_CELLS`] cells is
+    /// rejected with `structure.invalid`, before any cell is allocated.
+    ///
     /// A command that sets a formula is rejected, with the problems found, if the formula does
     /// not compile or makes a circular reference that is not allowed. A command that breaks a
     /// formula already set, such as deleting a line item it reads, is not: the formula's line
@@ -186,7 +188,7 @@ impl Model {
     /// item that does not exist is reported as a problem with code `structure.not_found`.
     pub fn check_formula(&self, li: LineItemId, src: &str) -> Result<ValueType, Vec<FormulaError>> {
         let Some(line_item) = self.structure.line_item(li) else {
-            return Err(formula_errors(missing_line_item(li)));
+            return Err(formula_errors(EngineError::not_found("line item", li.0)));
         };
         let ty = line_item.format.value_type();
         if src.trim().is_empty() {
@@ -225,7 +227,7 @@ impl Model {
         let line_item = self
             .structure
             .line_item(li)
-            .ok_or_else(|| missing_line_item(li))?;
+            .ok_or_else(|| EngineError::not_found("line item", li.0))?;
         let layout = self.structure.layout(line_item)?;
         let shape = self.structure.shape_of(&layout)?;
         let ty = line_item.format.value_type();
@@ -239,12 +241,13 @@ impl Model {
                     .resolve_cell(&layout, tokens)
                     .map_err(|message| EngineError::InvalidCoordinate {
                         message: format!("Cell {index}: {message}"),
+                        index: None,
                     })?;
                 Ok(match column {
                     Some(column) => {
                         decode(&self.structure, &ty, column.get(shape.index(&position)))
                     }
-                    None => blank_value(&ty),
+                    None => ty.blank(),
                 })
             })
             .collect()
@@ -266,7 +269,7 @@ impl Model {
         let line_item = self
             .structure
             .line_item(li)
-            .ok_or_else(|| missing_line_item(li))?;
+            .ok_or_else(|| EngineError::not_found("line item", li.0))?;
         let layout = self.structure.layout(line_item)?;
         let summary = self.summary_column(line_item, &layout, levels)?;
         let (shape, column) = &*summary;
@@ -277,7 +280,10 @@ impl Model {
         let position = self
             .structure
             .resolve_cell(&target, coords)
-            .map_err(|message| EngineError::InvalidCoordinate { message })?;
+            .map_err(|message| EngineError::InvalidCoordinate {
+                message,
+                index: None,
+            })?;
         Ok(decode(
             &self.structure,
             &line_item.format.value_type(),
@@ -454,6 +460,7 @@ impl Model {
             _ => None,
         };
         Arc::make_mut(&mut self.structure).apply(command)?;
+        self.structure.check_line_item_sizes()?;
         session.changes.structure_changed = true;
         self.reconcile_inputs(old, session)?;
         if let Some((list, indices)) = deleted_items {
@@ -588,7 +595,7 @@ impl Model {
         let structure = Arc::clone(&self.structure);
         let line_item = structure
             .line_item(id)
-            .ok_or_else(|| missing_line_item(id))?;
+            .ok_or_else(|| EngineError::not_found("line item", id.0))?;
         if line_item.formula.is_some() {
             return Err(EngineError::NotInput {
                 line_item: line_item.name.clone(),
@@ -604,7 +611,8 @@ impl Model {
             let position = structure
                 .resolve_cell(&layout, &edit.coords)
                 .map_err(|message| EngineError::InvalidCoordinate {
-                    message: format!("Edit {index}: {message}"),
+                    message,
+                    index: Some(index),
                 })?;
             if structure.is_before_switchover(&layout, &position) {
                 issues.push(CellIssue {
@@ -668,13 +676,6 @@ fn cell_edits(command: &Command) -> Option<(LineItemId, &[CellEdit])> {
     }
 }
 
-fn missing_line_item(id: LineItemId) -> EngineError {
-    EngineError::NotFound {
-        what: "line item",
-        id: id.0.to_string(),
-    }
-}
-
 /// Whether the calculated column of line item `id` is still laid out as the structure now has
 /// it: the line item is still calculated, its type, axes and time scale are the same and no
 /// axis has gained, lost or moved an item, subset member, version or period.
@@ -720,7 +721,7 @@ fn ratio_part<'a>(
 ) -> Result<&'a LineItem, EngineError> {
     let part = structure
         .line_item(id)
-        .ok_or_else(|| missing_line_item(id))?;
+        .ok_or_else(|| EngineError::not_found("line item", id.0))?;
     if structure.line_item_shape(id)? != *shape {
         return Err(EngineError::Invalid {
             message: format!(
@@ -876,18 +877,7 @@ fn decode(structure: &Structure, ty: &ValueType, cell: Cell) -> Value {
         (ValueType::Period(level), Cell::Period(index)) => {
             Value::Period((index != BLANK_PERIOD).then_some((*level, index)))
         }
-        (ty, _) => blank_value(ty),
-    }
-}
-
-pub(crate) fn blank_value(ty: &ValueType) -> Value {
-    match ty {
-        ValueType::Number => Value::Number(0.0),
-        ValueType::Boolean => Value::Boolean(false),
-        ValueType::Text => Value::Text(Arc::from("")),
-        ValueType::Date => Value::Date(None),
-        ValueType::Item(_) => Value::Item(None),
-        ValueType::Period(_) => Value::Period(None),
+        (ty, _) => ty.blank(),
     }
 }
 

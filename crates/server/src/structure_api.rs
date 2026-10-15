@@ -5,12 +5,8 @@
 //! change that depends on what the model holds, such as the items a name refers to, is made
 //! inside the actor, so that it sees every change applied before it.
 
-use std::{
-    ops::RangeInclusive,
-    sync::{Arc, Mutex, PoisonError},
-};
+use std::ops::RangeInclusive;
 
-use anyhow::anyhow;
 use axum::{
     Json, Router,
     extract::State,
@@ -40,10 +36,6 @@ use crate::{
 
 const PRODUCTION_LOCKED: &str =
     "This model is in production mode. Structural changes arrive through ALM sync.";
-
-/// What a change leaves for the handler to answer with: the change runs once inside the actor and
-/// fills this in, and the handler reads it after the change was applied.
-type Answer<T> = Arc<Mutex<Option<T>>>;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -351,26 +343,20 @@ async fn delete_with(
     model_id: Uuid,
     build: impl FnOnce(&Model) -> AppResult<Vec<Command>> + Send + 'static,
 ) -> AppResult<StatusCode> {
-    let handle = write_handle(state, user, model_id).await?;
+    let handle = handle_for(
+        state,
+        user,
+        model_id,
+        WorkspaceRole::Builder,
+        ProdLock::Enforce,
+    )
+    .await?;
     handle.apply_with(user.id, build).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// What a change left for the handler to answer with. It is there once the change was applied.
-fn answer_of<T>(answer: &Answer<T>) -> AppResult<T> {
-    answer
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .take()
-        .ok_or_else(|| AppError::Internal(anyhow!("the change did not leave its answer")))
-}
-
-fn leave<T>(answer: &Answer<T>, value: T) {
-    *answer.lock().unwrap_or_else(PoisonError::into_inner) = Some(value);
-}
-
 /// The model's row: its workspace and mode. `NotFound` when there is no such model.
-pub(crate) async fn model_row(db: &PgPool, model_id: Uuid) -> AppResult<(Uuid, ModelMode)> {
+async fn model_row(db: &PgPool, model_id: Uuid) -> AppResult<(Uuid, ModelMode)> {
     sqlx::query_as::<_, (Uuid, ModelMode)>("SELECT workspace_id, mode FROM models WHERE id = $1")
         .bind(model_id)
         .fetch_optional(db)
@@ -378,27 +364,30 @@ pub(crate) async fn model_row(db: &PgPool, model_id: Uuid) -> AppResult<(Uuid, M
         .ok_or(AppError::NotFound)
 }
 
-/// The model's actor, for a caller who may read its structure.
-pub(crate) async fn read_handle(
-    state: &AppState,
-    user: &CurrentUser,
-    model_id: Uuid,
-) -> AppResult<ModelHandle> {
-    let (workspace_id, _) = model_row(&state.db, model_id).await?;
-    require_workspace_role(&state.db, user, workspace_id, WorkspaceRole::Viewer).await?;
-    state.models.get(model_id).await
+/// Whether a model in production mode refuses the change a handler is about to make.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProdLock {
+    /// The change is to the structure, which a production model takes through ALM sync only.
+    Enforce,
+    /// The change is to the data, or there is none.
+    Ignore,
 }
 
-/// The model's actor, for a caller who may change its structure: a builder, while the model is in
-/// development mode.
-pub(crate) async fn write_handle(
+/// The model's actor, for a caller whose role in the model's workspace is at least `min_role`:
+/// `NotFound` when they are not a member of it, `Forbidden` when their role is below `min_role`,
+/// and, if `lock` is `Enforce`, `model.production_locked` when the model is in production mode.
+/// Every handler gets the actor from here, before it reads anything else of the request, so that
+/// none skips the role or the lock.
+pub(crate) async fn handle_for(
     state: &AppState,
     user: &CurrentUser,
     model_id: Uuid,
+    min_role: WorkspaceRole,
+    lock: ProdLock,
 ) -> AppResult<ModelHandle> {
     let (workspace_id, mode) = model_row(&state.db, model_id).await?;
-    require_workspace_role(&state.db, user, workspace_id, WorkspaceRole::Builder).await?;
-    if mode == ModelMode::Prod {
+    require_workspace_role(&state.db, user, workspace_id, min_role).await?;
+    if lock == ProdLock::Enforce && mode == ModelMode::Prod {
         return Err(AppError::Conflict {
             code: "model.production_locked",
             detail: PRODUCTION_LOCKED.into(),
@@ -418,35 +407,30 @@ async fn store_version(
     let name = validate::entity_name("name", &body.name)?;
     let switchover_label = body.switchover;
     let (is_actual, is_current) = (body.is_actual, body.is_current);
-    let answer: Answer<VersionDto> = Arc::default();
-    let left = Arc::clone(&answer);
     handle
-        .apply_with(user_id, move |model| {
+        .apply_with_answer(user_id, move |model| {
             let calendar = model.structure().calendar;
             let switchover = switchover_label
                 .as_deref()
                 .map(|label| month_of(&calendar, label, "switchover"))
                 .transpose()?;
-            leave(
-                &left,
-                VersionDto {
-                    id: id.0,
-                    name: name.clone(),
-                    is_actual,
-                    is_current,
-                    switchover: switchover.map(|month| calendar.label(TimeLevel::Month, month)),
-                },
-            );
-            Ok(vec![Command::UpsertVersion {
+            let version = VersionDto {
+                id: id.0,
+                name: name.clone(),
+                is_actual,
+                is_current,
+                switchover: switchover.map(|month| calendar.label(TimeLevel::Month, month)),
+            };
+            let command = Command::UpsertVersion {
                 id,
                 name,
                 is_actual,
                 is_current,
                 switchover,
-            }])
+            };
+            Ok((vec![command], version))
         })
-        .await?;
-    answer_of(&answer)
+        .await
 }
 
 #[utoipa::path(
@@ -455,7 +439,7 @@ async fn store_version(
     tag = "structure",
     params(("id" = Uuid, Path, description = "The model's id")),
     responses(
-        (status = 200, description = "The structure: calendar, lists with their items, subsets, versions, time ranges, modules and line items. Months and periods are indices from the start of the calendar.", body = StructureDto),
+        (status = 200, description = "The structure: calendar, lists with their items, subsets, versions, time ranges, modules and line items. Months and periods are indices from the start of the calendar, and `month_labels` gives the label of each month by its index.", body = StructureDto),
         (status = 401, description = "Not signed in (auth.unauthenticated)"),
         (status = 404, description = "No such model, or the caller is not a member of its workspace (not_found)"),
     )
@@ -465,7 +449,14 @@ pub(crate) async fn get_structure(
     user: CurrentUser,
     ApiPath(model_id): ApiPath<Uuid>,
 ) -> AppResult<Json<StructureDto>> {
-    let handle = read_handle(&state, &user, model_id).await?;
+    let handle = handle_for(
+        &state,
+        &user,
+        model_id,
+        WorkspaceRole::Viewer,
+        ProdLock::Ignore,
+    )
+    .await?;
     Ok(Json(StructureDto::from(
         handle.snapshot().export_structure(),
     )))
@@ -483,7 +474,7 @@ pub(crate) async fn get_structure(
         (status = 403, description = "Not a workspace builder (auth.forbidden)"),
         (status = 404, description = "No such model, or the caller is not a member of its workspace (not_found)"),
         (status = 409, description = "The model is in production mode (model.production_locked)"),
-        (status = 422, description = "A field is out of range, or the current period is not a month of the calendar (validation)"),
+        (status = 422, description = "A field is out of range, or the current period is not a month of the calendar (validation, structure.invalid)"),
     )
 )]
 pub(crate) async fn update_calendar(
@@ -492,7 +483,14 @@ pub(crate) async fn update_calendar(
     ApiPath(model_id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<CalendarDto>,
 ) -> AppResult<Json<CalendarDto>> {
-    let handle = write_handle(&state, &user, model_id).await?;
+    let handle = handle_for(
+        &state,
+        &user,
+        model_id,
+        WorkspaceRole::Builder,
+        ProdLock::Enforce,
+    )
+    .await?;
     validate::collect(vec![
         within(
             "fiscal_year_start_month",
@@ -517,16 +515,10 @@ pub(crate) async fn update_calendar(
     handle
         .apply(user.id, vec![Command::SetCalendar { calendar }])
         .await?;
-    let stored = Calendar::from(calendar);
-    sqlx::query("UPDATE models SET calendar = $2 WHERE id = $1")
-        .bind(model_id)
-        .bind(sqlx::types::Json(&stored))
-        .execute(&state.db)
-        .await?;
     Ok(Json(CalendarDto {
-        fiscal_year_start_month: stored.fiscal_year_start_month,
-        first_year: stored.first_year,
-        years: stored.years,
+        fiscal_year_start_month: calendar.fiscal_year_start_month,
+        first_year: calendar.first_year,
+        years: calendar.years,
         current_period: calendar
             .current_month
             .map(|month| calendar.label(TimeLevel::Month, month)),
@@ -554,7 +546,14 @@ pub(crate) async fn create_list(
     ApiPath(model_id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<CreateListRequest>,
 ) -> AppResult<(StatusCode, Json<ListDto>)> {
-    let handle = write_handle(&state, &user, model_id).await?;
+    let handle = handle_for(
+        &state,
+        &user,
+        model_id,
+        WorkspaceRole::Builder,
+        ProdLock::Enforce,
+    )
+    .await?;
     let name = validate::entity_name("name", &body.name);
     let top_level_name = body
         .top_level_name
@@ -623,7 +622,14 @@ pub(crate) async fn update_list(
     ApiPath((model_id, list_id)): ApiPath<(Uuid, Uuid)>,
     ApiJson(body): ApiJson<UpdateListRequest>,
 ) -> AppResult<Json<ListDto>> {
-    let handle = write_handle(&state, &user, model_id).await?;
+    let handle = handle_for(
+        &state,
+        &user,
+        model_id,
+        WorkspaceRole::Builder,
+        ProdLock::Enforce,
+    )
+    .await?;
     let name = body
         .name
         .as_deref()
@@ -646,38 +652,34 @@ pub(crate) async fn update_list(
     let (name, top_level_name) = (name?, top_level_name?);
 
     let (production_data, selective_access) = (body.production_data, body.selective_access);
-    let answer: Answer<ListDto> = Arc::default();
-    let left = Arc::clone(&answer);
-    handle
-        .apply_with(user.id, move |model| {
+    let updated = handle
+        .apply_with_answer(user.id, move |model| {
             let list = model
                 .structure()
                 .list(ListId(list_id))
                 .ok_or(AppError::NotFound)?;
-            leave(
-                &left,
-                ListDto {
-                    id: list_id,
-                    name: name.clone().unwrap_or_else(|| list.name.clone()),
-                    parent_list_id: list.parent.map(|parent| parent.0),
-                    top_level_name: top_level_name
-                        .clone()
-                        .unwrap_or_else(|| list.top_level_name.clone()),
-                    numbered: list.numbered,
-                    production_data: production_data.unwrap_or(list.production_data),
-                    selective_access: selective_access.unwrap_or(list.selective_access),
-                },
-            );
-            Ok(vec![Command::UpdateList {
+            let updated = ListDto {
+                id: list_id,
+                name: name.clone().unwrap_or_else(|| list.name.clone()),
+                parent_list_id: list.parent.map(|parent| parent.0),
+                top_level_name: top_level_name
+                    .clone()
+                    .unwrap_or_else(|| list.top_level_name.clone()),
+                numbered: list.numbered,
+                production_data: production_data.unwrap_or(list.production_data),
+                selective_access: selective_access.unwrap_or(list.selective_access),
+            };
+            let command = Command::UpdateList {
                 id: ListId(list_id),
                 name,
                 top_level_name,
                 production_data,
                 selective_access,
-            }])
+            };
+            Ok((vec![command], updated))
         })
         .await?;
-    Ok(Json(answer_of(&answer)?))
+    Ok(Json(updated))
 }
 
 #[utoipa::path(
@@ -728,7 +730,14 @@ pub(crate) async fn list_items(
     user: CurrentUser,
     ApiPath((model_id, list_id)): ApiPath<(Uuid, Uuid)>,
 ) -> AppResult<Json<Vec<ItemDto>>> {
-    let handle = read_handle(&state, &user, model_id).await?;
+    let handle = handle_for(
+        &state,
+        &user,
+        model_id,
+        WorkspaceRole::Viewer,
+        ProdLock::Ignore,
+    )
+    .await?;
     let model = handle.snapshot();
     let list = model
         .structure()
@@ -765,7 +774,14 @@ pub(crate) async fn create_items(
     ApiPath((model_id, list_id)): ApiPath<(Uuid, Uuid)>,
     ApiJson(body): ApiJson<CreateItemsRequest>,
 ) -> AppResult<(StatusCode, Json<Vec<ItemDto>>)> {
-    let handle = write_handle(&state, &user, model_id).await?;
+    let handle = handle_for(
+        &state,
+        &user,
+        model_id,
+        WorkspaceRole::Builder,
+        ProdLock::Enforce,
+    )
+    .await?;
     if body.items.is_empty() {
         return Err(AppError::Validation(vec![FieldError {
             field: "items".to_string(),
@@ -842,7 +858,14 @@ pub(crate) async fn update_item(
     ApiPath((model_id, list_id, item_id)): ApiPath<(Uuid, Uuid, Uuid)>,
     ApiJson(body): ApiJson<UpdateItemRequest>,
 ) -> AppResult<Json<ItemDto>> {
-    let handle = write_handle(&state, &user, model_id).await?;
+    let handle = handle_for(
+        &state,
+        &user,
+        model_id,
+        WorkspaceRole::Builder,
+        ProdLock::Enforce,
+    )
+    .await?;
     let name = body
         .name
         .as_deref()
@@ -853,10 +876,8 @@ pub(crate) async fn update_item(
         .map(|code| code.as_deref().and_then(validate::code));
     let parent = body.parent_id.map(|parent| parent.map(ItemId));
 
-    let answer: Answer<ItemDto> = Arc::default();
-    let left = Arc::clone(&answer);
-    handle
-        .apply_with(user.id, move |model| {
+    let updated = handle
+        .apply_with_answer(user.id, move |model| {
             let structure = model.structure();
             let list = structure.list(ListId(list_id)).ok_or(AppError::NotFound)?;
             let current = list.item(list.idx(ItemId(item_id)).ok_or(AppError::NotFound)?);
@@ -874,17 +895,15 @@ pub(crate) async fn update_item(
                     .map(|parent| ("parent_id".to_string(), parent))
                     .into_iter(),
             )?;
-            leave(
-                &left,
-                item_dto(spec.id, spec.code.as_deref(), &spec.name, spec.parent),
-            );
-            Ok(vec![Command::UpsertListItems {
+            let updated = item_dto(spec.id, spec.code.as_deref(), &spec.name, spec.parent);
+            let command = Command::UpsertListItems {
                 list: ListId(list_id),
                 items: vec![spec],
-            }])
+            };
+            Ok((vec![command], updated))
         })
         .await?;
-    Ok(Json(answer_of(&answer)?))
+    Ok(Json(updated))
 }
 
 #[utoipa::path(
@@ -911,6 +930,14 @@ pub(crate) async fn delete_items(
     ApiPath((model_id, list_id)): ApiPath<(Uuid, Uuid)>,
     ApiJson(body): ApiJson<DeleteItemsRequest>,
 ) -> AppResult<StatusCode> {
+    let handle = handle_for(
+        &state,
+        &user,
+        model_id,
+        WorkspaceRole::Builder,
+        ProdLock::Enforce,
+    )
+    .await?;
     if body.ids.is_empty() {
         return Err(AppError::Validation(vec![FieldError {
             field: "ids".to_string(),
@@ -918,24 +945,26 @@ pub(crate) async fn delete_items(
         }]));
     }
     let ids = body.ids;
-    delete_with(&state, &user, model_id, move |model| {
-        let list = model
-            .structure()
-            .list(ListId(list_id))
-            .ok_or(AppError::NotFound)?;
-        ensure_items(
-            list,
-            "The item does not exist in this list.",
-            ids.iter()
-                .enumerate()
-                .map(|(index, id)| (format!("ids[{index}]"), ItemId(*id))),
-        )?;
-        Ok(vec![Command::DeleteListItems {
-            list: ListId(list_id),
-            ids: item_ids(ids),
-        }])
-    })
-    .await
+    handle
+        .apply_with(user.id, move |model| {
+            let list = model
+                .structure()
+                .list(ListId(list_id))
+                .ok_or(AppError::NotFound)?;
+            ensure_items(
+                list,
+                "The item does not exist in this list.",
+                ids.iter()
+                    .enumerate()
+                    .map(|(index, id)| (format!("ids[{index}]"), ItemId(*id))),
+            )?;
+            Ok(vec![Command::DeleteListItems {
+                list: ListId(list_id),
+                ids: item_ids(ids),
+            }])
+        })
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[utoipa::path(
@@ -959,7 +988,14 @@ pub(crate) async fn create_subset(
     ApiPath(model_id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<CreateSubsetRequest>,
 ) -> AppResult<(StatusCode, Json<SubsetDto>)> {
-    let handle = write_handle(&state, &user, model_id).await?;
+    let handle = handle_for(
+        &state,
+        &user,
+        model_id,
+        WorkspaceRole::Builder,
+        ProdLock::Enforce,
+    )
+    .await?;
     let name = validate::entity_name("name", &body.name)?;
 
     let id = SubsetId::new();
@@ -1020,7 +1056,14 @@ pub(crate) async fn update_subset(
     ApiPath((model_id, subset_id)): ApiPath<(Uuid, Uuid)>,
     ApiJson(body): ApiJson<UpdateSubsetRequest>,
 ) -> AppResult<Json<SubsetDto>> {
-    let handle = write_handle(&state, &user, model_id).await?;
+    let handle = handle_for(
+        &state,
+        &user,
+        model_id,
+        WorkspaceRole::Builder,
+        ProdLock::Enforce,
+    )
+    .await?;
     let name = body
         .name
         .as_deref()
@@ -1028,10 +1071,8 @@ pub(crate) async fn update_subset(
         .transpose()?;
     let items = body.item_ids.map(item_ids);
 
-    let answer: Answer<SubsetDto> = Arc::default();
-    let left = Arc::clone(&answer);
-    handle
-        .apply_with(user.id, move |model| {
+    let updated = handle
+        .apply_with_answer(user.id, move |model| {
             let structure = model.structure();
             let subset = structure
                 .subset(SubsetId(subset_id))
@@ -1047,25 +1088,23 @@ pub(crate) async fn update_subset(
                         .map(|(index, item)| (format!("item_ids[{index}]"), *item)),
                 )?;
             }
-            leave(
-                &left,
-                SubsetDto {
-                    id: subset_id,
-                    list_id: subset.list.0,
-                    name: name.clone().unwrap_or_else(|| subset.name.clone()),
-                    item_ids: items
-                        .as_ref()
-                        .map_or_else(|| uuids(&subset.items), |items| uuids(items)),
-                },
-            );
-            Ok(vec![Command::UpdateSubset {
+            let updated = SubsetDto {
+                id: subset_id,
+                list_id: subset.list.0,
+                name: name.clone().unwrap_or_else(|| subset.name.clone()),
+                item_ids: items
+                    .as_ref()
+                    .map_or_else(|| uuids(&subset.items), |items| uuids(items)),
+            };
+            let command = Command::UpdateSubset {
                 id: SubsetId(subset_id),
                 name,
                 items,
-            }])
+            };
+            Ok((vec![command], updated))
         })
         .await?;
-    Ok(Json(answer_of(&answer)?))
+    Ok(Json(updated))
 }
 
 #[utoipa::path(
@@ -1118,7 +1157,14 @@ pub(crate) async fn create_version(
     ApiPath(model_id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<VersionRequest>,
 ) -> AppResult<(StatusCode, Json<VersionDto>)> {
-    let handle = write_handle(&state, &user, model_id).await?;
+    let handle = handle_for(
+        &state,
+        &user,
+        model_id,
+        WorkspaceRole::Builder,
+        ProdLock::Enforce,
+    )
+    .await?;
     let version = store_version(&handle, user.id, VersionId::new(), body).await?;
     Ok((StatusCode::CREATED, Json(version)))
 }
@@ -1147,7 +1193,14 @@ pub(crate) async fn upsert_version(
     ApiPath((model_id, version_id)): ApiPath<(Uuid, Uuid)>,
     ApiJson(body): ApiJson<VersionRequest>,
 ) -> AppResult<Json<VersionDto>> {
-    let handle = write_handle(&state, &user, model_id).await?;
+    let handle = handle_for(
+        &state,
+        &user,
+        model_id,
+        WorkspaceRole::Builder,
+        ProdLock::Enforce,
+    )
+    .await?;
     let version = store_version(&handle, user.id, VersionId(version_id), body).await?;
     Ok(Json(version))
 }
@@ -1203,7 +1256,14 @@ pub(crate) async fn create_time_range(
     ApiPath(model_id): ApiPath<Uuid>,
     ApiJson(body): ApiJson<CreateTimeRangeRequest>,
 ) -> AppResult<(StatusCode, Json<TimeRangeDto>)> {
-    let handle = write_handle(&state, &user, model_id).await?;
+    let handle = handle_for(
+        &state,
+        &user,
+        model_id,
+        WorkspaceRole::Builder,
+        ProdLock::Enforce,
+    )
+    .await?;
     let name = validate::entity_name("name", &body.name);
     validate::collect(vec![
         name.clone().map(drop),

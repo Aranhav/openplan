@@ -2,8 +2,9 @@ mod common;
 
 use axum::http::{Method, StatusCode};
 use common::{
-    TestApp, TestResponse, assert_problem, create_line_item, create_list, create_member,
-    create_module, create_user, id_of, list_axis, month, plan, sign_in, url,
+    TestApp, TestResponse, assert_problem, change_rows, create_line_item, create_list,
+    create_member, create_module, create_user, id_of, list_axis, month, plan, sign_in, structure,
+    url,
 };
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -26,12 +27,6 @@ fn number_format() -> Value {
     })
 }
 
-async fn structure(app: &mut TestApp, model: &str) -> Value {
-    let response = app.get(&url(model, "/structure")).await;
-    assert_eq!(response.status, StatusCode::OK, "{}", response.text);
-    response.json
-}
-
 async fn patch_line_item(
     app: &mut TestApp,
     model: &str,
@@ -48,15 +43,6 @@ async fn check(app: &mut TestApp, model: &str, line_item: &str, formula: &str) -
         Some(json!({ "line_item_id": line_item, "formula": formula })),
     )
     .await
-}
-
-/// Every change-log row of a model, whatever its kind.
-async fn change_rows(pool: &PgPool, model: &str) -> i64 {
-    sqlx::query_scalar("SELECT count(*) FROM change_log WHERE model_id = $1")
-        .bind(Uuid::parse_str(model).unwrap())
-        .fetch_one(pool)
-        .await
-        .unwrap()
 }
 
 fn line_item_names(doc: &Value, module: &str) -> Vec<String> {
@@ -352,7 +338,7 @@ async fn the_structure_is_served_as_the_engine_writes_it(pool: PgPool) {
     )
     .await;
 
-    let served = structure(&mut admin, &model).await;
+    let mut served = structure(&mut admin, &model).await;
 
     let handle = admin
         .state
@@ -361,7 +347,14 @@ async fn the_structure_is_served_as_the_engine_writes_it(pool: PgPool) {
         .await
         .unwrap();
     let engine = serde_json::to_value(handle.snapshot().export_structure()).unwrap();
+    // The document is the engine's, and the labels of its months are served along with it.
+    let labels = served
+        .as_object_mut()
+        .unwrap()
+        .remove("month_labels")
+        .unwrap();
     assert_eq!(served, engine);
+    assert_eq!(labels.as_array().unwrap().len(), 36);
     assert_eq!(served["line_items"].as_array().unwrap().len(), 7);
 }
 

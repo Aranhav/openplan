@@ -16,12 +16,17 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 /// The structure document of a model: calendar, lists with their items, subsets, versions, time
-/// ranges, modules and line items. Months and periods are indices from the start of the calendar.
+/// ranges, modules and line items, as the engine writes it, and the labels of the months. Months
+/// and periods are indices from the start of the calendar.
 #[derive(Serialize, ToSchema)]
 pub struct StructureDto {
     /// The version of the document format; 1.
     format_version: u32,
     calendar: StructureCalendarDto,
+    /// The label of each month of the calendar, by the month's index, such as `Jan 26`. It is how
+    /// a month is named in a request: the switchover of a version, the current period and the
+    /// coordinates of a cell. A client looks the label up here and never works it out.
+    month_labels: Vec<String>,
     lists: Vec<StructureListDto>,
     subsets: Vec<StructureSubsetDto>,
     versions: Vec<StructureVersionDto>,
@@ -622,9 +627,13 @@ impl From<&TimeRange> for StructureTimeRangeDto {
 
 impl From<StructureDoc> for StructureDto {
     fn from(doc: StructureDoc) -> Self {
+        let calendar = doc.calendar;
         StructureDto {
             format_version: doc.format_version,
-            calendar: doc.calendar.into(),
+            calendar: calendar.into(),
+            month_labels: (0..calendar.months())
+                .map(|month| calendar.label(TimeLevel::Month, month))
+                .collect(),
             lists: doc.lists.into_iter().map(Into::into).collect(),
             subsets: doc.subsets.into_iter().map(Into::into).collect(),
             versions: doc.versions.iter().map(Into::into).collect(),
@@ -878,17 +887,37 @@ mod tests {
         model
     }
 
+    /// The typed structure as JSON, without the labels of the months that the engine's document
+    /// does not have.
+    fn engine_shape(doc: StructureDoc) -> Value {
+        let mut typed = serde_json::to_value(StructureDto::from(doc)).unwrap();
+        typed.as_object_mut().unwrap().remove("month_labels");
+        typed
+    }
+
     #[test]
     fn the_typed_structure_serializes_exactly_as_the_engine_document_does() {
         let model = rich_model();
         let doc = model.export_structure();
         let engine = serde_json::to_value(&doc).unwrap();
 
-        let typed = serde_json::to_value(StructureDto::from(doc)).unwrap();
-
-        assert_eq!(typed, engine);
+        assert_eq!(engine_shape(doc), engine);
         assert!(engine["lists"][1]["items"][0]["parent"].is_string());
         assert!(engine["line_items"].as_array().unwrap().len() > 20);
+    }
+
+    #[test]
+    fn the_months_of_the_calendar_are_named_by_their_index() {
+        let doc = rich_model().export_structure();
+        let current = doc.calendar.current_month.unwrap() as usize;
+
+        let labels = StructureDto::from(doc).month_labels;
+
+        assert_eq!(labels.len(), 36);
+        assert_eq!(labels[0], "Apr 25");
+        assert_eq!(labels[9], "Jan 26");
+        assert_eq!(labels[35], "Mar 28");
+        assert_eq!(labels[current], "Sep 25");
     }
 
     #[test]
@@ -951,7 +980,7 @@ mod tests {
         let list = model.structure().list_by_name("Countries").unwrap();
         let first: &Item = list.items().next().map(|(_, item)| item).unwrap();
 
-        let typed = serde_json::to_value(StructureDto::from(model.export_structure())).unwrap();
+        let typed = engine_shape(model.export_structure());
 
         let countries = typed["lists"]
             .as_array()
@@ -977,7 +1006,7 @@ mod tests {
         let doc = model.export_structure();
         let engine = serde_json::to_value(&doc).unwrap();
 
-        let typed = serde_json::to_value(StructureDto::from(doc)).unwrap();
+        let typed = engine_shape(doc);
 
         assert_eq!(typed, engine);
         assert_eq!(typed["calendar"]["current_month"], Value::Null);

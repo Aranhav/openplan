@@ -4,7 +4,6 @@ use crate::calendar::TimeLevel;
 use crate::command::CoordToken;
 use crate::error::{EngineError, FormulaError};
 use crate::ids::{ItemId, LineItemId, ListId, TimeRangeId, VersionId};
-use crate::model::blank_value;
 use crate::shape::Axis;
 use crate::structure::LineItem;
 use crate::value::{Format, Value};
@@ -317,7 +316,7 @@ impl<'a> Cx<'a> {
 /// A cell with the blank value of a format.
 fn blank_cell(format: &Format, flags: Vec<CellFlag>) -> Cell {
     Cell {
-        value: blank_value(&format.value_type()),
+        value: format.value_type().blank(),
         text: None,
         flags,
     }

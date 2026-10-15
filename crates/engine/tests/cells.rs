@@ -1140,6 +1140,13 @@ fn check_cells_reports_bad_coordinates_calculated_and_missing_line_items() {
         .unwrap_err();
     assert_eq!(coordinates.code(), "cells.invalid_coordinate");
     assert!(
+        matches!(
+            coordinates,
+            EngineError::InvalidCoordinate { index: Some(1), .. }
+        ),
+        "{coordinates:?}"
+    );
+    assert!(
         coordinates.to_string().starts_with("Edit 1: "),
         "{coordinates}"
     );

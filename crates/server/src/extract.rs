@@ -18,7 +18,8 @@ use crate::{
 
 /// A JSON request body whose rejections are `application/problem+json`
 /// instead of axum's plain-text defaults. A text in it with the NUL character, which the
-/// database cannot store, is a 422 that names the field.
+/// database cannot store, is a 422 that names the field; for a body of more than 2 MiB, which is
+/// scanned and not parsed to find it, the field is `body`.
 pub struct ApiJson<T>(pub T);
 
 impl<S, T> FromRequest<S> for ApiJson<T>
@@ -66,28 +67,44 @@ fn nul_error(field: &str) -> AppError {
     }])
 }
 
+/// How large a body may be for the field with the NUL character to be named by its path. The
+/// path is found by parsing the body, which takes up to sixteen times its size in memory (32
+/// bytes for each `0,`), so a larger body is only scanned and the field is `body`.
+const NAMED_PATH_LIMIT: usize = 2 << 20;
+
 /// The field of a JSON body whose text has the NUL character, or `body` when it is not a field
-/// of an object. Nothing for a body that is not JSON, which the parser refuses.
+/// of an object or the body is too large to tell. Nothing for a body that is not JSON, which the
+/// parser refuses, unless it is too large to tell.
 fn nul_in_json(body: &[u8]) -> Option<String> {
-    let text = std::str::from_utf8(body).ok()?;
-    if !has_nul_escape(text) {
+    if !has_nul_escape(body) {
         return None;
     }
-    let document: serde_json::Value = serde_json::from_str(text).ok()?;
+    if body.len() > NAMED_PATH_LIMIT {
+        return Some("body".to_string());
+    }
+    let document: serde_json::Value = serde_json::from_slice(body).ok()?;
     nul_path(&document, "").map(|path| if path.is_empty() { "body".into() } else { path })
 }
 
-/// Whether a JSON document spells the NUL character, `\u0000`, in a text. A backslash that is
-/// itself escaped, as in `\\u0000`, does not start the escape.
-fn has_nul_escape(text: &str) -> bool {
-    text.match_indices("\\u0000").any(|(at, _)| {
-        let backslashes = text.as_bytes()[..at]
-            .iter()
-            .rev()
-            .take_while(|byte| **byte == b'\\')
-            .count();
-        backslashes % 2 == 0
-    })
+/// Whether a JSON document spells the NUL character, `\u0000`, in a text. It reads the bytes
+/// once and keeps nothing: inside a text a backslash takes the byte after it along, so the second
+/// backslash of `\\u0000` does not start the escape.
+fn has_nul_escape(body: &[u8]) -> bool {
+    let mut in_text = false;
+    let mut bytes = body.iter().enumerate();
+    while let Some((at, byte)) = bytes.next() {
+        match byte {
+            b'"' => in_text = !in_text,
+            b'\\' if in_text => {
+                if body[at + 1..].starts_with(b"u0000") {
+                    return true;
+                }
+                bytes.next();
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 /// The path of the first text in `value` with the NUL character, `path` being that of `value`.
@@ -413,11 +430,26 @@ mod tests {
 
     #[test]
     fn a_nul_escape_is_found_unless_its_backslash_is_escaped() {
-        assert!(has_nul_escape(r#"{"a":"x\u0000y"}"#));
-        assert!(!has_nul_escape(r#"{"a":"x\\u0000y"}"#));
-        assert!(has_nul_escape(r#"{"a":"x\\\u0000y"}"#));
-        assert!(!has_nul_escape(r#"{"a":"x\u0001y"}"#));
-        assert!(!has_nul_escape(r#"{"a":"x"}"#));
+        let found = |body: &str| has_nul_escape(body.as_bytes());
+
+        assert!(found(r#"{"a":"x\u0000y"}"#));
+        assert!(!found(r#"{"a":"x\\u0000y"}"#));
+        assert!(found(r#"{"a":"x\\\u0000y"}"#));
+        assert!(!found(r#"{"a":"x\u0001y"}"#));
+        assert!(!found(r#"{"a":"x"}"#));
+    }
+
+    #[test]
+    fn a_nul_escape_is_one_in_a_text_whatever_the_quotes_around_it() {
+        let found = |body: &str| has_nul_escape(body.as_bytes());
+
+        assert!(found(r#"{"a":"\"","b":"\u0000"}"#));
+        assert!(found(r#"{"a":"\\","b":"\u0000"}"#));
+        assert!(!found(r#"{"a":"\\","b":"\\u0000"}"#));
+        assert!(!found(r#"{"a":"\"\\u0000"}"#));
+        assert!(!found(r#"["a"] \u0000"#), "outside of a text");
+        assert!(found(r#"["\u00000"]"#), "a NUL and then a zero");
+        assert!(!found("\"\\"), "a backslash at the end");
     }
 
     #[test]
@@ -435,6 +467,22 @@ mod tests {
         assert_eq!(field(r#"{"notes":"\\u0000"}"#), None);
         assert_eq!(field(r#"{"notes":"a\u0000""#), None, "not JSON");
         assert_eq!(field(r#"{"notes":"fine"}"#), None);
+    }
+
+    #[test]
+    fn a_large_body_is_scanned_and_not_parsed_so_its_field_is_the_body() {
+        let padding = "0,".repeat(NAMED_PATH_LIMIT / 2);
+        let with_nul = format!(r#"{{"notes":"a\u0000","padding":[{padding}0]}}"#);
+        let without = format!(r#"{{"notes":"a","padding":[{padding}0]}}"#);
+        assert!(with_nul.len() > NAMED_PATH_LIMIT);
+
+        assert_eq!(nul_in_json(with_nul.as_bytes()).unwrap(), "body");
+        assert_eq!(nul_in_json(without.as_bytes()), None);
+        let small = format!(
+            r#"{{"notes":"a\u0000","padding":[{}0]}}"#,
+            "0,".repeat(1000)
+        );
+        assert_eq!(nul_in_json(small.as_bytes()).unwrap(), "notes");
     }
 
     #[tokio::test]

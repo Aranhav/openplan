@@ -7,8 +7,8 @@ use crate::value::Format;
 
 use super::module::{AxisSpec, properties_name};
 use super::{
-    Structure, Subset, already_exists, check_name, clean_name, ensure_unique, fold, in_use,
-    invalid, not_found, same_name,
+    Structure, Subset, already_exists, check_name, check_not_reserved, clean_name, ensure_unique,
+    fold, in_use, same_name,
 };
 
 /// An ordered set of items such as products or regions.
@@ -176,7 +176,7 @@ impl Structure {
         production_data: bool,
     ) -> Result<(), EngineError> {
         if id == ListId::VERSIONS {
-            return Err(invalid(
+            return Err(EngineError::invalid(
                 "That list id is reserved for the Versions dimension.",
             ));
         }
@@ -184,16 +184,18 @@ impl Structure {
             return Err(already_exists("list", id.0));
         }
         if self.modules.contains_key(&ModuleId(id.0)) {
-            return Err(invalid("A list cannot have the id of a module."));
+            return Err(EngineError::invalid(
+                "A list cannot have the id of a module.",
+            ));
         }
         let name = check_name("list", &name, self.lists.values().map(|l| l.name.as_str()))?;
         check_not_reserved(&name)?;
         if let Some(parent) = parent {
             if parent == id {
-                return Err(invalid("A list cannot be its own parent."));
+                return Err(EngineError::invalid("A list cannot be its own parent."));
             }
             if !self.lists.contains_key(&parent) {
-                return Err(not_found("list", parent.0));
+                return Err(EngineError::not_found("list", parent.0));
             }
         }
         let top_level_name = top_level_name
@@ -215,7 +217,7 @@ impl Structure {
         selective_access: Option<bool>,
     ) -> Result<(), EngineError> {
         if !self.lists.contains_key(&id) {
-            return Err(not_found("list", id.0));
+            return Err(EngineError::not_found("list", id.0));
         }
         let name = name
             .map(|name| {
@@ -273,7 +275,10 @@ impl Structure {
     }
 
     pub(super) fn delete_list(&mut self, id: ListId) -> Result<(), EngineError> {
-        let list = self.lists.get(&id).ok_or_else(|| not_found("list", id.0))?;
+        let list = self
+            .lists
+            .get(&id)
+            .ok_or_else(|| EngineError::not_found("list", id.0))?;
         let properties = ModuleId::for_list_properties(id);
         let axis = AxisSpec::List { list: id };
         let mut users = Vec::new();
@@ -324,13 +329,13 @@ impl Structure {
         let list = self
             .lists
             .get(&list_id)
-            .ok_or_else(|| not_found("list", list_id.0))?;
+            .ok_or_else(|| EngineError::not_found("list", list_id.0))?;
         let parent_list = list
             .parent
             .map(|parent| {
                 self.lists
                     .get(&parent)
-                    .ok_or_else(|| not_found("list", parent.0))
+                    .ok_or_else(|| EngineError::not_found("list", parent.0))
             })
             .transpose()?;
 
@@ -348,13 +353,16 @@ impl Structure {
         let mut planned = Vec::with_capacity(specs.len());
         for spec in specs {
             if !seen.insert(spec.id) {
-                return Err(invalid(format!(
+                return Err(EngineError::invalid(format!(
                     "Item {} appears more than once in the command.",
                     spec.id.0
                 )));
             }
             if list.was_deleted(spec.id) {
-                return Err(invalid(format!("Item {} was deleted.", spec.id.0)));
+                return Err(EngineError::invalid(format!(
+                    "Item {} was deleted.",
+                    spec.id.0
+                )));
             }
             let existing = list.idx(spec.id);
             if let Some(idx) = existing {
@@ -383,20 +391,20 @@ impl Structure {
             match (parent_list, spec.parent) {
                 (Some(parent_list), Some(parent)) => {
                     if parent_list.idx(parent).is_none() {
-                        return Err(invalid(format!(
+                        return Err(EngineError::invalid(format!(
                             "Parent {} of item '{name}' is not an item of list '{}'.",
                             parent.0, parent_list.name
                         )));
                     }
                 }
                 (Some(parent_list), None) => {
-                    return Err(invalid(format!(
+                    return Err(EngineError::invalid(format!(
                         "Item '{name}' needs a parent item from list '{}'.",
                         parent_list.name
                     )));
                 }
                 (None, Some(_)) => {
-                    return Err(invalid(format!(
+                    return Err(EngineError::invalid(format!(
                         "Item '{name}' cannot have a parent because list '{}' has no parent list.",
                         list.name
                     )));
@@ -440,11 +448,13 @@ impl Structure {
         let list = self
             .lists
             .get(&list_id)
-            .ok_or_else(|| not_found("list", list_id.0))?;
+            .ok_or_else(|| EngineError::not_found("list", list_id.0))?;
         let mut doomed = HashSet::new();
         let mut indices = Vec::new();
         for id in ids {
-            let idx = list.idx(id).ok_or_else(|| not_found("list item", id.0))?;
+            let idx = list
+                .idx(id)
+                .ok_or_else(|| EngineError::not_found("list item", id.0))?;
             if doomed.insert(id) {
                 indices.push(idx);
             }
@@ -461,7 +471,7 @@ impl Structure {
             })
             .collect();
         if !orphans.is_empty() {
-            return Err(invalid(format!(
+            return Err(EngineError::invalid(format!(
                 "Items that still have child items cannot be deleted; delete {} first.",
                 orphans.join(", ")
             )));
@@ -499,7 +509,7 @@ impl Structure {
         let source = self
             .lists
             .get(&list)
-            .ok_or_else(|| not_found("list", list.0))?;
+            .ok_or_else(|| EngineError::not_found("list", list.0))?;
         check_subset_items(source, &items)?;
         self.subsets.insert(
             id,
@@ -522,7 +532,7 @@ impl Structure {
         let subset = self
             .subsets
             .get(&id)
-            .ok_or_else(|| not_found("subset", id.0))?;
+            .ok_or_else(|| EngineError::not_found("subset", id.0))?;
         let name = name
             .map(|name| {
                 check_name(
@@ -539,14 +549,14 @@ impl Structure {
             let source = self
                 .lists
                 .get(&subset.list)
-                .ok_or_else(|| not_found("list", subset.list.0))?;
+                .ok_or_else(|| EngineError::not_found("list", subset.list.0))?;
             check_subset_items(source, items)?;
         }
 
         let subset = self
             .subsets
             .get_mut(&id)
-            .ok_or_else(|| not_found("subset", id.0))?;
+            .ok_or_else(|| EngineError::not_found("subset", id.0))?;
         if let Some(name) = name {
             subset.name = name;
         }
@@ -560,7 +570,7 @@ impl Structure {
         let subset = self
             .subsets
             .get(&id)
-            .ok_or_else(|| not_found("subset", id.0))?;
+            .ok_or_else(|| EngineError::not_found("subset", id.0))?;
         let axis = AxisSpec::Subset { subset: id };
         let mut users: Vec<String> = self
             .modules
@@ -586,19 +596,8 @@ impl Structure {
     fn list_mut(&mut self, id: ListId) -> Result<&mut List, EngineError> {
         self.lists
             .get_mut(&id)
-            .ok_or_else(|| not_found("list", id.0))
+            .ok_or_else(|| EngineError::not_found("list", id.0))
     }
-}
-
-/// The built-in dimensions are named in formulas as `Versions` and `Time`, which a list of
-/// that name would make ambiguous.
-fn check_not_reserved(name: &str) -> Result<(), EngineError> {
-    for reserved in ["Versions", "Time"] {
-        if same_name(name, reserved) {
-            return Err(invalid(format!("'{reserved}' is a reserved name.")));
-        }
-    }
-    Ok(())
 }
 
 /// Subset members must be distinct live items of the subset's list.
@@ -606,10 +605,10 @@ fn check_subset_items(list: &List, items: &[ItemId]) -> Result<(), EngineError> 
     let mut seen = HashSet::new();
     for item in items {
         if list.idx(*item).is_none() {
-            return Err(not_found("list item", item.0));
+            return Err(EngineError::not_found("list item", item.0));
         }
         if !seen.insert(*item) {
-            return Err(invalid(format!(
+            return Err(EngineError::invalid(format!(
                 "Item {} appears more than once in the subset.",
                 item.0
             )));

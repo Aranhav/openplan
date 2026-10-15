@@ -58,9 +58,15 @@ const CHUNK_CELLS: usize = 1_000_000;
 const CHUNK_BYTES: usize = 64 << 20;
 
 /// Most bytes a chunk may take once decompressed, whatever it says about itself, so that a
-/// damaged or crafted chunk cannot make a load use memory without bound. It leaves room for
-/// text, the only value of any length.
-const MAX_DECODED_BYTES: usize = 256 << 20;
+/// damaged or crafted chunk cannot make a load use memory without bound. A chunk this build
+/// writes takes at most [`CHUNK_BYTES`] unless it is a single cell, and the rest is room for
+/// the chunks of other builds and for text, the only value of any length.
+const MAX_DECODED_BYTES: usize = 80 << 20;
+
+const _: () = assert!(
+    CHUNK_BYTES < MAX_DECODED_BYTES,
+    "a chunk that is written must fit in what is read"
+);
 
 /// Bytes of a chunk that come before everything that depends on its size: the format, the kind
 /// of value, the level of period values, the first month of the fiscal year, the number of axes
@@ -199,21 +205,15 @@ impl Model {
     }
 }
 
-fn invalid(message: impl Into<String>) -> EngineError {
-    EngineError::Invalid {
-        message: message.into(),
-    }
-}
-
 fn damaged(what: &str) -> EngineError {
-    invalid(format!("A chunk of stored cells is damaged: {what}."))
+    EngineError::invalid(format!("A chunk of stored cells is damaged: {what}."))
 }
 
 /// The structure a document describes, made by the commands that make one so that everything
 /// they check is checked.
 fn rebuild(doc: StructureDoc) -> Result<Structure, EngineError> {
     if doc.format_version != STRUCTURE_FORMAT {
-        return Err(invalid(format!(
+        return Err(EngineError::invalid(format!(
             "Structure format {} is not supported.",
             doc.format_version
         )));
@@ -256,6 +256,7 @@ fn rebuild(doc: StructureDoc) -> Result<Structure, EngineError> {
         structure.restore_properties_module(module)?;
     }
     create_line_items(&mut structure, doc.line_items)?;
+    structure.check_line_item_sizes()?;
     Ok(structure)
 }
 
@@ -268,7 +269,7 @@ fn create_lists(structure: &mut Structure, lists: Vec<ListDoc>) -> Result<(), En
             .into_iter()
             .partition(|list| list.parent.is_none_or(|parent| created.contains(&parent)));
         if ready.is_empty() {
-            return Err(invalid(
+            return Err(EngineError::invalid(
                 "A list has a parent list that is missing, or lists are each other's parents.",
             ));
         }
@@ -724,7 +725,7 @@ impl Chunk {
         let mut head = [0; HEAD_BYTES];
         decoder.read_exact(&mut head[..1]).map_err(|_| short())?;
         if head[0] != CHUNK_FORMAT {
-            return Err(invalid(format!(
+            return Err(EngineError::invalid(format!(
                 "Chunk format {} is not supported.",
                 head[0]
             )));
@@ -771,7 +772,8 @@ impl Chunk {
         for _ in 0..axes {
             let len = reader.u32()? as usize;
             let keys = reader.take(len.saturating_mul(16))?;
-            dictionaries.push(keys.chunks_exact(16).map(le_u128).collect::<Vec<_>>());
+            let (keys, _) = keys.as_chunks::<16>();
+            dictionaries.push(keys.iter().map(|key| le_u128(key)).collect::<Vec<_>>());
         }
         let mut indices = Vec::with_capacity(axes);
         for dictionary in &dictionaries {
@@ -780,12 +782,16 @@ impl Chunk {
             let axis: Vec<u32> = match width {
                 1 => bytes.iter().map(|&index| u32::from(index)).collect(),
                 2 => bytes
-                    .chunks_exact(2)
-                    .map(|index| u32::from(u16::from_le_bytes([index[0], index[1]])))
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|&index| u32::from(u16::from_le_bytes(index)))
                     .collect(),
                 _ => bytes
-                    .chunks_exact(4)
-                    .map(|index| u32::from_le_bytes([index[0], index[1], index[2], index[3]]))
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|&index| u32::from_le_bytes(index))
                     .collect(),
             };
             if axis.iter().any(|&index| index as usize >= dictionary.len()) {
@@ -1037,6 +1043,17 @@ mod tests {
     use crate::ids::ModuleId;
     use crate::structure::{AxisSpec, TimeScale, VersionsScope};
     use crate::value::Format;
+
+    #[test]
+    fn a_chunk_decodes_to_at_most_80_mib() {
+        const MIB: usize = 1 << 20;
+        assert_eq!(MAX_DECODED_BYTES, 80 * MIB);
+        for kind in Kind::ALL {
+            let limit = decoded_limit(kind, usize::from(u8::MAX), CHUNK_CELLS);
+            assert_eq!(limit, MAX_DECODED_BYTES, "{kind:?}");
+        }
+        assert!(decoded_limit(Kind::Number, 1, 1_000) < MIB);
+    }
 
     #[test]
     fn cells_under_deleted_items_make_no_chunk() {

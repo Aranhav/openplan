@@ -3,8 +3,9 @@ use std::sync::Arc;
 use chrono::NaiveDate;
 use openplan_engine::{
     Axis, AxisSpec, Calendar, CellEdit, ChangeSet, Command, CoordToken, EngineError, Format,
-    ItemId, ItemSpec, LineItem, LineItemId, LineItemPatch, ListId, Model, ModuleId, SubsetId,
-    SummaryMethod, TimeLevel, TimeRangeId, TimeScale, Value, VersionId, VersionsScope,
+    ItemId, ItemSpec, LineItem, LineItemId, LineItemPatch, ListId, MAX_LINE_ITEM_CELLS, Model,
+    ModuleId, SubsetId, SummaryMethod, TimeLevel, TimeRangeId, TimeScale, Value, VersionId,
+    VersionsScope,
 };
 use serde_json::json;
 
@@ -378,6 +379,44 @@ fn versions_and_time_are_reserved_list_names() {
     // Names that merely contain the reserved words are fine.
     new_list(&mut model, "Time Zones");
     new_list(&mut model, "Versions Archive");
+}
+
+#[test]
+fn versions_and_time_are_reserved_module_names() {
+    let mut model = model();
+    let existing = new_module(&mut model, "Sales", Vec::new());
+    let before = snapshot(&model);
+    for (name, message) in [
+        ("Versions", "'Versions' is a reserved name."),
+        ("  VERSIONS ", "'Versions' is a reserved name."),
+        ("Time", "'Time' is a reserved name."),
+        ("tIME", "'Time' is a reserved name."),
+    ] {
+        let created = model
+            .apply(Command::CreateModule {
+                id: ModuleId::new(),
+                name: name.to_string(),
+                axes: Vec::new(),
+                functional_area: String::new(),
+            })
+            .unwrap_err();
+        assert_eq!(created.code(), "structure.invalid", "{name}");
+        assert_eq!(created.to_string(), message, "{name}");
+        let renamed = model
+            .apply(Command::UpdateModule {
+                id: existing,
+                name: Some(name.to_string()),
+                axes: None,
+                functional_area: None,
+            })
+            .unwrap_err();
+        assert_eq!(renamed.code(), "structure.invalid", "{name}");
+        assert_eq!(renamed.to_string(), message, "{name}");
+    }
+    assert_eq!(snapshot(&model), before);
+    // Names that merely contain the reserved words are fine.
+    new_module(&mut model, "Time Off", Vec::new());
+    new_module(&mut model, "Versions Archive", Vec::new());
 }
 
 #[test]
@@ -2897,4 +2936,192 @@ fn names_are_found_ignoring_case_and_follow_every_change() {
     let structure = model.structure();
     assert!(structure.line_item_by_name(None, "units").is_none());
     assert!(structure.module_by_name("Costs").is_none());
+}
+
+fn counted_list(model: &mut Model, name: &str, count: usize) -> ListId {
+    let list = new_list(model, name);
+    let items = (0..count)
+        .map(|i| item_spec(&format!("{name} {i}")))
+        .collect();
+    model
+        .apply(Command::UpsertListItems { list, items })
+        .unwrap();
+    list
+}
+
+fn too_big(error: EngineError, name: &str, cells: &str) {
+    assert_eq!(error.code(), "structure.invalid");
+    assert_eq!(
+        error.to_string(),
+        format!("Line item '{name}' would have {cells} cells; the limit is 67,108,864.")
+    );
+}
+
+#[test]
+fn a_line_item_over_three_lists_of_two_thousand_items_is_refused_without_allocating() {
+    let mut model = model();
+    let lists: Vec<ListId> = ["Products", "Customers", "Regions"]
+        .iter()
+        .map(|name| counted_list(&mut model, name, 2_000))
+        .collect();
+    let sales = new_module(
+        &mut model,
+        "Sales",
+        lists.iter().copied().map(list_axis).collect(),
+    );
+    let before = snapshot(&model);
+
+    let refused = model
+        .apply(Command::CreateLineItem(line_item(
+            sales,
+            "Volume",
+            Format::number(),
+        )))
+        .unwrap_err();
+
+    too_big(refused, "Volume", "8,000,000,000");
+    assert_eq!(snapshot(&model), before);
+}
+
+#[test]
+fn a_line_item_may_have_exactly_the_limit_and_not_one_cell_more() {
+    let mut model = model();
+    let products = counted_list(&mut model, "Products", 8_192);
+    let regions = counted_list(&mut model, "Regions", 8_192);
+    let sales = new_module(
+        &mut model,
+        "Sales",
+        vec![list_axis(products), list_axis(regions)],
+    );
+    let flag = add_line_item(&mut model, sales, "Flag", Format::Boolean);
+    assert_eq!(MAX_LINE_ITEM_CELLS, 1 << 26);
+    assert_eq!(
+        model.structure().line_item_shape(flag).unwrap().size(),
+        MAX_LINE_ITEM_CELLS
+    );
+    let before = snapshot(&model);
+
+    let refused = model
+        .apply(Command::UpsertListItems {
+            list: regions,
+            items: vec![item_spec("One more")],
+        })
+        .unwrap_err();
+
+    too_big(refused, "Flag", "67,117,056");
+    assert_eq!(snapshot(&model), before);
+}
+
+#[test]
+fn a_module_that_gains_a_list_is_held_to_the_limit() {
+    let mut model = model();
+    let products = counted_list(&mut model, "Products", 2_000);
+    let customers = counted_list(&mut model, "Customers", 2_000);
+    let regions = counted_list(&mut model, "Regions", 2_000);
+    let sales = new_module(
+        &mut model,
+        "Sales",
+        vec![list_axis(products), list_axis(customers)],
+    );
+    add_line_item(&mut model, sales, "Flag", Format::Boolean);
+    let before = snapshot(&model);
+
+    let refused = model
+        .apply(Command::UpdateModule {
+            id: sales,
+            name: None,
+            axes: Some(vec![
+                list_axis(products),
+                list_axis(customers),
+                list_axis(regions),
+            ]),
+            functional_area: None,
+        })
+        .unwrap_err();
+
+    too_big(refused, "Flag", "8,000,000,000");
+    assert_eq!(snapshot(&model), before);
+}
+
+#[test]
+fn a_line_item_that_gains_the_time_axis_is_held_to_the_limit() {
+    let mut model = model();
+    let products = counted_list(&mut model, "Products", 2_000);
+    let customers = counted_list(&mut model, "Customers", 2_000);
+    let monthly = new_module(
+        &mut model,
+        "Monthly",
+        vec![list_axis(products), list_axis(customers), month_axis()],
+    );
+    let yearly = LineItem {
+        time_scale: TimeScale::None,
+        ..line_item(monthly, "Yearly", Format::Boolean)
+    };
+    let yearly_id = yearly.id;
+    model.apply(Command::CreateLineItem(yearly)).unwrap();
+    let before = snapshot(&model);
+
+    let refused = model
+        .apply(Command::UpdateLineItem {
+            id: yearly_id,
+            patch: LineItemPatch {
+                time_scale: Some(TimeScale::Module),
+                ..LineItemPatch::default()
+            },
+        })
+        .unwrap_err();
+
+    too_big(refused, "Yearly", "96,000,000");
+    assert_eq!(snapshot(&model), before);
+}
+
+#[test]
+fn a_calendar_with_more_years_is_held_to_the_limit() {
+    let mut model = model();
+    let products = counted_list(&mut model, "Products", 2_000);
+    let customers = counted_list(&mut model, "Customers", 500);
+    let monthly = new_module(
+        &mut model,
+        "Monthly",
+        vec![list_axis(products), list_axis(customers), month_axis()],
+    );
+    let flag = add_line_item(&mut model, monthly, "Flag", Format::Boolean);
+    assert_eq!(
+        model.structure().line_item_shape(flag).unwrap().size(),
+        24_000_000
+    );
+    let before = snapshot(&model);
+
+    let refused = model
+        .apply(Command::SetCalendar {
+            calendar: Calendar {
+                years: 20,
+                ..calendar()
+            },
+        })
+        .unwrap_err();
+
+    too_big(refused, "Flag", "240,000,000");
+    assert_eq!(snapshot(&model), before);
+}
+
+#[test]
+fn a_stored_model_with_a_line_item_over_the_limit_is_refused_before_its_cells_are_read() {
+    let mut model = model();
+    let products = counted_list(&mut model, "Products", 2_000);
+    let customers = counted_list(&mut model, "Customers", 2_000);
+    let regions = counted_list(&mut model, "Regions", 2_000);
+    let sales = new_module(
+        &mut model,
+        "Sales",
+        vec![list_axis(products), list_axis(customers)],
+    );
+    add_line_item(&mut model, sales, "Volume", Format::Boolean);
+    let chunks = model.export_inputs();
+    let mut doc = model.export_structure();
+    doc.modules[0].axes.push(list_axis(regions));
+
+    let refused = Model::from_parts(doc, chunks).unwrap_err();
+
+    too_big(refused, "Volume", "8,000,000,000");
 }
