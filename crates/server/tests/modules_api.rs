@@ -338,7 +338,7 @@ async fn the_structure_is_served_as_the_engine_writes_it(pool: PgPool) {
     )
     .await;
 
-    let served = structure(&mut admin, &model).await;
+    let mut served = structure(&mut admin, &model).await;
 
     let handle = admin
         .state
@@ -347,7 +347,14 @@ async fn the_structure_is_served_as_the_engine_writes_it(pool: PgPool) {
         .await
         .unwrap();
     let engine = serde_json::to_value(handle.snapshot().export_structure()).unwrap();
+    // The document is the engine's, and the labels of its months are served along with it.
+    let labels = served
+        .as_object_mut()
+        .unwrap()
+        .remove("month_labels")
+        .unwrap();
     assert_eq!(served, engine);
+    assert_eq!(labels.as_array().unwrap().len(), 36);
     assert_eq!(served["line_items"].as_array().unwrap().len(), 7);
 }
 

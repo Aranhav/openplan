@@ -439,7 +439,7 @@ async fn store_version(
     tag = "structure",
     params(("id" = Uuid, Path, description = "The model's id")),
     responses(
-        (status = 200, description = "The structure: calendar, lists with their items, subsets, versions, time ranges, modules and line items. Months and periods are indices from the start of the calendar.", body = StructureDto),
+        (status = 200, description = "The structure: calendar, lists with their items, subsets, versions, time ranges, modules and line items. Months and periods are indices from the start of the calendar, and `month_labels` gives the label of each month by its index.", body = StructureDto),
         (status = 401, description = "Not signed in (auth.unauthenticated)"),
         (status = 404, description = "No such model, or the caller is not a member of its workspace (not_found)"),
     )
