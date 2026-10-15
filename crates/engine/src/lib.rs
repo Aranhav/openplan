@@ -23,8 +23,8 @@ pub use ids::{ItemId, LineItemId, ListId, ModuleId, SubsetId, TimeRangeId, Versi
 pub use model::{Model, RecalcStats};
 pub use shape::{Axis, Shape};
 pub use structure::{
-    AxisSpec, Item, LineItem, List, Module, Structure, Subset, SummaryMethod, TimeScale, Version,
-    VersionsScope,
+    AxisSpec, Item, LineItem, List, MAX_LINE_ITEM_CELLS, Module, Structure, Subset, SummaryMethod,
+    TimeScale, Version, VersionsScope,
 };
 pub use summary::{LevelSpec, aggregate};
 pub use value::{Column, Format, NegativeStyle, NumberUnit, Value, ValueType};

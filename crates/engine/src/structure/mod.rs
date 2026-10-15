@@ -15,6 +15,7 @@ mod list;
 mod module;
 
 pub(crate) use layout::Layout;
+pub use layout::MAX_LINE_ITEM_CELLS;
 pub use list::{Item, List, Lookup};
 pub use module::{AxisSpec, LineItem, Module, SummaryMethod, TimeScale, VersionsScope};
 

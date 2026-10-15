@@ -250,6 +250,7 @@ fn rebuild(doc: StructureDoc) -> Result<Structure, EngineError> {
         structure.restore_properties_module(module)?;
     }
     create_line_items(&mut structure, doc.line_items)?;
+    structure.check_line_item_sizes()?;
     Ok(structure)
 }
 

@@ -6,6 +6,11 @@ use crate::shape::{Axis, Shape};
 use super::module::time_axis;
 use super::{AxisSpec, LineItem, Structure, TimeScale, VersionsScope, level_name};
 
+/// The most cells a line item can have. A line item stores a dense grid, one value for every
+/// combination of its dimensions, so this bounds what a few large lists can ask of the process:
+/// at eight bytes a cell, 2^26 cells are 512 MiB for one line item.
+pub const MAX_LINE_ITEM_CELLS: usize = 67_108_864;
+
 /// The axes of a line item's stored cells: where its module's axes put them, after the
 /// line item's own overrides.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -23,6 +28,29 @@ impl Structure {
             .get(&id)
             .ok_or_else(|| EngineError::not_found("line item", id.0))?;
         self.shape_of(&self.layout(line_item)?)
+    }
+
+    /// Fails if a line item has more than [`MAX_LINE_ITEM_CELLS`] cells, naming the first that
+    /// does. This needs no cell to exist: it multiplies the lengths of the axes, so a model is
+    /// refused before anything that large is allocated.
+    pub(crate) fn check_line_item_sizes(&self) -> Result<(), EngineError> {
+        for line_item in self.line_items.values() {
+            let layout = self.layout(line_item)?;
+            let mut cells: u128 = 1;
+            for axis in &layout.axes {
+                let len = self.axis_len(axis, layout.restriction.as_deref())?;
+                cells = cells.saturating_mul(u128::from(len));
+            }
+            if cells > MAX_LINE_ITEM_CELLS as u128 {
+                return Err(EngineError::invalid(format!(
+                    "Line item '{}' would have {} cells; the limit is {}.",
+                    line_item.name,
+                    grouped(cells),
+                    grouped(MAX_LINE_ITEM_CELLS as u128),
+                )));
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn layout(&self, line_item: &LineItem) -> Result<Layout, EngineError> {
@@ -253,4 +281,17 @@ fn describe(axis: &Axis) -> &'static str {
         Axis::Time { .. } => "a period label",
         Axis::Versions => "a version id",
     }
+}
+
+/// A count with a comma between groups of three digits, `67,108,864`.
+fn grouped(count: u128) -> String {
+    let digits = count.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (position, digit) in digits.chars().enumerate() {
+        if position > 0 && (digits.len() - position).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
 }
