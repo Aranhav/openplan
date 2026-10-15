@@ -46,14 +46,6 @@ impl FromRequestParts<AppState> for CurrentUser {
         let session = session::lookup(&state.db, token)
             .await?
             .ok_or(AppError::Unauthenticated)?;
-        let user = sqlx::query_as::<_, CurrentUser>(
-            "SELECT id, email, name, is_instance_admin FROM users
-             WHERE id = $1 AND NOT disabled",
-        )
-        .bind(session.user_id)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or(AppError::Unauthenticated)?;
         if session.renewed
             && let Some(renewal) = parts.extensions.get::<SessionRenewal>()
         {
@@ -68,7 +60,7 @@ impl FromRequestParts<AppState> for CurrentUser {
                 state.config.secure_cookies(),
             ));
         }
-        Ok(user)
+        Ok(session.user)
     }
 }
 

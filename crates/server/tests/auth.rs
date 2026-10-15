@@ -103,7 +103,7 @@ async fn session_user(pool: &PgPool, token: &str) -> Option<Uuid> {
     session::lookup(pool, token)
         .await
         .unwrap()
-        .map(|session| session.user_id)
+        .map(|session| session.user.id)
 }
 
 async fn session_count(pool: &PgPool) -> i64 {
@@ -717,6 +717,31 @@ async fn session_of_disabled_user_rejected(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn session_of_disabled_user_is_not_renewed(pool: PgPool) {
+    let mut app = TestApp::new(pool.clone());
+    setup_admin(&mut app).await;
+    sqlx::query("UPDATE sessions SET expires_at = now() + interval '1 day'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE users SET disabled = true")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let response = app.get("/api/v1/auth/me").await;
+
+    assert_problem(&response, StatusCode::UNAUTHORIZED, "auth.unauthenticated");
+    assert!(response.headers.get(header::SET_COOKIE).is_none());
+    let untouched: bool =
+        sqlx::query_scalar("SELECT expires_at < now() + interval '2 days' FROM sessions")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(untouched);
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn me_lists_workspaces_by_name_with_roles(pool: PgPool) {
     let mut app = TestApp::new(pool.clone());
     setup_admin(&mut app).await;
@@ -836,6 +861,29 @@ async fn session_lookup_and_delete(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn session_lookup_returns_the_user_and_skips_disabled_ones(pool: PgPool) {
+    let mut app = TestApp::new(pool.clone());
+    setup_admin(&mut app).await;
+    let user_id: Uuid = sqlx::query_scalar("SELECT id FROM users")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let token = session::create(&pool, user_id, None).await.unwrap();
+
+    let found = session::lookup(&pool, &token).await.unwrap().unwrap();
+    assert_eq!(found.user.id, user_id);
+    assert_eq!(found.user.email, EMAIL);
+    assert_eq!(found.user.name, "Ada Admin");
+    assert!(found.user.is_instance_admin);
+
+    sqlx::query("UPDATE users SET disabled = true")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(session::lookup(&pool, &token).await.unwrap().is_none());
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn session_lookup_reports_when_it_renewed(pool: PgPool) {
     let mut app = TestApp::new(pool.clone());
     setup_admin(&mut app).await;
@@ -854,7 +902,7 @@ async fn session_lookup_reports_when_it_renewed(pool: PgPool) {
         .unwrap();
     let near_expiry = session::lookup(&pool, &token).await.unwrap().unwrap();
     assert!(near_expiry.renewed);
-    assert_eq!(near_expiry.user_id, user_id);
+    assert_eq!(near_expiry.user.id, user_id);
 
     let after = session::lookup(&pool, &token).await.unwrap().unwrap();
     assert!(!after.renewed);

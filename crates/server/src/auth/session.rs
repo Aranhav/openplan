@@ -4,20 +4,21 @@ use uuid::Uuid;
 
 use crate::error::AppResult;
 
-use super::random_token;
+use super::{CurrentUser, random_token};
 
 pub const SESSION_TTL_DAYS: i32 = 14;
 pub const SESSION_RENEW_BELOW_DAYS: i32 = 7;
 
 #[derive(sqlx::FromRow)]
 struct SessionRow {
-    user_id: Uuid,
+    #[sqlx(flatten)]
+    user: CurrentUser,
     near_expiry: bool,
 }
 
-/// An unexpired session found by [`lookup`].
+/// An unexpired session of an enabled user, found by [`lookup`].
 pub struct ActiveSession {
-    pub user_id: Uuid,
+    pub user: CurrentUser,
     /// Whether this lookup extended the session to a full `SESSION_TTL_DAYS`.
     pub renewed: bool,
 }
@@ -43,14 +44,17 @@ pub async fn create(db: &PgPool, user_id: Uuid, user_agent: Option<&str>) -> App
     Ok(token)
 }
 
-/// Finds an unexpired session. One with fewer than `SESSION_RENEW_BELOW_DAYS`
-/// days left is extended to a full `SESSION_TTL_DAYS`.
+/// Finds an unexpired session of an enabled user and returns that user in the
+/// same query. One with fewer than `SESSION_RENEW_BELOW_DAYS` days left is
+/// extended to a full `SESSION_TTL_DAYS`; a disabled user's session is never
+/// renewed.
 pub async fn lookup(db: &PgPool, raw: &str) -> AppResult<Option<ActiveSession>> {
     let id_hash = hash_token(raw);
     let row = sqlx::query_as::<_, SessionRow>(
-        "SELECT user_id, expires_at < now() + make_interval(days => $2) AS near_expiry
-         FROM sessions
-         WHERE id_hash = $1 AND expires_at > now()",
+        "SELECT u.id, u.email, u.name, u.is_instance_admin,
+                s.expires_at < now() + make_interval(days => $2) AS near_expiry
+         FROM sessions s JOIN users u ON u.id = s.user_id
+         WHERE s.id_hash = $1 AND s.expires_at > now() AND NOT u.disabled",
     )
     .bind(&id_hash)
     .bind(SESSION_RENEW_BELOW_DAYS)
@@ -70,7 +74,7 @@ pub async fn lookup(db: &PgPool, raw: &str) -> AppResult<Option<ActiveSession>> 
         .await?;
     }
     Ok(Some(ActiveSession {
-        user_id: row.user_id,
+        user: row.user,
         renewed: row.near_expiry,
     }))
 }
