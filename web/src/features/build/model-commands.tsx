@@ -1,8 +1,10 @@
 import { useNavigate } from "@tanstack/react-router"
+import { useCommandState } from "cmdk"
 import { Grid3x3, Rows3 } from "lucide-react"
 import { ErrorState } from "@/components/error-state"
 import { CommandGroup, CommandItem } from "@/components/ui/command"
 import { Skeleton } from "@/components/ui/skeleton"
+import { useModelNotFound } from "@/features/models/api"
 import { useStructure } from "@/features/structure/api"
 import { BUILD_GROUPS } from "./build-nav"
 
@@ -11,12 +13,19 @@ interface ModelCommandsProps {
   run: (action: () => unknown) => void
 }
 
+/** Line items are only listed once the search can tell them apart; a model has many of them. */
+const MIN_SEARCH_FOR_LINE_ITEMS = 2
+
 /** What the command palette offers inside a model: its screens, modules and line items. */
 export function ModelCommands({ modelId, run }: ModelCommandsProps) {
   const navigate = useNavigate()
+  // Like the sidebar, offer nothing for a model that is gone.
+  if (useModelNotFound(modelId)) {
+    return null
+  }
   return (
     <>
-      <CommandGroup heading="This model">
+      <CommandGroup heading="Model">
         {BUILD_GROUPS.flatMap((group) => group.pages).map(({ label, icon: Icon, to }) => (
           <CommandItem
             key={to}
@@ -37,6 +46,7 @@ export function ModelCommands({ modelId, run }: ModelCommandsProps) {
 function StructureCommands({ modelId, run }: ModelCommandsProps) {
   const navigate = useNavigate()
   const structure = useStructure(modelId)
+  const search = useCommandState((state) => state.search)
 
   if (structure.isError) {
     return (
@@ -86,7 +96,7 @@ function StructureCommands({ modelId, run }: ModelCommandsProps) {
           ))}
         </CommandGroup>
       )}
-      {lineItems.length > 0 && (
+      {lineItems.length > 0 && search.trim().length >= MIN_SEARCH_FOR_LINE_ITEMS && (
         <CommandGroup heading="Line items">
           {lineItems.map((item) => {
             const module = moduleOf.get(item.module)

@@ -97,6 +97,7 @@ export function CommandMenu({
       />
       <CommandList className="max-h-[min(24rem,60svh)]">
         <CommandEmpty>No results found.</CommandEmpty>
+        {modelId && <ModelCommands modelId={modelId} run={run} />}
         <CommandGroup heading="Go to">
           {workspace && (
             <>
@@ -144,7 +145,6 @@ export function CommandMenu({
             Profile
           </CommandItem>
         </CommandGroup>
-        {modelId && <ModelCommands modelId={modelId} run={run} />}
         {workspace && <ModelsGroup workspaceId={workspace.id} run={run} />}
         {workspaces.length > 1 && (
           <CommandGroup heading="Workspaces">

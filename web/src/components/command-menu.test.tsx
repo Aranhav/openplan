@@ -358,14 +358,49 @@ describe("the command palette inside a model", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
   })
 
-  it("groups them as Modules and Line items", async () => {
+  it("groups what it finds as Modules and Line items", async () => {
     const typist = userEvent.setup()
     openModel()
     const palette = await openPalette(typist)
+    await typist.keyboard("re")
     await within(palette).findByRole("option", { name: /^Units sold/ })
 
-    expect(within(palette).getByRole("group", { name: "Modules" })).toBeVisible()
-    expect(within(palette).getByRole("group", { name: "Line items" })).toBeVisible()
+    expect(
+      within(palette)
+        .getAllByRole("group")
+        .map((group) => group.getAttribute("aria-labelledby"))
+        .map((id) => document.getElementById(id ?? "")?.textContent),
+    ).toEqual(expect.arrayContaining(["Modules", "Line items"]))
+  })
+
+  it("lists the line items only once the search has two characters", async () => {
+    const typist = userEvent.setup()
+    openModel()
+    const palette = await openPalette(typist)
+    await within(palette).findByRole("option", { name: /^Hiring plan/ })
+    expect(within(palette).queryByRole("group", { name: "Line items" })).not.toBeInTheDocument()
+    await typist.keyboard("u")
+    expect(within(palette).queryByRole("group", { name: "Line items" })).not.toBeInTheDocument()
+    await typist.keyboard("n")
+
+    expect(await within(palette).findByRole("option", { name: /^Units sold/ })).toBeVisible()
+  })
+
+  it("puts the model's own pages ahead of the workspace's, with the first one in reach", async () => {
+    const typist = userEvent.setup()
+    openModel()
+    const palette = await openPalette(typist)
+    await within(palette).findByRole("option", { name: /^Hiring plan/ })
+
+    const options = within(palette).getAllByRole("option")
+    expect(options.slice(0, 2).map((option) => option.textContent)).toEqual([
+      "Modules",
+      "Model settings",
+    ])
+    expect(options[0]).toHaveAttribute("aria-selected", "true")
+    expect(options.findIndex((option) => option.textContent === "Profile")).toBeGreaterThan(
+      options.findIndex((option) => option.textContent === "Hiring plan"),
+    )
   })
 
   it("goes to the modules and the settings of the model", async () => {
@@ -399,7 +434,23 @@ describe("the command palette inside a model", () => {
     serveStructure(structure)
     await typist.click(within(palette).getByRole("button", { name: "Retry" }))
 
-    expect(await within(palette).findByRole("option", { name: /^Units sold/ })).toBeVisible()
+    expect(await within(palette).findByRole("option", { name: /^Hiring plan/ })).toBeVisible()
+  })
+
+  it("offers nothing of a model that does not exist", async () => {
+    mockSession()
+    serveModels([])
+    const typist = userEvent.setup()
+    renderApp(`/m/${model.id}/modules`)
+    await screen.findByRole("heading", { name: "Model not found" })
+    const palette = await openPalette(typist)
+    await within(palette).findByRole("option", { name: "Profile" })
+
+    expect(
+      within(palette).queryByRole("option", { name: "Model settings" }),
+    ).not.toBeInTheDocument()
+    expect(within(palette).queryByRole("group", { name: "Model" })).not.toBeInTheDocument()
+    expect(within(palette).queryByRole("alert")).not.toBeInTheDocument()
   })
 
   it("has no modules or line items outside a model", async () => {
