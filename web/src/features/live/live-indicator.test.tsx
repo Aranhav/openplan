@@ -29,20 +29,26 @@ function indicatorIn(status: LiveStatus | undefined) {
   )
 }
 
+const STATUSES: [LiveStatus, string][] = [
+  ["connecting", "Connecting…"],
+  ["live", "Live updates on"],
+  ["reconnecting", "Reconnecting…"],
+  ["off", "Live updates off"],
+]
+
 describe("the live indicator", () => {
-  it.each<[LiveStatus, string]>([
-    ["live", "Live updates on"],
-    ["reconnecting", "Reconnecting…"],
-    ["off", "Live updates off"],
-  ])("says %s as “%s”, to a screen reader and to a pointer", async (status, label) => {
-    const typist = userEvent.setup()
-    indicatorIn(status)
+  it.each(STATUSES)(
+    "says %s as “%s”, to a screen reader and to a pointer",
+    async (status, label) => {
+      const typist = userEvent.setup()
+      indicatorIn(status)
 
-    const dot = screen.getByRole("img", { name: label })
-    await typist.hover(dot)
+      const mark = screen.getByRole("img", { name: label })
+      await typist.hover(mark)
 
-    expect(await screen.findByRole("tooltip")).toHaveTextContent(label)
-  })
+      expect(await screen.findByRole("tooltip")).toHaveTextContent(label)
+    },
+  )
 
   it("can be reached with the keyboard, which shows what it says", async () => {
     const typist = userEvent.setup()
@@ -54,16 +60,27 @@ describe("the live indicator", () => {
     expect(await screen.findByRole("tooltip")).toHaveTextContent("Reconnecting…")
   })
 
-  it("tells the three states apart by more than their colour", () => {
-    const shapes = (["live", "reconnecting", "off"] as const).map((status) => {
+  it("tells the four states apart by their shape, with no colour and no motion", () => {
+    const shapes = STATUSES.map(([status]) => {
       const { container, unmount } = indicatorIn(status)
-      const dot = container.querySelector("[aria-hidden]")
-      const shape = [dot?.className.includes("animate-pulse"), dot?.className.includes("border-2")]
+      const glyph = container.querySelector("svg")
+      const shape = glyph ? [...glyph.classList].find((name) => name.startsWith("lucide-")) : "dot"
       unmount()
-      return shape.join()
+      return shape
     })
 
-    expect(new Set(shapes).size).toBe(3)
+    expect(shapes.every(Boolean)).toBe(true)
+    expect(new Set(shapes).size).toBe(4)
+  })
+
+  it("stops moving when motion is reduced", () => {
+    for (const [status] of STATUSES) {
+      const { container, unmount } = indicatorIn(status)
+      for (const moving of container.querySelectorAll("[class*='animate-']")) {
+        expect(moving).toHaveClass("motion-reduce:animate-none")
+      }
+      unmount()
+    }
   })
 
   it("shows nothing outside a model's layout", () => {
@@ -73,11 +90,62 @@ describe("the live indicator", () => {
   })
 
   it("has no accessibility violations in any state", async () => {
-    for (const status of ["live", "reconnecting", "off"] as const) {
+    for (const [status] of STATUSES) {
       const { container, unmount } = indicatorIn(status)
       expect(await violations({ context: container, ignore: ["region"] })).toEqual([])
       unmount()
     }
+  })
+})
+
+describe("what the indicator tells a screen reader", () => {
+  function followed(first: LiveStatus) {
+    const view = indicatorIn(first)
+    return {
+      become: (status: LiveStatus) =>
+        view.rerender(
+          <LiveStatusContext value={status}>
+            <LiveIndicator />
+          </LiveStatusContext>,
+        ),
+    }
+  }
+  const said = () => screen.getByRole("status")
+
+  it("says nothing of the first connection, nor of the screen opening when it is live", () => {
+    const { become } = followed("connecting")
+    expect(said()).toBeEmptyDOMElement()
+
+    become("live")
+    expect(said()).toBeEmptyDOMElement()
+    indicatorIn("live")
+    expect(screen.getAllByRole("status").at(-1)).toBeEmptyDOMElement()
+  })
+
+  it("says when the connection is lost, when it is back, and when it is given up", () => {
+    const { become } = followed("live")
+
+    become("reconnecting")
+    expect(said()).toHaveTextContent("Reconnecting…")
+    become("live")
+    expect(said()).toHaveTextContent("Live updates on")
+    become("off")
+    expect(said()).toHaveTextContent("Live updates off")
+  })
+
+  it("says when the first connection fails, and when it comes after that", () => {
+    const { become } = followed("connecting")
+
+    become("reconnecting")
+    expect(said()).toHaveTextContent("Reconnecting…")
+    become("live")
+    expect(said()).toHaveTextContent("Live updates on")
+  })
+
+  it("is a polite announcement", () => {
+    indicatorIn("live")
+
+    expect(said()).toHaveAttribute("role", "status")
   })
 })
 
@@ -100,20 +168,17 @@ describe("a module's screen", () => {
 
   const shows = (value: string) => within(screen.getByRole("main")).findAllByText(value)
 
-  /** Waits until the grid has asked for all the blocks it wants, so that what follows is new. */
-  async function loaded(served: { requests: unknown[] }) {
-    let seen = -1
-    while (served.requests.length !== seen) {
-      seen = served.requests.length
-      await new Promise((resolve) => setTimeout(resolve, 150))
-    }
+  /** The grid has asked for the blocks it wants (the first, and those next to it) and has them. */
+  async function loaded(served: { requests: unknown[] }, queryClient: { isFetching(): number }) {
+    await waitFor(() => expect(served.requests).toHaveLength(4))
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0))
   }
 
   it("follows the model live, and says so in its header", async () => {
     openModule()
 
     const page = within(await screen.findByRole("main"))
-    expect(await page.findByRole("img", { name: "Reconnecting…" })).toBeVisible()
+    expect(await page.findByRole("img", { name: "Connecting…" })).toBeVisible()
     await waitFor(() => expect(FakeWebSocket.sockets).toHaveLength(1))
     expect(FakeWebSocket.last.url).toContain(`/api/v1/models/${model.id}/live?ticket=ticket-`)
 
@@ -122,14 +187,15 @@ describe("a module's screen", () => {
 
     act(() => FakeWebSocket.last.drop())
     expect(await page.findByRole("img", { name: "Reconnecting…" })).toBeVisible()
+    expect(page.getByText("Reconnecting…", { selector: "[role=status]" })).toBeInTheDocument()
   })
 
   it("shows what another user changed, without a reload", async () => {
-    const { served } = openModule()
+    const { served, queryClient } = openModule()
     await waitFor(() => expect(FakeWebSocket.sockets).toHaveLength(1))
     act(() => FakeWebSocket.last.receive(hello(1)))
     expect((await shows("111")).length).toBeGreaterThan(0)
-    await loaded(served)
+    await loaded(served, queryClient)
     const asked = served.requests.length
 
     served.fixture = salesView({ cell: () => numberCell(222) })
@@ -147,12 +213,13 @@ describe("a module's screen", () => {
   })
 
   it("leaves the grid alone when the change is to a line item it does not show", async () => {
-    const { served } = openModule()
+    const { served, queryClient } = openModule()
     await waitFor(() => expect(FakeWebSocket.sockets).toHaveLength(1))
     act(() => FakeWebSocket.last.receive(hello(1)))
     await shows("111")
-    await loaded(served)
+    await loaded(served, queryClient)
     const asked = served.requests.length
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries")
 
     act(() =>
       FakeWebSocket.last.receive({
@@ -162,8 +229,10 @@ describe("a module's screen", () => {
         user_id: "someone",
       }),
     )
-    await new Promise((resolve) => setTimeout(resolve, 100))
+    // The messages are read after a moment; a view that was to be read again is being read then.
+    await waitFor(() => expect(invalidate).toHaveBeenCalled())
 
+    expect(queryClient.isFetching()).toBe(0)
     expect(served.requests).toHaveLength(asked)
   })
 
