@@ -639,8 +639,9 @@ describe("row headers sized up front", () => {
 
     const first = within(cells).getAllByRole("rowheader")[0]
     expect(first.querySelector("span[aria-hidden].size-6")).toBeInTheDocument()
-    // "Asia Pacific" (12 characters of 8 px) with the padding, a step and a chevron.
-    expect(first).toHaveStyle({ width: `${16 + 16 + 26 + 12 * 8 + 4}px` })
+    // "Asia Pacific" (12 characters of 8 px) with the padding, a step and a chevron comes to 158;
+    // the name in the corner, "Regions / Line items", asks for more: 20 characters and 20 of padding.
+    expect(first).toHaveStyle({ width: `${20 * 8 + 20}px` })
   })
 
   it("asks for no members of the line items, which the structure names", async () => {
