@@ -184,7 +184,7 @@ export function NewItemRow({
                         ref={field.ref}
                         parents={parents}
                         parentList={parentList ?? "the parent list"}
-                        value={field.value}
+                        selected={parents.find((parent) => parent.id === field.value)}
                         onChange={field.onChange}
                         label="Parent of the new item"
                         disabled={createItems.isPending}

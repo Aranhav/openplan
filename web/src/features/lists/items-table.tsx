@@ -1,6 +1,6 @@
 import { useVirtualizer } from "@tanstack/react-virtual"
 import { ChevronRight } from "lucide-react"
-import { type Ref, useRef } from "react"
+import { type Ref, useMemo, useRef } from "react"
 import { toast } from "sonner"
 import { z } from "zod"
 import { Badge } from "@/components/ui/badge"
@@ -101,7 +101,10 @@ export function ItemsTable({
   const before = shown?.length ? shown[0].start : 0
   const after = shown?.length ? virtualizer.getTotalSize() - shown[shown.length - 1].end : 0
 
-  const parentNames = new Map(parents?.map((parent) => [parent.id, parent]))
+  const parentsById = useMemo(
+    () => new Map(parents?.map((parent) => [parent.id, parent])),
+    [parents],
+  )
 
   async function saveItem(item: ItemDto, body: UpdateItemRequest) {
     await updateItem.mutateAsync({ listId: list.id, itemId: item.id, body })
@@ -179,7 +182,7 @@ export function ItemsTable({
               )
             }
             const { item } = row
-            const parent = item.parent_id ? parentNames.get(item.parent_id) : undefined
+            const parent = item.parent_id ? parentsById.get(item.parent_id) : undefined
             return (
               <TableRow
                 key={row.key}
@@ -241,13 +244,13 @@ export function ItemsTable({
                       <ParentPicker
                         parents={parents}
                         parentList={parentList?.name ?? "the parent list"}
-                        value={item.parent_id ?? undefined}
+                        selected={parent}
                         label={`Parent of ${item.name}`}
                         onChange={(parentId) =>
                           void saveItem(item, { parent_id: parentId }).then(
                             () =>
                               toast.success(
-                                `Moved ${item.name} to ${parentNames.get(parentId)?.name ?? "the new parent"}`,
+                                `Moved ${item.name} to ${parentsById.get(parentId)?.name ?? "the new parent"}`,
                               ),
                             (error) => toast.error(errorDetail(error)),
                           )

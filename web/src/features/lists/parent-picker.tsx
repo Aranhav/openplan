@@ -23,8 +23,8 @@ interface ParentPickerProps extends Omit<ComponentProps<typeof Button>, "value" 
   parents: ItemDto[]
   /** The name of the parent list. */
   parentList: string
-  /** The id of the chosen parent item. */
-  value?: string
+  /** The chosen parent item. */
+  selected?: ItemDto
   onChange: (parentId: string) => void
   /** What the button is called to assistive technology, before the parent it shows: "Parent of Paris". */
   label: string
@@ -34,7 +34,7 @@ interface ParentPickerProps extends Omit<ComponentProps<typeof Button>, "value" 
 export function ParentPicker({
   parents,
   parentList,
-  value,
+  selected,
   onChange,
   label,
   className,
@@ -42,7 +42,6 @@ export function ParentPicker({
 }: ParentPickerProps) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState("")
-  const chosen = parents.find((parent) => parent.id === value)
   const matching = query.trim() ? parents.filter((parent) => matchesQuery(parent, query)) : parents
   const shown = matching.slice(0, MAX_PARENT_OPTIONS)
 
@@ -60,12 +59,12 @@ export function ParentPicker({
           size="sm"
           role="combobox"
           aria-expanded={open}
-          aria-label={`${label}: ${chosen?.name ?? "none chosen"}`}
+          aria-label={`${label}: ${selected?.name ?? "none chosen"}`}
           className={cn("w-full min-w-0 justify-between font-normal", className)}
           {...buttonProps}
         >
-          <span className={cn("truncate", !chosen && "text-muted-foreground")}>
-            {chosen?.name ?? `Choose from ${parentList}`}
+          <span className={cn("truncate", !selected && "text-muted-foreground")}>
+            {selected?.name ?? `Choose from ${parentList}`}
           </span>
           <ChevronsUpDown className="text-muted-foreground" />
         </Button>
@@ -90,7 +89,7 @@ export function ParentPicker({
                     setQuery("")
                   }}
                 >
-                  <Check className={cn(parent.id === value ? "opacity-100" : "opacity-0")} />
+                  <Check className={cn(parent.id === selected?.id ? "opacity-100" : "opacity-0")} />
                   <span className="truncate">{parent.name}</span>
                   {parent.code && (
                     <span className="ml-auto text-xs text-muted-foreground">{parent.code}</span>

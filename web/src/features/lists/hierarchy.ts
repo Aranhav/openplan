@@ -30,7 +30,8 @@ export function blockedByChildren(
       blockers.push({ itemId, list: child.name, count })
     }
   }
-  return blockers.sort((a, b) => [...ids].indexOf(a.itemId) - [...ids].indexOf(b.itemId))
+  const order = new Map([...ids].map((id, index) => [id, index]))
+  return blockers.sort((a, b) => (order.get(a.itemId) ?? 0) - (order.get(b.itemId) ?? 0))
 }
 
 /** Why the items cannot be deleted yet, naming the first and counting the rest. */

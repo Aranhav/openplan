@@ -82,3 +82,31 @@ describe("the words about them", () => {
     )
   })
 })
+
+describe("the items that cannot be deleted yet, among many", () => {
+  it("are found in one pass, in the order they were chosen", () => {
+    const many = makeStructure({
+      lists: [
+        {
+          ...structure.lists[0],
+          items: Array.from({ length: 20_000 }, (_, i) => ({ id: `r${i}`, name: `R${i}` })),
+        },
+        {
+          ...structure.lists[1],
+          items: Array.from({ length: 20_000 }, (_, i) => ({
+            id: `c${i}`,
+            name: `C${i}`,
+            parent: `r${i}`,
+          })),
+        },
+      ],
+    })
+    const ids = new Set(Array.from({ length: 20_000 }, (_, i) => `r${19_999 - i}`))
+    const started = performance.now()
+    const blockers = blockedByChildren(many, "regions", ids)
+
+    expect(blockers).toHaveLength(20_000)
+    expect(blockers[0].itemId).toBe("r19999")
+    expect(performance.now() - started).toBeLessThan(1000)
+  })
+})

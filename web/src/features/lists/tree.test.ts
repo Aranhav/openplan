@@ -92,3 +92,19 @@ describe("matching an item", () => {
     expect(matchesQuery(emea, "emea")).toBe(true)
   })
 })
+
+describe("the rows of a very long list", () => {
+  it("are built in one pass, however many items share a parent", () => {
+    const items: ItemDto[] = Array.from({ length: 60_000 }, (_, index) => ({
+      id: `item-${index}`,
+      name: `Item ${index}`,
+      parent_id: "emea",
+    }))
+    const started = performance.now()
+    const rows = buildRows({ items, parents: [emea, apac], collapsed: new Set() })
+
+    expect(rows).toHaveLength(60_002)
+    // Copying the siblings for each item would take seconds.
+    expect(performance.now() - started).toBeLessThan(1000)
+  })
+})

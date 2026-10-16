@@ -46,7 +46,12 @@ export function buildRows({ items, parents, collapsed, query = "" }: TreeOptions
   const strays: ItemDto[] = []
   for (const item of shown) {
     if (item.parent_id && known.has(item.parent_id)) {
-      childrenOf.set(item.parent_id, [...(childrenOf.get(item.parent_id) ?? []), item])
+      const siblings = childrenOf.get(item.parent_id)
+      if (siblings) {
+        siblings.push(item)
+      } else {
+        childrenOf.set(item.parent_id, [item])
+      }
     } else {
       strays.push(item)
     }
