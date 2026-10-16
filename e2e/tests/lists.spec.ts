@@ -68,6 +68,8 @@ async function typeItem(page: Page, name: string, parent?: string) {
 test("a builder makes lists, adds items one by one and in bulk, edits them in place and groups them in subsets", async ({
   page,
 }) => {
+  // A dozen screenshots, each in two themes and each after a reload, take their time.
+  test.setTimeout(90_000)
   await login(page, ADMIN)
   await page.goto(`/m/${modelId}/lists`)
   const build = page.getByRole("navigation", { name: "Build" })
