@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Runs a command with its full output in .logs/<name>.log and prints one result
-# line, the failure lines (on failure only) and the log path. See CLAUDE.md "Context cost".
+# line, the failure lines (on failure only) and the log path. If the log cannot be written, the
+# command still runs and a line says where its output went instead. See CLAUDE.md "Context cost".
 # Usage: scripts/quiet.sh <name> -- <command> [args...]
 set -uo pipefail
 
@@ -25,7 +26,7 @@ log="$root/.logs/$name.log"
 # the problem is reported on its own line at the end.
 log_problem=""
 if ! { mkdir -p "$root/.logs" && : >"$log"; } 2>/dev/null; then
-  if scratch=$(mktemp "${TMPDIR:-/tmp}/quiet.XXXXXX.log" 2>/dev/null); then
+  if scratch=$(mktemp "${TMPDIR:-/tmp}/quiet.XXXXXX" 2>/dev/null); then
     log_problem="quiet.sh: cannot write $log; the output is in $scratch"
     log=$scratch
   else
@@ -161,7 +162,11 @@ result_line() {
       if [ "$rc" -ne 0 ] && ! grep -q -E '[0-9]+ (failed|flaky|did not run|interrupted)' <<<"$out"; then out="$out (exit $rc)"; fi
       echo "playwright: $out" ;;
     eslint)
-      if tally=$(eslint_tally); then echo "eslint: $tally"; return 0; fi
+      if tally=$(eslint_tally); then
+        if [ "$rc" -ne 0 ] && ! grep -q -E '[1-9][0-9]* error' <<<"$tally"; then tally="$tally (exit $rc)"; fi
+        echo "eslint: $tally"
+        return 0
+      fi
       count=$(error_lines eslint | wc -l)
       count_result eslint "$count" "$rc" ;;
     tsc | cargo-build | clippy)
