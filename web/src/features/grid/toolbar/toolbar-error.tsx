@@ -23,7 +23,11 @@ export function ToolbarError({ label, error, onRetry }: ToolbarErrorProps) {
           {label}
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-72 border-0 bg-transparent p-0 shadow-none">
+      <PopoverContent
+        align="start"
+        aria-label={label}
+        className="w-72 border-0 bg-transparent p-0 shadow-none"
+      >
         <ErrorState error={error} onRetry={onRetry} />
       </PopoverContent>
     </Popover>

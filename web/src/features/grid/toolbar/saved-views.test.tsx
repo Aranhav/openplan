@@ -415,7 +415,8 @@ describe("when the views cannot be read", () => {
     const user = userEvent.setup()
 
     await user.click(screen.getByRole("button", { name: "Saved views: couldn't load" }))
-    expect(await screen.findByText("The server is busy.")).toBeVisible()
+    const popover = await screen.findByRole("dialog", { name: "Saved views: couldn't load" })
+    expect(within(popover).getByText("The server is busy.")).toBeVisible()
     await user.click(screen.getByRole("button", { name: "Retry" }))
 
     expect(retry).toHaveBeenCalledOnce()

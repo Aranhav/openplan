@@ -529,9 +529,6 @@ test("a dimension is dragged to another zone of the pivot, and the grid follows"
   await page.mouse.down()
   await page.mouse.move(from.x + from.width / 2 + 12, from.y + from.height / 2 - 12, { steps: 4 })
   await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 12 })
-  await page.waitForTimeout(500)
-  console.log("DBG", JSON.stringify({ from, to, live: await page.evaluate(() => [...document.querySelectorAll("[aria-live]")].map((e) => e.textContent)), all: await popover.locator("section").evaluateAll((els) => els.map((e) => [e.getAttribute("aria-labelledby"), JSON.stringify(e.querySelector("ul")?.getBoundingClientRect())])) }))
-  await page.screenshot({ path: "/tmp/dbg-drag2.png" })
   // Letting go before the page has drawn where the dimension is would drop it where it was a few moves ago.
   await expect(page.getByText(/Regions is over (Time \(Quarter\)|Columns)\./)).toBeAttached()
   await page.mouse.up()
