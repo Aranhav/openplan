@@ -436,12 +436,74 @@ async function openModuleGrid(page: Page, id: string, name: string) {
   await expect(controls(page).getByRole("combobox", { name: "Saved view" })).toBeVisible()
 }
 
-// The width from which everything is in the row: Revenue has two page selectors to hold, Totals
-// has none and so needs the room for less.
-for (const [name, widest] of [
-  ["Revenue", 1280],
-  ["Totals", 900],
-] as const) {
+// The controls the toolbar keeps in its row when there is room and moves into the More menu when
+// there is not: how each is named in the row, and in the menu.
+const secondaryControls = [
+  {
+    name: "Filter",
+    inRow: { role: "button", name: "Filter" },
+    inMenu: { role: "menuitem", name: "Filter…" },
+  },
+  {
+    name: "Show/hide",
+    inRow: { role: "button", name: "Show/hide" },
+    inMenu: { role: "menuitem", name: "Show/hide…" },
+  },
+  {
+    name: "Summaries",
+    inRow: { role: "button", name: "Summaries" },
+    inMenu: { role: "menuitemcheckbox", name: "Summaries" },
+  },
+  {
+    name: "Conditional formatting",
+    inRow: { role: "button", name: "Conditional formatting" },
+    inMenu: { role: "menuitem", name: "Conditional formatting…" },
+  },
+] as const
+
+/**
+ * Waits for the toolbar to settle and says whether it moved the secondary controls into the More
+ * menu. Where that happens depends on how wide the text is, which differs from one machine to the
+ * next, so this checks what has to be true either way: each secondary control is in one place, the
+ * row (no More button) or the menu (a More button), never both and never neither, and a row
+ * without a menu is a single line.
+ */
+async function settledToolbar(page: Page): Promise<boolean> {
+  const bar = controls(page)
+  const more = bar.getByRole("button", { name: "More" })
+  await expect
+    .poll(async () => {
+      const compact = (await more.count()) > 0
+      const problems: string[] = []
+      for (const { name, inRow } of secondaryControls) {
+        const inTheRow = (await bar.getByRole(inRow.role, { name: inRow.name }).count()) > 0
+        if (compact && inTheRow) {
+          problems.push(`${name} is in the row, which has a More menu`)
+        } else if (!compact && !inTheRow) {
+          problems.push(`${name} is not in the row, which has no More menu`)
+        }
+      }
+      if (!compact && ((await bar.boundingBox())?.height ?? 0) >= 48) {
+        problems.push("the row wraps, with no More menu")
+      }
+      return problems
+    })
+    .toEqual([])
+  return (await more.count()) > 0
+}
+
+/** Opens the More menu, which holds each secondary control, and chooses Filter, which opens its panel. */
+async function openFilterFromMore(page: Page) {
+  await controls(page).getByRole("button", { name: "More" }).click()
+  for (const { inMenu } of secondaryControls) {
+    await expect(page.getByRole(inMenu.role, { name: inMenu.name })).toBeVisible()
+  }
+  await page.getByRole("menuitem", { name: "Filter…" }).click()
+  await expect(page.getByRole("dialog", { name: "Filter rows" })).toBeVisible()
+  await page.keyboard.press("Escape")
+}
+
+for (const name of ["Revenue", "Totals"] as const) {
   test(`the toolbar of ${name} fits the screen, with nothing cut off or covered, from 1280 down to 375 px`, async ({
     page,
   }) => {
@@ -451,44 +513,49 @@ for (const [name, widest] of [
       await openModuleGrid(page, name === "Revenue" ? moduleId : totalsId, name)
       const bar = controls(page)
 
-      await expectToolbarWhole(page)
-      // One row where everything is in it, the More menu below that.
-      const everything = width >= widest
-      await expect(bar.getByRole("button", { name: "More" })).toHaveCount(everything ? 0 : 1)
-      await expect(bar.getByRole("button", { name: "Filter" })).toHaveCount(everything ? 1 : 0)
       await expect(bar.getByRole("button", { name: "Pivot" })).toBeVisible()
       await expect(bar.getByRole("combobox", { name: "Saved view" })).toBeVisible()
       if (name === "Revenue") {
         await expect(bar.getByRole("combobox", { name: /^Regions/ })).toBeVisible()
         await expect(bar.getByRole("combobox", { name: /^Products/ })).toBeVisible()
       }
+      const compact = await settledToolbar(page)
+      await expectToolbarWhole(page)
+      // Wide enough for one row with everything in it, and too narrow for anything but the menu.
       if (width === 1280) {
+        expect(compact).toBe(false)
         expect((await bar.boundingBox())?.height).toBeLessThan(48)
       }
-      // The More menu opens the panels.
-      if (!everything) {
-        await bar.getByRole("button", { name: "More" }).click()
-        await page.getByRole("menuitem", { name: "Filter…" }).click()
-        await expect(page.getByRole("dialog", { name: "Filter rows" })).toBeVisible()
-        await page.keyboard.press("Escape")
+      if (width === 375) {
+        expect(compact).toBe(true)
+      }
+      if (compact) {
+        await openFilterFromMore(page)
       }
     }
   })
 }
 
-test("below 1280 px the secondary controls move into a More menu, shown at 900 and 768 px", async ({
+test("the More menu, where the toolbar needs it, holds the secondary controls and gets the focus back, at 900, 768 and 375 px", async ({
   page,
 }) => {
   await login(page, ADMIN)
-  for (const width of [900, 768]) {
+  for (const width of [900, 768, 375]) {
     await page.setViewportSize({ width, height: 720 })
     await openGrid(page)
     const bar = controls(page)
+    await expect(bar.getByRole("combobox", { name: /^Regions/ })).toBeVisible()
+    await expect(bar.getByRole("combobox", { name: /^Products/ })).toBeVisible()
 
-    await expect(bar.getByRole("button", { name: "Filter" })).toHaveCount(0)
-    await expect(bar.getByRole("button", { name: "More" })).toBeVisible()
+    const compact = await settledToolbar(page)
     await expect(bar.getByRole("button", { name: "Pivot" })).toBeVisible()
     await expectToolbarWhole(page)
+    if (width === 375) {
+      expect(compact).toBe(true)
+    }
+    if (!compact) {
+      continue
+    }
     await bar.getByRole("button", { name: "More" }).click()
     await screenshot(page, `g4-more-menu-${width}`, {
       ready: page.getByRole("menuitem", { name: "Filter…" }),
