@@ -76,7 +76,7 @@ describe("useToolbarFit", () => {
     expect(screen.getByText("compact")).toBeVisible()
   })
 
-  it("is wide again once the row is as wide as the wide layout needed, and not before", () => {
+  it("is wide again once the row is clearly wider than the wide layout needed, and not before", () => {
     sizes.content = 400
     render(<Toolbar />)
     expect(screen.getByText("compact")).toBeVisible()
@@ -85,8 +85,19 @@ describe("useToolbarFit", () => {
     resize(1050, 350)
     expect(screen.getByText("compact")).toBeVisible()
 
-    resize(1100, 400)
+    resize(1150, 450)
     expect(screen.getByText("wide")).toBeVisible()
+  })
+
+  it("stays compact when the row grows by the width of a scrollbar, which an open menu takes away", () => {
+    sizes.content = 308
+    render(<Toolbar />)
+    expect(screen.getByText("compact")).toBeVisible()
+
+    // The wide layout would have needed 1008; a scrollbar is 15 px.
+    resize(1015, 315)
+
+    expect(screen.getByText("compact")).toBeVisible()
   })
 
   it("goes compact when the row shrinks until they no longer fit", () => {
