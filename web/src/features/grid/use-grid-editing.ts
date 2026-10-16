@@ -132,14 +132,14 @@ export function useGridEditing({
 }: Options) {
   // The view that is shown now: undo and redo are taken up once the writes before them are done,
   // and a closure of the render that asked for them would still know the view of then.
-  const shown = useRef(view)
+  const currentView = useRef(view)
   useEffect(() => {
-    shown.current = view
+    currentView.current = view
   }, [view])
 
   /** Selects where a batch was made, unless the view changed: its positions are other cells. */
   function selectPlacement(where: Placement) {
-    if (where.view === shown.current) {
+    if (where.view === currentView.current) {
       selectRange(where.range)
     }
   }
