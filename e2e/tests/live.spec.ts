@@ -75,18 +75,19 @@ async function enter(page: Page, row: number, col: number, value: string) {
 const indicator = (page: Page, label: string) => page.getByRole("img", { name: label })
 
 /**
- * Stands between the page and the live socket: while `blocked`, a socket opens and is closed at
- * once, the way a server that is gone refuses; otherwise it goes through to the server.
+ * Stands between the page and the live socket. Its `mode` says what a socket the page opens
+ * meets: `open` goes through to the server, `blocked` is closed at once, the way a server that is
+ * gone refuses, and `silent` is accepted and never greeted.
  */
 async function guardSocket(page: Page) {
-  const state: { blocked: boolean; current?: WebSocketRoute } = { blocked: false }
+  const state: { mode: "open" | "blocked" | "silent"; current?: WebSocketRoute } = { mode: "open" }
   await page.routeWebSocket(LIVE_SOCKET, (socket) => {
-    if (state.blocked) {
+    if (state.mode === "blocked") {
       void socket.close({ code: 1013, reason: "Try again later." })
-      return
+    } else if (state.mode === "open") {
+      socket.connectToServer()
+      state.current = socket
     }
-    socket.connectToServer()
-    state.current = socket
   })
   return state
 }
@@ -135,14 +136,14 @@ test("a page that lost its connection catches up on what it missed when it is ba
   await expect(indicator(admin.page, "Live updates on")).toBeVisible()
 
   // The connection of the admin goes, and the server turns the next ones away.
-  socket.blocked = true
+  socket.mode = "blocked"
   await socket.current?.close({ code: 4000, reason: "Gone." })
   await expect(indicator(admin.page, "Reconnecting…")).toBeVisible()
   await enter(planner.page, 0, 0, "50")
   await expect(gridCell(admin.page, 0, 0)).toHaveText("42")
 
   // Back at last, the page reads what it missed, and says it is live again.
-  socket.blocked = false
+  socket.mode = "open"
   await expect(indicator(admin.page, "Live updates on")).toBeVisible({ timeout: 40_000 })
   await expect(gridCell(admin.page, 0, 0)).toHaveText("50")
   await expect(gridCell(admin.page, 1, 0)).toHaveText("100")
@@ -151,7 +152,9 @@ test("a page that lost its connection catches up on what it missed when it is ba
   await planner.context.close()
 })
 
-test("the indicator shows whether the page is live, reconnecting or off", async ({ browser }) => {
+test("the indicator shows whether the page is connecting, live, reconnecting or off", async ({
+  browser,
+}) => {
   const { context, page } = await openGrid(browser, ADMIN)
   const socket = await guardSocket(page)
   const hover = (label: string) => async () => {
@@ -166,7 +169,16 @@ test("the indicator shows whether the page is live, reconnecting or off", async 
     reopen: hover("Live updates on"),
   })
 
-  socket.blocked = true
+  // A socket that is never greeted is a first connection that is still being made.
+  socket.mode = "silent"
+  await page.reload()
+  await expect(indicator(page, "Connecting…")).toBeVisible()
+  await screenshot(page, "l1-connecting", {
+    ready: indicator(page, "Connecting…"),
+    reopen: hover("Connecting…"),
+  })
+
+  socket.mode = "blocked"
   await page.reload()
   await expect(indicator(page, "Reconnecting…")).toBeVisible()
   await screenshot(page, "l1-reconnecting", {
