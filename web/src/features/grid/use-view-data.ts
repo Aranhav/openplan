@@ -88,6 +88,14 @@ function shapeOf(origin: UseQueryResult<QueryResult, Error>): ViewShape {
   }
 }
 
+/** What the loaded members of one row dimension say about how it nests. */
+export type Nesting = {
+  /** The greatest depth of a member. */
+  maxDepth: number
+  /** Some member has children, so the dimension's headers have a chevron to line up with. */
+  collapsible: boolean
+}
+
 export type ViewData = ViewShape & {
   /**
    * The view shown is the previous query's, kept until the changed query has loaded the first
@@ -101,11 +109,11 @@ export type ViewData = ViewShape & {
   colHeaders(col: number): Header | undefined
   cell(row: number, col: number): Cell | undefined
   /**
-   * The greatest depth of the members that have loaded, for each row dimension. Time counts its
-   * depth as the height above the periods, so the grid indents its rows by their distance from
-   * this.
+   * How each row dimension nests, as far as its members have loaded. Time counts its depth as
+   * the height above the periods, so the grid indents its rows by their distance from the
+   * greatest depth.
    */
-  rowMaxDepth: readonly number[]
+  rowNesting: readonly Nesting[]
   isFetching: boolean
   /** Loads every block on show again, which is what a retry after an error needs. */
   refetch(): Promise<void>
@@ -132,7 +140,7 @@ type Loaded = {
 
 export type Lookup = Pick<
   ViewData,
-  "lineItems" | "rowHeaders" | "colHeaders" | "cell" | "rowMaxDepth"
+  "lineItems" | "rowHeaders" | "colHeaders" | "cell" | "rowNesting"
 >
 
 // Large enough that no two blocks of a view share a key.
@@ -172,7 +180,7 @@ function assemble(loaded: readonly Loaded[]): { lookup: Lookup; stale: Loaded[] 
   const rowBlocks = new Map<number, QueryResult>()
   const colBlocks = new Map<number, QueryResult>()
   const lineItems = new Map<string, LineItemInfo>()
-  const rowMaxDepth: number[] = []
+  const rowNesting: Nesting[] = []
   const stale: Loaded[] = []
   for (const entry of loaded) {
     const { block, result } = entry
@@ -185,7 +193,9 @@ function assemble(loaded: readonly Loaded[]): { lookup: Lookup; stale: Loaded[] 
     colBlocks.set(block.colBlock, result)
     for (const { members } of result.rows) {
       members.forEach((member, level) => {
-        rowMaxDepth[level] = Math.max(rowMaxDepth[level] ?? 0, member.depth)
+        const nesting = (rowNesting[level] ??= { maxDepth: 0, collapsible: false })
+        nesting.maxDepth = Math.max(nesting.maxDepth, member.depth)
+        nesting.collapsible ||= member.has_children
       })
     }
     for (const lineItem of result.line_items) {
@@ -199,7 +209,7 @@ function assemble(loaded: readonly Loaded[]): { lookup: Lookup; stale: Loaded[] 
     stale,
     lookup: {
       lineItems: [...lineItems.values()],
-      rowMaxDepth,
+      rowNesting,
       rowHeaders: (row) => rowBlocks.get(Math.floor(row / ROW_BLOCK))?.rows[row % ROW_BLOCK],
       colHeaders: (col) => colBlocks.get(Math.floor(col / COL_BLOCK))?.columns[col % COL_BLOCK],
       cell: (row, col) =>
@@ -282,7 +292,7 @@ function combineBlocks(results: UseQueryResult<QueryResult, Error>[]): BlockResu
 
 const EMPTY_LOOKUP: Lookup = {
   lineItems: [],
-  rowMaxDepth: [],
+  rowNesting: [],
   rowHeaders: () => undefined,
   colHeaders: () => undefined,
   cell: () => undefined,

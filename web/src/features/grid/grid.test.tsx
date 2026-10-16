@@ -33,6 +33,7 @@ import type {
   Cell,
   ConditionalFormat,
   GridQuery,
+  Member,
   MemberRef,
   ViewDim,
   ViewQuery,
@@ -411,6 +412,102 @@ describe("hierarchy", () => {
       parseInt(within(grid).getByRole("rowheader", { name }).style.paddingLeft, 10)
     expect(indent("All Regions")).toBe(8)
     expect(indent("United Kingdom")).toBe(8 + 32)
+  })
+
+  describe("where a label starts", () => {
+    // jsdom has no layout, so a label starts after the padding of its header and after the
+    // chevron, or the spacer in its place (24 px), and the gap that follows it (2 px).
+    const labelStart = (grid: HTMLElement, name: string) => {
+      const header = within(grid).getByRole("rowheader", { name })
+      const room = header.querySelector("button, span[aria-hidden]") ? 24 + 2 : 0
+      return parseInt(header.style.paddingLeft, 10) + room
+    }
+
+    function rowsOf(rows: Member[], rowDim: ViewDim) {
+      serveViewQuery(
+        salesView({
+          rowDims: [rowDim],
+          columnDims: [lineItemsDim],
+          totalRows: rows.length,
+          totalColumns: 1,
+          lineItems: [lineItem("li-0", "Revenue")],
+          rowHeader: (row) => header(rows[row]),
+          columnHeader: () => header(member("li-0", "Revenue")),
+          cell: (row) => numberCell(row),
+        }),
+      )
+    }
+
+    it("steps each level of a list in from the label of its parent, and lines a leaf up with its siblings", async () => {
+      const emea = member("emea", "EMEA", { depth: 1, has_children: true })
+      const apac = member("apac", "Asia Pacific", { depth: 1 })
+      rowsOf([top, emea, uk, apac], regionsList)
+      renderGrid({
+        query: { module: MODULE_ID, rows: [regionsList], columns: [lineItemsDim] },
+        onToggleCollapse: vi.fn(),
+      })
+      const grid = await loadedGrid()
+
+      expect(labelStart(grid, "EMEA") - labelStart(grid, "All Regions")).toBe(16)
+      expect(labelStart(grid, "United Kingdom") - labelStart(grid, "EMEA")).toBe(16)
+      expect(labelStart(grid, "Asia Pacific")).toBe(labelStart(grid, "EMEA"))
+    })
+
+    it("steps each level of time in from the label of its total", async () => {
+      const quarter = member("Q1 FY26", "Q1 FY26", {
+        depth: 1,
+        is_summary: true,
+        has_children: true,
+      })
+      const total = member("Total", "Total", { depth: 2, is_summary: true, has_children: true })
+      rowsOf([jan, feb, quarter, total], timeDim)
+      renderGrid({
+        query: { module: MODULE_ID, rows: [timeDim], columns: [lineItemsDim] },
+        onToggleCollapse: vi.fn(),
+      })
+      const grid = await loadedGrid()
+
+      expect(labelStart(grid, "Q1 FY26") - labelStart(grid, "Total")).toBe(16)
+      expect(labelStart(grid, "Jan 26") - labelStart(grid, "Q1 FY26")).toBe(16)
+      expect(labelStart(grid, "Feb 26")).toBe(labelStart(grid, "Jan 26"))
+    })
+
+    it("fills the place of a chevron on a leaf with a spacer that assistive technology skips", async () => {
+      const emea = member("emea", "EMEA", { depth: 1, has_children: true })
+      rowsOf([top, emea, uk], regionsList)
+      renderGrid({
+        query: { module: MODULE_ID, rows: [regionsList], columns: [lineItemsDim] },
+        onToggleCollapse: vi.fn(),
+      })
+      const grid = await loadedGrid()
+
+      const leaf = within(grid).getByRole("rowheader", { name: "United Kingdom" })
+      expect(within(leaf).queryByRole("button")).not.toBeInTheDocument()
+      expect(leaf.querySelector("span[aria-hidden].size-6")).toBeInTheDocument()
+    })
+
+    it("leaves the room out when the grid cannot collapse, and a child still steps in from its parent", async () => {
+      const emea = member("emea", "EMEA", { depth: 1, has_children: true })
+      rowsOf([top, emea, uk], regionsList)
+      renderGrid({ query: { module: MODULE_ID, rows: [regionsList], columns: [lineItemsDim] } })
+      const grid = await loadedGrid()
+
+      expect(labelStart(grid, "All Regions")).toBe(8)
+      expect(labelStart(grid, "EMEA") - labelStart(grid, "All Regions")).toBe(16)
+      expect(labelStart(grid, "United Kingdom") - labelStart(grid, "EMEA")).toBe(16)
+    })
+
+    it("starts the labels of a dimension with nothing to collapse at the edge", async () => {
+      rowsOf([member("a", "Alpha"), member("b", "Beta")], regionsList)
+      renderGrid({
+        query: { module: MODULE_ID, rows: [regionsList], columns: [lineItemsDim] },
+        onToggleCollapse: vi.fn(),
+      })
+      const grid = await loadedGrid()
+
+      expect(labelStart(grid, "Alpha")).toBe(8)
+      expect(labelStart(grid, "Beta")).toBe(8)
+    })
   })
 
   it("draws headers on the page background, summaries on the muted one", async () => {

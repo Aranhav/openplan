@@ -12,6 +12,7 @@ import {
   columnSpans,
   startsRowGroup,
 } from "./grid-layout"
+import type { Nesting } from "./use-view-data"
 import type { Header, LineItemInfo, Member, ViewDim } from "./view-types"
 
 // Headers sit on the page background, apart from the summary ones, which share the surface of the
@@ -36,12 +37,14 @@ function repeatedColor(member: Member, repeated: boolean): string {
 const stopMenu = (event: MouseEvent) => event.stopPropagation()
 
 /**
- * How far a member is indented: a list by its depth, how far below the top it is. Time counts
- * its depth as the height above the periods, and lists its summaries after their periods, so a
- * time row is indented by how far it is below the top, which is the greatest depth.
+ * How many steps a member is indented: a list by its depth, how far below the top it is. Time
+ * counts its depth as the height above the periods, and lists its summaries after their periods,
+ * so a time row is indented by how far it is below the top, which is the greatest depth.
  */
-function indentOf(dim: ViewDim, member: Member, maxDepth: number | undefined): number {
-  return dim.kind === "time" ? Math.max((maxDepth ?? member.depth) - member.depth, 0) : member.depth
+function indentOf(dim: ViewDim, member: Member, nesting: Nesting | undefined): number {
+  return dim.kind === "time"
+    ? Math.max((nesting?.maxDepth ?? member.depth) - member.depth, 0)
+    : member.depth
 }
 
 export type HeaderCallbacks = {
@@ -179,15 +182,29 @@ type MemberLabelProps = {
   onToggleCollapse?: (dim: ViewDim, member: Member) => void
   /** A repeat of a label shown above: the chevron is left for the first of them. */
   repeated?: boolean
+  /**
+   * The chevron's room is kept where the member has none, so that its label starts where the
+   * labels of its siblings that have one start, and each level steps in from its parent's label.
+   */
+  keepChevronRoom?: boolean
 }
 
 /** A member's name with a chevron when it has children, and a mark when its line item is in error. */
-function MemberLabel({ member, dim, lineItems, onToggleCollapse, repeated }: MemberLabelProps) {
+function MemberLabel({
+  member,
+  dim,
+  lineItems,
+  onToggleCollapse,
+  repeated,
+  keepChevronRoom,
+}: MemberLabelProps) {
   const error = errorOf(dim, member, lineItems)
   const toggle = member.has_children && dim && onToggleCollapse
   return (
     <>
-      {toggle && repeated ? <span aria-hidden className="size-6 shrink-0" /> : null}
+      {keepChevronRoom && !(toggle && !repeated) ? (
+        <span aria-hidden className="size-6 shrink-0" />
+      ) : null}
       {toggle && !repeated ? (
         <Button
           type="button"
@@ -219,8 +236,8 @@ type RowHeadersProps = {
   rowDims: readonly ViewDim[]
   /** The width of each row dimension's column. */
   widths: readonly number[]
-  /** The greatest depth of the loaded members of each row dimension, which time rows hang from. */
-  maxDepths: readonly number[]
+  /** How each row dimension nests, which its indent and its chevron room follow. */
+  nesting: readonly (Nesting | undefined)[]
   lineItems: ReadonlyMap<string, LineItemInfo>
   onToggleCollapse?: (dim: ViewDim, member: Member) => void
 }
@@ -232,7 +249,7 @@ export const RowHeaders = memo(function RowHeaders({
   previous,
   rowDims,
   widths,
-  maxDepths,
+  nesting,
   lineItems,
   onToggleCollapse,
 }: RowHeadersProps) {
@@ -259,6 +276,8 @@ export const RowHeaders = memo(function RowHeaders({
         // Outer dimensions repeat on every row; only the first row of a group stands out.
         const repeated = level < rowDims.length - 1 && !startsRowGroup(previous, header, level)
         const error = errorOf(dim, member, lineItems)
+        // A dimension with something to collapse keeps the chevron's room on every row of it.
+        const keepChevronRoom = Boolean(onToggleCollapse && nesting[level]?.collapsible)
         return (
           <div
             key={level}
@@ -270,7 +289,7 @@ export const RowHeaders = memo(function RowHeaders({
             aria-expanded={member.has_children ? !member.collapsed : undefined}
             aria-describedby={error ? errorNoteId(gridId, member.key) : undefined}
             className={`${CELL} gap-0.5 pr-2 ${headerSurface(member)} ${repeatedColor(member, repeated)}`}
-            style={{ width, paddingLeft: 8 + indentOf(dim, member, maxDepths[level]) * INDENT }}
+            style={{ width, paddingLeft: 8 + indentOf(dim, member, nesting[level]) * INDENT }}
           >
             <MemberLabel
               member={member}
@@ -278,6 +297,7 @@ export const RowHeaders = memo(function RowHeaders({
               lineItems={lineItems}
               onToggleCollapse={onToggleCollapse}
               repeated={repeated}
+              keepChevronRoom={keepChevronRoom}
             />
           </div>
         )

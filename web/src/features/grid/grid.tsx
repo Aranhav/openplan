@@ -44,7 +44,7 @@ import { sameSelection, useGridSelection } from "./use-grid-selection"
 import { useGridEditing } from "./use-grid-editing"
 import { useHoveredNote } from "./use-hovered-note"
 import { useReveal } from "./use-reveal"
-import { type Lookup, useViewData } from "./use-view-data"
+import { type Lookup, type Nesting, useViewData } from "./use-view-data"
 import type {
   ConditionalFormat,
   GridQuery,
@@ -56,7 +56,6 @@ import type {
 
 const NO_RULES: readonly ConditionalFormat[] = []
 const NO_WIDTHS: Readonly<Record<string, number>> = {}
-const NO_DEPTHS: readonly number[] = []
 const INITIAL_VISIBLE: CellRange = { rowStart: 0, rowEnd: 0, colStart: 0, colEnd: 0 }
 const ROW_OVERSCAN = 6
 const COLUMN_OVERSCAN = 3
@@ -212,13 +211,11 @@ export function Grid({
     () => new Map<string, LineItemInfo>(data.lineItems.map((lineItem) => [lineItem.id, lineItem])),
     [data.lineItems],
   )
-  // The depth that time rows hang from. The array is the same until a depth changes, so that the
-  // row headers are not drawn again for every block that arrives.
-  const maxDepthKey = data.rowMaxDepth.join(",")
-  const rowMaxDepth = useMemo(
-    () => (maxDepthKey === "" ? NO_DEPTHS : maxDepthKey.split(",").map(Number)),
-    [maxDepthKey],
-  )
+  // How the row dimensions nest, which the indent and the chevron room of their headers follow.
+  // The array is the same until that changes, so that the row headers are not drawn again for
+  // every block that arrives.
+  const nestingKey = JSON.stringify(data.rowNesting)
+  const rowNesting = useMemo(() => JSON.parse(nestingKey) as Nesting[], [nestingKey])
   const lineItemSourceOfCells = useMemo(
     () => lineItemSource(rowDims, columnDims, data.pages),
     [rowDims, columnDims, data.pages],
@@ -566,7 +563,7 @@ export function Grid({
                               previous={rowHeaders(row - 1)}
                               rowDims={rowDims}
                               widths={rowHeaderWidths}
-                              maxDepths={rowMaxDepth}
+                              nesting={rowNesting}
                               lineItems={lineItems}
                               onToggleCollapse={toggleMember}
                             />
