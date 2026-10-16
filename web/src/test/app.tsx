@@ -63,8 +63,9 @@ export interface Session {
 
 /**
  * Answers the setup-status and me endpoints from `state`, which a test can change mid-flight.
- * Every workspace is empty of models until a test calls `serveModels`, and every model empty of
- * structure until it calls `serveStructure`.
+ * Every workspace is empty of models until a test calls `serveModels`, every model empty of
+ * structure until it calls `serveStructure`, and every module empty of saved views and of
+ * dimension members until it calls `serveViews` or `serveMembers` (`test/views.ts`).
  */
 export function mockSession(initial: Partial<Session> = {}): Session {
   const state: Session = { needsSetup: false, signedIn: true, me, meRequests: 0, ...initial }
@@ -78,6 +79,8 @@ export function mockSession(initial: Partial<Session> = {}): Session {
     }),
     http.get("/api/v1/workspaces/:id/models", () => HttpResponse.json([])),
     http.get("/api/v1/models/:id/structure", () => HttpResponse.json(makeStructure())),
+    http.get("/api/v1/models/:id/modules/:moduleId/views", () => HttpResponse.json([])),
+    http.post("/api/v1/models/:id/members", () => HttpResponse.json({ members: [] })),
   )
   return state
 }

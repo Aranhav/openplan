@@ -15,6 +15,29 @@ export const queryKeys = {
     listId,
     "items",
   ],
+  /**
+   * The saved views of a module. They sit under the structure's key, as the members below do: a
+   * structure change prunes what a view names and changes who has children, so both are read again.
+   */
+  views: (modelId: string, moduleId: string) => [
+    "models",
+    modelId,
+    "structure",
+    "modules",
+    moduleId,
+    "views",
+  ],
+  /** The members of one dimension of a module, as a view lists them (with the totals or without). */
+  dimensionMembers: (modelId: string, moduleId: string, dim: unknown, showSummaries: boolean) => [
+    "models",
+    modelId,
+    "structure",
+    "modules",
+    moduleId,
+    "members",
+    dim,
+    showSummaries,
+  ],
   /** What the formula editor offers after a prefix. It sits under the structure's key, so a change to the structure makes it stale. */
   formulaCompletions: (modelId: string, lineItemId: string, prefix: string) => [
     "models",

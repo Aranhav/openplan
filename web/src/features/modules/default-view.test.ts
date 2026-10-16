@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest"
 import { makeModule, productsId, regionsId } from "@/test/structure"
-import { defaultPivot } from "./default-view"
+import { defaultView } from "./default-view"
 
 const lineItems = { kind: "line_items" }
 
-describe("defaultPivot", () => {
+describe("defaultView", () => {
   it("puts the line items on the rows and Time on the columns", () => {
     const module = makeModule({
       axes: [
@@ -13,8 +13,7 @@ describe("defaultPivot", () => {
       ],
     })
 
-    expect(defaultPivot(module)).toEqual({
-      module: module.id,
+    expect(defaultView(module)).toEqual({
       rows: [lineItems],
       columns: [{ kind: "time" }],
       pages: [{ dim: { kind: "list", list: regionsId }, key: null }],
@@ -31,7 +30,7 @@ describe("defaultPivot", () => {
       ],
     })
 
-    expect(defaultPivot(module).pages).toEqual([
+    expect(defaultView(module).pages).toEqual([
       { dim: { kind: "list", list: regionsId }, key: null },
       { dim: { kind: "list", list: productsId }, key: null },
       { dim: { kind: "versions" }, key: null },
@@ -46,14 +45,14 @@ describe("defaultPivot", () => {
       ],
     })
 
-    expect(defaultPivot(module)).toMatchObject({
+    expect(defaultView(module)).toMatchObject({
       columns: [{ kind: "subset", subset: "s1" }],
       pages: [{ dim: { kind: "list", list: productsId }, key: null }],
     })
   })
 
   it("has no column or page for a module without dimensions", () => {
-    expect(defaultPivot(makeModule({ axes: [] }))).toMatchObject({
+    expect(defaultView(makeModule({ axes: [] }))).toMatchObject({
       rows: [lineItems],
       columns: [],
       pages: [],

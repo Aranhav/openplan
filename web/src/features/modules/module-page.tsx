@@ -34,6 +34,9 @@ interface ModulePageProps {
   /** The selected line item of the Blueprint, from the address. */
   selectedLineItemId?: string
   onSelectLineItem: (id: string | undefined) => void
+  /** The saved view of the Grid tab, from the address; none is the module's default view. */
+  viewId?: string
+  onViewChange: (viewId: string | undefined, options?: { replace?: boolean }) => void
 }
 
 export function ModulePage({ modelId, moduleId, ...rest }: ModulePageProps) {
@@ -109,6 +112,8 @@ function ModuleScreen({
   onTabChange,
   selectedLineItemId,
   onSelectLineItem,
+  viewId,
+  onViewChange,
 }: ModuleScreenProps) {
   const navigate = useNavigate()
   const { canEdit, locked } = useStructureAccess(modelId)
@@ -188,7 +193,10 @@ function ModuleScreen({
             structure={structure}
             readOnly={workspace === undefined || !canEditCells(workspace.role)}
             canEditFormulas={canEdit}
+            canSaveViews={canEdit}
             locked={locked}
+            viewId={viewId}
+            onViewChange={onViewChange}
             onOpenBlueprint={() => onTabChange("blueprint")}
           />
         </TabsContent>

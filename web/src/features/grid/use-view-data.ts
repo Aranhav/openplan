@@ -65,6 +65,14 @@ function useOriginBlock(modelId: string, query: GridQuery) {
   return useQuery(blockOptions(modelId, query, ORIGIN))
 }
 
+/**
+ * The member each page of a pivot shows, which the first block of the view says. It is the read
+ * the grid makes of that block, so asking for it adds no request.
+ */
+export function useViewPages(modelId: string, query: GridQuery): PageMember[] | undefined {
+  return useOriginBlock(modelId, query).data?.pages
+}
+
 /** What the first block says about a view as a whole. */
 type ViewShape = {
   /** The size and dimensions are known. */

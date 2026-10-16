@@ -23,6 +23,12 @@ export type ViewQuery = Schemas["ViewQueryDto"]
 /** A pivot without the slice of it to fetch, which the grid chooses as the user scrolls. */
 export type GridQuery = Omit<ViewQuery, "window">
 
+/** What a saved view holds: a pivot, its filters, hidden and collapsed members, formats and column widths. */
+export type ViewDefinition = Schemas["ViewDefinition"]
+
+/** A saved view of a module, as the server returns it. */
+export type SavedView = Schemas["ViewDto"]
+
 export type Member = Schemas["ViewMemberDto"]
 
 /** The members of one row or column, one per dimension in dimension order. */
