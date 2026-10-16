@@ -15,3 +15,15 @@ describe("queryKeys.query", () => {
     expect(queryKeys.query("m1", "pivot", block)).toEqual(["models", "m1", "query", "pivot", block])
   })
 })
+
+describe("queryKeys.structure", () => {
+  it("sits under the model's key and apart from the grid queries", () => {
+    expect(queryKeys.structure("m1")).toEqual(["models", "m1", "structure"])
+    expect(queryKeys.structure("m1").slice(0, queryKeys.model("m1").length)).toEqual(
+      queryKeys.model("m1"),
+    )
+    expect(queryKeys.structure("m1").slice(0, queryKeys.query("m1").length)).not.toEqual(
+      queryKeys.query("m1"),
+    )
+  })
+})
