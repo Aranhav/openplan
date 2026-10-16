@@ -155,6 +155,16 @@ for (const width of [375, 800, 1280]) {
       if (path.startsWith("/m/")) {
         expect.soft(await breadcrumbProblems(page), `the breadcrumb of ${path}`).toEqual([])
       }
+      if (path === `/m/${modelId}/modules`) {
+        const cut = await page
+          .locator("table td:first-child")
+          .evaluateAll((cells) =>
+            cells
+              .filter((cell) => cell.scrollWidth > cell.clientWidth)
+              .map((cell) => cell.textContent),
+          )
+        expect.soft(cut, `module names cut short on ${path}`).toEqual([])
+      }
     }
   })
 }
