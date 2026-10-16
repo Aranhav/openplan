@@ -56,6 +56,11 @@ interface ScreenshotOptions {
   ready: Locator
   /** Brings back what a reload closes (a palette, a dialog) before the picture is taken. */
   reopen?: () => Promise<void>
+  /**
+   * Whether the whole page is taken, not what the window shows (the default). A whole-page picture
+   * resizes the window while it is taken, which closes a menu that is laid out by the window's width.
+   */
+  fullPage?: boolean
 }
 
 /**
@@ -63,7 +68,11 @@ interface ScreenshotOptions {
  * it and the page is reloaded, so this also checks that the choice survives a load. The page is
  * left in the light theme.
  */
-export async function screenshot(page: Page, name: string, { ready, reopen }: ScreenshotOptions) {
+export async function screenshot(
+  page: Page,
+  name: string,
+  { ready, reopen, fullPage = true }: ScreenshotOptions,
+) {
   for (const theme of ["dark", "light"] as const) {
     await page.evaluate((value) => localStorage.setItem("openplan-theme", value), theme)
     await page.reload()
@@ -77,7 +86,7 @@ export async function screenshot(page: Page, name: string, { ready, reopen }: Sc
     }
     await page.screenshot({
       path: `${SCREENSHOT_DIR}${name}-${theme}.png`,
-      fullPage: true,
+      fullPage,
       animations: "disabled",
     })
   }
