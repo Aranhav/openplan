@@ -5,6 +5,8 @@ export const HEADER_ROW_HEIGHT = 32
 export const DEFAULT_COLUMN_WIDTH = 120
 export const MIN_COLUMN_WIDTH = 48
 export const MAX_COLUMN_WIDTH = 640
+/** The size in pixels of the name written in the corner (Tailwind's `text-xs`), which is smaller than a cell's text. */
+export const CORNER_FONT_SIZE = 12
 /** How far a member is indented for each level of depth in the hierarchy. */
 export const INDENT = 16
 

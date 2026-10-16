@@ -29,6 +29,7 @@ import { CellEditor } from "./editors/cell-editor"
 import { GridCell } from "./grid-cell"
 import { ColumnHeaders, type HeaderCallbacks, RowHeaders } from "./grid-headers"
 import {
+  CORNER_FONT_SIZE,
   DEFAULT_COLUMN_WIDTH,
   HEADER_ROW_HEIGHT,
   ROW_HEIGHT,
@@ -168,7 +169,7 @@ export function Grid({
 
   // What is known up front describes the rows of the query, which a placeholder is not showing.
   const knownRows = data.isPlaceholder ? undefined : rowInfo
-  const cornerWidth = corner ? Math.ceil(measureTextWidth(corner, 500)) + CORNER_PADDING : 0
+  const cornerWidth = corner ? Math.ceil(measureTextWidth(corner, 500, CORNER_FONT_SIZE)) + CORNER_PADDING : 0
   const { rowHeaderWidths, rowHeaderWidth, colWidths, colStarts, callbacks } = useColumnWidths({
     rowDimCount: rowDims.length,
     rowDimInfo: knownRows,

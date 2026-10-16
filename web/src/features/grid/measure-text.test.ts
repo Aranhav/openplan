@@ -31,6 +31,20 @@ describe("createTextMeasurer", () => {
     ])
   })
 
+  it("measures a text at the size it is drawn in, and keeps the sizes apart", () => {
+    const { context, measured } = fakeContext()
+    const measure = createTextMeasurer(
+      () => context,
+      () => "sans-serif",
+    )
+
+    measure("Regions", 500, 12)
+    measure("Regions", 500)
+    measure("Regions", 500, 12)
+
+    expect(measured).toEqual(["500 12px sans-serif|Regions", "500 14px sans-serif|Regions"])
+  })
+
   it("asks the canvas once for a text", () => {
     const { context } = fakeContext()
     const measure = createTextMeasurer(

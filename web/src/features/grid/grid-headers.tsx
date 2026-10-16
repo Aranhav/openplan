@@ -358,6 +358,9 @@ export function ColumnHeaders({
         >
           <div
             data-corner
+            // The name in full, for when it is cut short; the label itself lets pointers through
+            // to the resize handles under it, which would never show a title of its own.
+            title={level === lastLevel ? corner : undefined}
             className="sticky left-0 z-10 flex h-full bg-background"
             style={{ width: rowHeaderWidth }}
             onContextMenu={stopMenu}
@@ -383,7 +386,6 @@ export function ColumnHeaders({
             {corner && level === lastLevel && (
               <span
                 data-corner-label
-                title={corner}
                 className="pointer-events-none absolute inset-y-0 left-0 flex items-center px-2 text-xs font-medium text-muted-foreground"
                 style={{ width: rowHeaderWidth }}
               >

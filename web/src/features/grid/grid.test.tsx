@@ -572,15 +572,29 @@ describe("hierarchy", () => {
   })
 
   describe("the corner", () => {
-    it("names the row and column dimensions, truncated, with the whole name as its title", async () => {
+    it("names the row and column dimensions, truncated, with the whole name as the title of the corner", async () => {
       serveViewQuery()
       renderGrid({ corner: "Products / Versions, Line items" })
       const grid = await loadedGrid()
 
       const label = grid.querySelector<HTMLElement>("[data-corner-label]")
       expect(label).toHaveTextContent("Products / Versions, Line items")
-      expect(label).toHaveAttribute("title", "Products / Versions, Line items")
       expect(label?.firstElementChild).toHaveClass("truncate")
+      // On the box that receives the pointer: the label lets it through, to the resize handles.
+      expect(label).toHaveClass("pointer-events-none")
+      expect(label).not.toHaveAttribute("title")
+      expect(label?.closest("[data-corner]")).toHaveAttribute(
+        "title",
+        "Products / Versions, Line items",
+      )
+    })
+
+    it("is measured at the size it is drawn in, which is smaller than a cell's text", async () => {
+      serveViewQuery()
+      renderGrid({ corner: "Products / Line items" })
+      await loadedGrid()
+
+      expect(measureTextWidth).toHaveBeenCalledWith("Products / Line items", 500, 12)
     })
 
     it("makes the row headers wide enough for the name, when they are sized from their labels", async () => {
