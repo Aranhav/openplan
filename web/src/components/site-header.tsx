@@ -215,7 +215,7 @@ interface TrailCrumbsProps {
 
 /**
  * The crumbs of a model's screen. The page is the one to keep in view: the crumbs above it give way
- * first, each down to a stub, and below `lg`, where the sidebar and the search take half the
+ * first, each down to a stub, and below `xl`, where the sidebar and the search take half the
  * header, they fold into a menu.
  */
 function TrailCrumbs({ trail, page, pageTitle }: TrailCrumbsProps) {
@@ -225,7 +225,7 @@ function TrailCrumbs({ trail, page, pageTitle }: TrailCrumbsProps) {
       <BreadcrumbList className="flex-nowrap">
         {linked.length > 0 && (
           <>
-            <BreadcrumbItem className="lg:hidden">
+            <BreadcrumbItem className="xl:hidden">
               <DropdownMenu>
                 <DropdownMenuTrigger className="flex items-center rounded-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50">
                   <BreadcrumbEllipsis className="size-7" />
@@ -240,12 +240,12 @@ function TrailCrumbs({ trail, page, pageTitle }: TrailCrumbsProps) {
                 </DropdownMenuContent>
               </DropdownMenu>
             </BreadcrumbItem>
-            <BreadcrumbSeparator className="lg:hidden" />
+            <BreadcrumbSeparator className="xl:hidden" />
           </>
         )}
         {trail.map(({ key, link }) => (
           <Fragment key={key}>
-            <BreadcrumbItem className="hidden max-w-64 min-w-10 shrink-[3] lg:inline-flex">
+            <BreadcrumbItem className="hidden max-w-64 min-w-10 shrink-[3] xl:inline-flex">
               {link ? (
                 <BreadcrumbLink asChild className="truncate">
                   {link}
@@ -254,7 +254,7 @@ function TrailCrumbs({ trail, page, pageTitle }: TrailCrumbsProps) {
                 <Skeleton className="h-4 w-24" />
               )}
             </BreadcrumbItem>
-            <BreadcrumbSeparator className="hidden lg:inline-flex" />
+            <BreadcrumbSeparator className="hidden xl:inline-flex" />
           </Fragment>
         ))}
         <BreadcrumbItem className="min-w-0">

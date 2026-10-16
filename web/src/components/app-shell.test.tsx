@@ -245,10 +245,10 @@ describe("the header", () => {
     const crumbs = within(await screen.findByRole("navigation", { name: "breadcrumb" }))
     await crumbs.findByRole("link", { name: "Revenue plan" })
     const menu = crumbs.getByRole("button", { name: "Show the path to this page" })
-    expect(menu.closest("li")?.className).toMatch(/\blg:hidden\b/)
+    expect(menu.closest("li")?.className).toMatch(/\bxl:hidden\b/)
     for (const name of ["Acme Corp", "Revenue plan", "Modules"]) {
       const crumb = crumbs.getByRole("link", { name })
-      expect(crumb.closest("li")?.className).toMatch(/\bhidden\b.*\blg:inline-flex\b/)
+      expect(crumb.closest("li")?.className).toMatch(/\bhidden\b.*\bxl:inline-flex\b/)
       expect(crumb.className).toMatch(/\btruncate\b/)
     }
     expect(crumbs.getByText("Revenue", { selector: "[aria-current=page]" }).className).toMatch(
@@ -256,8 +256,8 @@ describe("the header", () => {
     )
     const separators = document.querySelectorAll("[data-slot=breadcrumb-separator]")
     expect([...separators].map((separator) => separator.className)).toEqual([
-      expect.stringMatching(/\blg:hidden\b/),
-      ...Array(3).fill(expect.stringMatching(/\bhidden\b.*\blg:inline-flex\b/)),
+      expect.stringMatching(/\bxl:hidden\b/),
+      ...Array(3).fill(expect.stringMatching(/\bhidden\b.*\bxl:inline-flex\b/)),
     ])
   })
 
