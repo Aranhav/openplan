@@ -17,9 +17,10 @@ import { useListItems } from "./api"
 import { blockedByChildren, blockedMessage } from "./hierarchy"
 import { ItemsTable } from "./items-table"
 import { SubsetsSheet } from "./subsets-sheet"
+import { withIds } from "./selection"
 import { buildRows } from "./tree"
 import type { ItemDto, ListDto } from "./types"
-import { countOf } from "./words"
+import { countOf } from "@/lib/format"
 
 interface ItemsTabProps {
   modelId: string
@@ -142,39 +143,15 @@ function LoadedItems({
   )
 
   function toggle(id: string, checked: boolean) {
-    setChosen((previous) => {
-      const next = new Set(previous)
-      if (checked) {
-        next.add(id)
-      } else {
-        next.delete(id)
-      }
-      return next
-    })
+    setChosen((previous) => withIds(previous, [id], checked))
   }
 
   function toggleAll(checked: boolean) {
-    setChosen((previous) => {
-      const next = new Set(previous)
-      for (const id of shownIds) {
-        if (checked) {
-          next.add(id)
-        } else {
-          next.delete(id)
-        }
-      }
-      return next
-    })
+    setChosen((previous) => withIds(previous, shownIds, checked))
   }
 
   function toggleGroup(parentId: string) {
-    setCollapsed((previous) => {
-      const next = new Set(previous)
-      if (!next.delete(parentId)) {
-        next.add(parentId)
-      }
-      return next
-    })
+    setCollapsed((previous) => withIds(previous, [parentId], !previous.has(parentId)))
   }
 
   // The button to go back to may be a new one, in the message of an empty list, so focus waits
@@ -237,7 +214,7 @@ function LoadedItems({
               ? "Add the first item, or paste a whole list of them at once."
               : "Nobody has added items to this list yet."
           }
-          action={addControls}
+          action={<div className="flex flex-wrap justify-center gap-2">{addControls}</div>}
           headingLevel={2}
         />
       ) : (

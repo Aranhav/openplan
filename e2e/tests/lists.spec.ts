@@ -175,7 +175,7 @@ test("a builder makes lists, adds items one by one and in bulk, edits them in pl
   await input.fill("Deutschland")
   await input.press("Enter")
   await expect(table.getByRole("button", { name: "Rename Deutschland" })).toBeFocused()
-  await table.getByRole("button", { name: "Edit the code of Deutschland" }).click()
+  await table.getByRole("button", { name: "Add code for Deutschland" }).click()
   await table.getByRole("textbox", { name: "Code of Deutschland" }).fill("DE")
   await page.keyboard.press("Enter")
   await expect(table.getByRole("button", { name: "Edit the code of Deutschland" })).toHaveText("DE")

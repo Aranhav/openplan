@@ -14,7 +14,7 @@ import { withIds } from "./selection"
 import { matchesQuery } from "./tree"
 import type { ItemDto, SubsetDto } from "./types"
 import { VIRTUALIZE_ABOVE } from "./virtual"
-import { countOf } from "./words"
+import { countOf } from "@/lib/format"
 
 const ROW_HEIGHT = 36
 const OVERSCAN = 10

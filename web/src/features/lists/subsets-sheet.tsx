@@ -44,7 +44,7 @@ import { structureNameSchema } from "@/lib/validation"
 import { sameIds } from "./selection"
 import { SubsetMembers } from "./subset-members"
 import type { ItemDto, ListDto, SubsetDto } from "./types"
-import { countOf } from "./words"
+import { countOf } from "@/lib/format"
 
 interface SubsetsSheetProps {
   modelId: string

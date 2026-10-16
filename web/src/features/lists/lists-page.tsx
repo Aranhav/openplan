@@ -172,12 +172,10 @@ function ListRow({ modelId, list, parent }: { modelId: string; list: ListDto; pa
         {list.top_level_name ?? <span className="text-muted-foreground">None</span>}
       </TableCell>
       <TableCell className={`${WIDE_CELL} pr-4`}>
-        {hasBadges ? (
+        {hasBadges && (
           <div className="flex flex-wrap gap-1">
             <ListBadges list={list} />
           </div>
-        ) : (
-          <span className="text-muted-foreground">None</span>
         )}
       </TableCell>
     </TableRow>

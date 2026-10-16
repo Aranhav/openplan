@@ -1,5 +1,5 @@
 import type { StructureDto } from "@/features/structure/types"
-import { countOf } from "./words"
+import { countOf } from "@/lib/format"
 
 export interface Blocker {
   /** The item that still has child items. */

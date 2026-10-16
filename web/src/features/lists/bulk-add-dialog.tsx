@@ -29,7 +29,7 @@ import { ApiError, errorDetail } from "@/lib/api/client"
 import { closeUnlessBusy } from "@/lib/close-unless-busy"
 import { type BulkLineError, countLines, parseBulkAdd } from "./bulk-add"
 import type { ItemDto, ListDto } from "./types"
-import { countOf } from "./words"
+import { countOf } from "@/lib/format"
 
 const schema = z.object({
   lines: z.string().refine((text) => text.trim() !== "", "Enter at least one item."),

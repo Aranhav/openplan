@@ -19,7 +19,7 @@ import { ListSettingsSheet } from "./list-settings-sheet"
 import { PropertiesTab } from "./properties-tab"
 import type { ListDto } from "./types"
 
-export type ListTab = "items" | "properties"
+type ListTab = "items" | "properties"
 
 interface ListPageProps {
   modelId: string

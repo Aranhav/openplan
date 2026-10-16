@@ -25,7 +25,7 @@ import { ParentPicker } from "./parent-picker"
 import type { TreeRow } from "./tree"
 import type { ItemDto, ListDto } from "./types"
 import { VIRTUALIZE_ABOVE } from "./virtual"
-import { countOf } from "./words"
+import { countOf } from "@/lib/format"
 
 /** A row's height: 40px that every cell is held to, and 1px of border. The windowing counts on it. */
 const ROW_HEIGHT = 41
@@ -125,7 +125,7 @@ export function ItemsTable({
       <Table
         aria-label={`Items of ${list.name}`}
         aria-rowcount={windowed ? rows.length + 1 : undefined}
-        className="min-w-[34rem]"
+        className="min-w-[32rem]"
       >
         <TableHeader className="sticky top-0 z-10 bg-background shadow-[0_1px_0_0_var(--border)]">
           <TableRow>
@@ -140,11 +140,11 @@ export function ItemsTable({
                 />
               </TableHead>
             )}
-            <TableHead className={cn("w-full", hasParent ? "pl-8" : !editable && "pl-4")}>
+            <TableHead className={cn("w-full min-w-48", hasParent ? "pl-8" : !editable && "pl-4")}>
               Name
             </TableHead>
-            <TableHead className={hasParent ? "min-w-40" : "min-w-72 pr-4"}>Code</TableHead>
-            {hasParent && <TableHead className="min-w-56 pr-4">Parent</TableHead>}
+            <TableHead className={hasParent ? "min-w-36" : "min-w-72 pr-4"}>Code</TableHead>
+            {hasParent && <TableHead className="min-w-52 pr-4">Parent</TableHead>}
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -203,7 +203,7 @@ export function ItemsTable({
                 )}
                 <TableCell
                   className={cn(
-                    "h-10 w-full max-w-0 py-1",
+                    "h-10 w-full max-w-0 min-w-48 py-1",
                     hasParent ? "pl-8" : !editable && "pl-4",
                   )}
                 >
@@ -228,7 +228,11 @@ export function ItemsTable({
                   {editable ? (
                     <InlineText
                       value={item.code ?? ""}
-                      label={`Edit the code of ${item.name}`}
+                      label={
+                        item.code
+                          ? `Edit the code of ${item.name}, ${item.code}`
+                          : `Add code for ${item.name}`
+                      }
                       inputLabel={`Code of ${item.name}`}
                       schema={codeSchema}
                       placeholder="Add code"

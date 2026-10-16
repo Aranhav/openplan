@@ -5,7 +5,7 @@ import { ErrorState } from "@/components/error-state"
 import { CommandGroup, CommandItem } from "@/components/ui/command"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useModelNotFound } from "@/features/models/api"
-import { countOf } from "@/features/lists/words"
+import { countOf } from "@/lib/format"
 import { useStructure } from "@/features/structure/api"
 import { BUILD_GROUPS } from "./build-nav"
 

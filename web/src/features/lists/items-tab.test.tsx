@@ -111,7 +111,7 @@ describe("the items of a list without a parent list", () => {
       "Code",
     ])
     expect(table.getByRole("button", { name: "Rename EMEA" })).toBeVisible()
-    expect(table.getByRole("button", { name: "Edit the code of EMEA" })).toHaveTextContent("R1")
+    expect(table.getByRole("button", { name: "Edit the code of EMEA, R1" })).toHaveTextContent("R1")
     expect(screen.getByText("2 items · Top level: All regions")).toBeVisible()
   })
 
@@ -348,16 +348,21 @@ describe("the code and the parent of an item", () => {
     const typist = userEvent.setup()
     const { store } = openList()
     const table = await findTable()
-    await typist.click(table.getByRole("button", { name: "Edit the code of France" }))
+    await typist.click(table.getByRole("button", { name: "Edit the code of France, FR" }))
     const input = table.getByRole("textbox", { name: "Code of France" })
     await typist.clear(input)
     await typist.type(input, "FRA{Enter}")
 
-    await table.findByRole("button", { name: "Edit the code of France" })
+    await table.findByRole("button", { name: "Edit the code of France, FRA" })
     expect(toast.success).toHaveBeenCalledWith("Code saved")
-    await typist.click(table.getByRole("button", { name: "Edit the code of France" }))
+    await typist.click(table.getByRole("button", { name: "Edit the code of France, FRA" }))
     await typist.clear(table.getByRole("textbox", { name: "Code of France" }))
     await typist.keyboard("{Enter}")
+
+    // With no code the button names what it shows.
+    expect(await table.findByRole("button", { name: "Add code for France" })).toHaveTextContent(
+      "Add code",
+    )
 
     await waitFor(() => expect(store.writes).toHaveLength(2))
     expect(store.writes.map((write) => write.body)).toEqual([{ code: "FRA" }, { code: null }])

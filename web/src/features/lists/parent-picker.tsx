@@ -13,10 +13,10 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { cn } from "@/lib/utils"
 import { matchesQuery } from "./tree"
 import type { ItemDto } from "./types"
-import { countOf } from "./words"
+import { countOf } from "@/lib/format"
 
 /** The most items offered at once; a parent list can be far longer than a menu can show. */
-export const MAX_PARENT_OPTIONS = 50
+const MAX_PARENT_OPTIONS = 50
 
 interface ParentPickerProps extends Omit<ComponentProps<typeof Button>, "value" | "onChange"> {
   /** The items of the parent list, in order. */
