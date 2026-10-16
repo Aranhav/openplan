@@ -1,113 +1,48 @@
-// Mirrors the JSON of the engine's view queries (task V1) and the query endpoint (V2) until the
-// generated API schema carries them (Ruling M3-R8); a later task replaces each type below with
-// its generated one. Field names are the engine's snake_case.
+// The query endpoint's request and answer, as the generated API schema words them.
 
-import type { Format, Value, Window } from "./core/types"
+import type { components } from "@/lib/api/schema"
+
+type Schemas = components["schemas"]
 
 /** One axis of a module's view, tagged by `kind` like the engine's `ViewDim`. */
-export type ViewDim =
-  | { kind: "line_items" }
-  | { kind: "list"; list: string }
-  | { kind: "subset"; subset: string }
-  | { kind: "time" }
-  | { kind: "versions" }
+export type ViewDim = Schemas["ViewDimDto"]
 
 /** The member shown for a page dimension; a `null` key means the default member. */
-export type PageSelection = { dim: ViewDim; key: string | null }
+export type PageSelection = Schemas["PageSelectionDto"]
 
 /** One member of a dimension, named by its key (see the member keys in the global constraints). */
-export type MemberRef = { dim: ViewDim; key: string }
+export type MemberRef = Schemas["MemberRefDto"]
 
-export type FilterOp =
-  | "eq"
-  | "ne"
-  | "lt"
-  | "le"
-  | "gt"
-  | "ge"
-  | "contains"
-  | "is_blank"
-  | "not_blank"
-  | "is_true"
-  | "is_false"
+export type FilterOp = Schemas["FilterOpDto"]
 
-export type RowFilter = { line_item: string; op: FilterOp; value?: Value | null }
+export type RowFilter = Schemas["RowFilterDto"]
 
 /** The request body of `POST /models/{id}/query`; the fields the engine defaults may be left out. */
-export type ViewQuery = {
-  module: string
-  line_items?: string[] | null
-  rows: ViewDim[]
-  columns: ViewDim[]
-  pages?: PageSelection[]
-  show_summaries?: boolean
-  collapsed?: MemberRef[]
-  hidden?: MemberRef[]
-  filters?: RowFilter[]
-  window: Window
-}
+export type ViewQuery = Schemas["ViewQueryDto"]
 
 /** A pivot without the slice of it to fetch, which the grid chooses as the user scrolls. */
 export type GridQuery = Omit<ViewQuery, "window">
 
-export type Member = {
-  key: string
-  label: string
-  depth: number
-  is_summary: boolean
-  has_children: boolean
-  collapsed: boolean
-}
+export type Member = Schemas["ViewMemberDto"]
 
 /** The members of one row or column, one per dimension in dimension order. */
-export type Header = { members: Member[] }
+export type Header = Schemas["HeaderDto"]
 
-export type PageMember = { dim: ViewDim; member: Member }
+export type PageMember = Schemas["PageMemberDto"]
 
-export type CellFlag =
-  | "input"
-  | "calculated"
-  | "summary"
-  | "readonly"
-  | "na"
-  | "error"
-  | "switchover"
+export type CellFlag = Schemas["CellFlagDto"]
 
 /** `text` is the item name or period label that goes with an item or period value. */
-export type Cell = { value: Value; text?: string; flags: CellFlag[] }
+export type Cell = Schemas["CellDto"]
 
-export type FormulaError = {
-  code: string
-  message: string
-  start: number
-  end: number
-  suggestion: string | null
-}
+export type FormulaError = Schemas["FormulaProblem"]
 
-export type LineItemInfo = {
-  id: string
-  name: string
-  format: Format
-  is_input: boolean
-  /** The line item's own axes, in axis order. */
-  dims: ViewDim[]
-  errors: FormulaError[]
-}
+export type LineItemInfo = Schemas["LineItemInfoDto"]
 
-export type ViewResult = {
-  row_dims: ViewDim[]
-  column_dims: ViewDim[]
-  pages: PageMember[]
-  rows: Header[]
-  columns: Header[]
-  total_rows: number
-  total_columns: number
-  cells: Cell[][]
-  line_items: LineItemInfo[]
-}
+export type ViewResult = Omit<Schemas["ViewResultDto"], "seq">
 
 /** The query endpoint's response: the view plus the model revision it was read at. */
-export type QueryResult = ViewResult & { seq: number }
+export type QueryResult = Schemas["ViewResultDto"]
 
 export type FormatColor = "red" | "amber" | "green" | "blue" | "muted"
 

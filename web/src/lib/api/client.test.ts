@@ -1,7 +1,7 @@
 import { HttpResponse, delay, http } from "msw"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { server } from "@/test/server"
-import { ApiError, api, errorDetail, postJson, unwrap } from "./client"
+import { ApiError, api, errorDetail, unwrap } from "./client"
 
 function problem(status: number, body: Record<string, unknown>) {
   return new Response(JSON.stringify(body), {
@@ -39,6 +39,34 @@ describe("unwrap", () => {
       detail: "Some fields are invalid.",
       errors: [{ field: "name", message: "Name is required." }],
     })
+  })
+
+  it("keeps every problem the server found in a formula, with where", async () => {
+    const problems = [
+      { code: "formula.unknown_name", message: "Unknown name 'Revnue'", start: 4, end: 10 },
+      { code: "formula.arity", message: "SUM takes 1 argument", start: 12, end: 20, suggestion: null },
+    ]
+    const body = {
+      code: "formula.unknown_name",
+      detail: "The formula has 2 problems.",
+      errors: [{ field: "formula", message: "4-10: Unknown name 'Revnue'" }],
+      formula_errors: [...problems, { code: "formula.syntax" }],
+    }
+
+    const error = await unwrap(
+      Promise.resolve({ error: body, response: problem(422, body) }),
+    ).catch((cause: unknown) => cause)
+
+    expect(error).toBeInstanceOf(ApiError)
+    expect((error as ApiError).formulaErrors).toEqual(problems)
+  })
+
+  it("has no formula problems when the server names none", async () => {
+    const error = await unwrap(
+      Promise.resolve({ error: { code: "validation" }, response: problem(422, { code: "validation" }) }),
+    ).catch((cause: unknown) => cause)
+
+    expect((error as ApiError).formulaErrors).toEqual([])
   })
 
   it("falls back to an internal error when the body is not problem+json", async () => {
@@ -175,85 +203,5 @@ describe("api", () => {
     await api.GET("/setup/status")
 
     expect(csrfHeader).toHaveBeenCalledExactlyOnceWith(null)
-  })
-})
-
-describe("postJson", () => {
-  it("posts the body as JSON with the csrf header and returns the JSON answer", async () => {
-    document.cookie = "op_csrf=abc; path=/"
-    const seen = vi.fn()
-    server.use(
-      http.post("/api/v1/models/m1/query", async ({ request }) => {
-        seen(
-          request.headers.get("content-type"),
-          request.headers.get("x-openplan-csrf"),
-          await request.json(),
-        )
-        return HttpResponse.json({ seq: 7 })
-      }),
-    )
-
-    const result = await postJson<{ seq: number }>("/models/m1/query", { rows: [] })
-
-    expect(result).toEqual({ seq: 7 })
-    expect(seen).toHaveBeenCalledExactlyOnceWith("application/json", "abc", { rows: [] })
-  })
-
-  it("throws the problem the server answered as an ApiError", async () => {
-    server.use(
-      http.post("/api/v1/models/m1/query", () =>
-        HttpResponse.json(
-          { code: "structure.invalid", detail: "Unknown dimension." },
-          { status: 422, headers: { "content-type": "application/problem+json" } },
-        ),
-      ),
-    )
-
-    const result = postJson("/models/m1/query", {})
-
-    await expect(result).rejects.toBeInstanceOf(ApiError)
-    await expect(result).rejects.toMatchObject({
-      status: 422,
-      code: "structure.invalid",
-      detail: "Unknown dimension.",
-    })
-  })
-
-  it("turns a request that never reaches the server into a network ApiError", async () => {
-    server.use(http.post("/api/v1/models/m1/query", () => HttpResponse.error()))
-
-    await expect(postJson("/models/m1/query", {})).rejects.toMatchObject({
-      status: 0,
-      code: "network",
-    })
-  })
-
-  it("does not swallow a request the caller aborted", async () => {
-    server.use(
-      http.post("/api/v1/models/m1/query", async () => {
-        await delay("infinite")
-        return HttpResponse.json({})
-      }),
-    )
-    const controller = new AbortController()
-
-    const result = postJson("/models/m1/query", {}, controller.signal)
-    controller.abort()
-
-    await expect(result).rejects.toMatchObject({ name: "AbortError" })
-  })
-})
-
-describe("postJson answers that are not JSON", () => {
-  it("throws an ApiError for a success status with a body that is not JSON", async () => {
-    server.use(http.post("/api/v1/models/m1/query", () => HttpResponse.text("<html></html>")))
-
-    const result = postJson("/models/m1/query", {})
-
-    await expect(result).rejects.toBeInstanceOf(ApiError)
-    await expect(result).rejects.toMatchObject({
-      code: "internal",
-      detail: "Something went wrong.",
-    })
   })
 })

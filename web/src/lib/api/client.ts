@@ -1,5 +1,5 @@
 import createClient, { type Middleware } from "openapi-fetch"
-import type { paths } from "./schema"
+import type { components, paths } from "./schema"
 
 type StripApiPrefix<P> = {
   [K in keyof P as K extends `/api/v1${infer Rest}` ? Rest : never]: P[K]
@@ -17,6 +17,9 @@ export interface FieldError {
   message: string
 }
 
+/** One problem the server found in a formula, with where (in bytes from the start of the formula). */
+export type FormulaProblem = components["schemas"]["FormulaProblem"]
+
 export class ApiError extends Error {
   status: number
   code: string
@@ -24,6 +27,8 @@ export class ApiError extends Error {
   errors: FieldError[]
   /** Seconds to wait before retrying, from the Retry-After header of a 429. */
   retryAfter?: number
+  /** Every problem of a formula the server refused (`formula.*` codes), in full. */
+  formulaErrors: FormulaProblem[]
 
   constructor(
     status: number,
@@ -31,6 +36,7 @@ export class ApiError extends Error {
     detail: string,
     errors: FieldError[] = [],
     retryAfter?: number,
+    formulaErrors: FormulaProblem[] = [],
   ) {
     super(detail)
     this.name = "ApiError"
@@ -39,6 +45,7 @@ export class ApiError extends Error {
     this.detail = detail
     this.errors = errors
     this.retryAfter = retryAfter
+    this.formulaErrors = formulaErrors
   }
 }
 
@@ -52,6 +59,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isFieldError(value: unknown): value is FieldError {
   return isRecord(value) && typeof value.field === "string" && typeof value.message === "string"
+}
+
+function isFormulaProblem(value: unknown): value is FormulaProblem {
+  return (
+    isRecord(value) &&
+    typeof value.code === "string" &&
+    typeof value.message === "string" &&
+    typeof value.start === "number" &&
+    typeof value.end === "number"
+  )
 }
 
 function parseRetryAfter(header: string | null): number | undefined {
@@ -72,6 +89,7 @@ function toApiError(response: Response, body: unknown): ApiError {
     typeof body.detail === "string" ? body.detail : FALLBACK_DETAIL,
     Array.isArray(body.errors) ? body.errors.filter(isFieldError) : [],
     retryAfter,
+    Array.isArray(body.formula_errors) ? body.formula_errors.filter(isFormulaProblem) : [],
   )
 }
 
@@ -127,37 +145,4 @@ export async function unwrap<T>(
     throw toApiError(response, error)
   }
   return data as T
-}
-
-/**
- * Posts `body` as JSON to an endpoint the generated schema does not describe yet and returns the
- * JSON answer, with the same CSRF header and `ApiError`s as `api` (an answer that is not JSON is
- * one too). A caller that aborts gets the `AbortError` back.
- */
-export async function postJson<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
-  const request = new Request(`/api/v1${path}`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-    signal,
-  })
-  addCsrfHeader(request)
-  let response: Response
-  try {
-    response = await globalThis.fetch(request)
-  } catch (error) {
-    throw isAbort(error) ? error : new ApiError(0, "network", NETWORK_DETAIL)
-  }
-  let answer: unknown
-  let readable = true
-  try {
-    answer = await response.json()
-  } catch {
-    readable = false
-  }
-  // An answer that is not JSON is not what the endpoint promises, even with a success status.
-  if (!response.ok || !readable) {
-    throw toApiError(response, answer)
-  }
-  return answer as T
 }
