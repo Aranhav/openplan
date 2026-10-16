@@ -17,7 +17,8 @@ import type { Header, LineItemInfo, Member, ViewDim } from "./view-types"
 
 // Headers sit on the page background, apart from the summary ones, which share the surface of the
 // summary cells so that a summary row or column reads as one band from its header on.
-const CELL = "box-border flex h-full items-center border-r border-b border-border text-sm"
+const CELL_BASE = "box-border flex h-full items-center border-b border-border text-sm"
+const CELL = `${CELL_BASE} border-r`
 
 function headerSurface(member: Member | undefined): string {
   return member?.is_summary ? "bg-muted font-semibold" : "bg-background font-medium"
@@ -318,6 +319,8 @@ type ColumnHeadersProps = {
   lineItems: ReadonlyMap<string, LineItemInfo>
   callbacks: HeaderCallbacks
   contentWidth: number
+  /** The names of the dimensions on the rows and the columns, written in the corner. */
+  corner?: string
 }
 
 /**
@@ -334,6 +337,7 @@ export function ColumnHeaders({
   lineItems,
   callbacks,
   contentWidth,
+  corner,
 }: ColumnHeadersProps) {
   const rowHeaderWidth = rowHeaderWidths.reduce((sum, width) => sum + width, 0)
   const lastLevel = columnDims.length - 1
@@ -359,7 +363,12 @@ export function ColumnHeaders({
             onContextMenu={stopMenu}
           >
             {rowHeaderWidths.map((width, rowLevel) => (
-              <div key={rowLevel} className={`${CELL} relative bg-background`} style={{ width }}>
+              <div
+                key={rowLevel}
+                // The name written across the corner is not crossed by the lines between dimensions.
+                className={`${corner && level === lastLevel && rowLevel < rowHeaderWidths.length - 1 ? CELL_BASE : CELL} relative bg-background`}
+                style={{ width }}
+              >
                 {level === lastLevel && (
                   <ResizeHandle
                     kind="row-header"
@@ -371,6 +380,16 @@ export function ColumnHeaders({
                 )}
               </div>
             ))}
+            {corner && level === lastLevel && (
+              <span
+                data-corner-label
+                title={corner}
+                className="pointer-events-none absolute inset-y-0 left-0 flex items-center px-2 text-xs font-medium text-muted-foreground"
+                style={{ width: rowHeaderWidth }}
+              >
+                <span className="truncate">{corner}</span>
+              </span>
+            )}
           </div>
           {columnSpans(cols, headerAt, level).map((span) => {
             const left = rowHeaderWidth + colStarts[span.start]

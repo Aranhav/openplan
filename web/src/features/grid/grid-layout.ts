@@ -18,6 +18,53 @@ export function defaultRowHeaderWidth(dimensionCount: number): number {
     : Math.min(MAX_ROW_HEADER_DIMENSION_WIDTH, Math.floor(ROW_HEADER_BUDGET / dimensionCount))
 }
 
+/** What is known of a row dimension before the first block of the view loads. */
+export type RowDimInfo = {
+  /** The greatest depth of a member. */
+  maxDepth: number
+  /** Some member has children, so its headers keep the room of a chevron. */
+  collapsible: boolean
+  /** How wide the widest label is, in pixels. */
+  labelWidth: number
+}
+
+// A row header is padded by 8 px on each side, and a dimension with something to collapse keeps
+// the room of a chevron (24 px) and the gap after it before every label.
+const ROW_HEADER_PADDING = 16
+const CHEVRON_ROOM = 26
+const LABEL_SLACK = 4
+const MIN_ROW_HEADER_WIDTH = 96
+const MAX_ROW_HEADER_WIDTH = 320
+
+/**
+ * The width each row dimension needs to show its widest label under the deepest step of its
+ * hierarchy, kept between the least and the most a row header is given. `corner` is how much
+ * room the name written in the corner above the row headers asks for in all; what the widths do
+ * not add up to is given to the last dimension.
+ */
+export function rowHeaderWidthsFor(dims: readonly RowDimInfo[], corner = 0): number[] {
+  const widths = dims.map(({ maxDepth, collapsible, labelWidth }) =>
+    Math.min(
+      Math.max(
+        Math.ceil(
+          ROW_HEADER_PADDING +
+            maxDepth * INDENT +
+            (collapsible ? CHEVRON_ROOM : 0) +
+            labelWidth +
+            LABEL_SLACK,
+        ),
+        MIN_ROW_HEADER_WIDTH,
+      ),
+      MAX_ROW_HEADER_WIDTH,
+    ),
+  )
+  const missing = corner - widths.reduce((sum, width) => sum + width, 0)
+  if (missing > 0 && widths.length > 0) {
+    widths[widths.length - 1] += missing
+  }
+  return widths
+}
+
 export function clampWidth(width: number): number {
   return Math.min(Math.max(Math.round(width), MIN_COLUMN_WIDTH), MAX_COLUMN_WIDTH)
 }

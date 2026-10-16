@@ -32,10 +32,12 @@ import {
   DEFAULT_COLUMN_WIDTH,
   HEADER_ROW_HEIGHT,
   ROW_HEIGHT,
+  type RowDimInfo,
   columnAt,
   lineItemIdAt,
   lineItemSource,
 } from "./grid-layout"
+import { measureTextWidth } from "./measure-text"
 import { useCellMenu } from "./use-cell-menu"
 import { useColumnWidths } from "./use-column-widths"
 import { cellOf, useDragSelect } from "./use-drag-select"
@@ -57,6 +59,8 @@ import type {
 const NO_RULES: readonly ConditionalFormat[] = []
 const NO_WIDTHS: Readonly<Record<string, number>> = {}
 const INITIAL_VISIBLE: CellRange = { rowStart: 0, rowEnd: 0, colStart: 0, colEnd: 0 }
+// The padding of the corner's label (8 px each side) and a little room besides.
+const CORNER_PADDING = 20
 const ROW_OVERSCAN = 6
 const COLUMN_OVERSCAN = 3
 
@@ -81,6 +85,14 @@ export type GridProps = {
   onToggleCollapse?: (member: MemberRef) => void
   /** Offered when the pivot shows nothing; without it, the message has no button. */
   onResetView?: () => void
+  /**
+   * What is known of each row dimension before its first block loads (from its members): how
+   * deep it nests and how wide its widest label is. The headers are indented and sized from it, so
+   * that they do not shift as blocks arrive. It describes the rows of `query`.
+   */
+  rowInfo?: readonly RowDimInfo[]
+  /** The names of the row and column dimensions, written in the corner: "Regions / Months". */
+  corner?: string
   className?: string
 }
 
@@ -88,7 +100,7 @@ function Frame({ className, children }: { className?: string; children: ReactNod
   return <div className={cn("flex h-full min-h-60 flex-col gap-3", className)}>{children}</div>
 }
 
-function GridSkeleton() {
+export function GridSkeleton() {
   return (
     <div
       role="status"
@@ -138,6 +150,8 @@ export function Grid({
   onSelectLineItem,
   onToggleCollapse,
   onResetView,
+  rowInfo,
+  corner,
   className,
 }: GridProps) {
   const gridId = useId()
@@ -152,8 +166,13 @@ export function Grid({
   })
   const startDrag = useDragSelect(select)
 
+  // What is known up front describes the rows of the query, which a placeholder is not showing.
+  const knownRows = data.isPlaceholder ? undefined : rowInfo
+  const cornerWidth = corner ? Math.ceil(measureTextWidth(corner, 500)) + CORNER_PADDING : 0
   const { rowHeaderWidths, rowHeaderWidth, colWidths, colStarts, callbacks } = useColumnWidths({
     rowDimCount: rowDims.length,
+    rowDimInfo: knownRows,
+    cornerWidth,
     totalColumns,
     colHeaders,
     columnWidths,
@@ -214,7 +233,16 @@ export function Grid({
   // How the row dimensions nest, which the indent and the chevron room of their headers follow.
   // The array is the same until that changes, so that the row headers are not drawn again for
   // every block that arrives.
-  const nestingKey = JSON.stringify(data.rowNesting)
+  const nestingKey = JSON.stringify(
+    Array.from({ length: Math.max(data.rowNesting.length, knownRows?.length ?? 0) }, (_, level) => {
+      const loaded = data.rowNesting[level]
+      const known = knownRows?.[level]
+      return {
+        maxDepth: Math.max(loaded?.maxDepth ?? 0, known?.maxDepth ?? 0),
+        collapsible: Boolean(loaded?.collapsible || known?.collapsible),
+      }
+    }),
+  )
   const rowNesting = useMemo(() => JSON.parse(nestingKey) as Nesting[], [nestingKey])
   const lineItemSourceOfCells = useMemo(
     () => lineItemSource(rowDims, columnDims, data.pages),
@@ -545,6 +573,7 @@ export function Grid({
                         lineItems={lineItems}
                         callbacks={headerCallbacks}
                         contentWidth={contentWidth}
+                        corner={corner}
                       />
                       {rowItems.map((rowItem) => {
                         const row = rowItem.index

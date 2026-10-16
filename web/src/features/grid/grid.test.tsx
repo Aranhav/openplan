@@ -510,6 +510,112 @@ describe("hierarchy", () => {
     })
   })
 
+  describe("what the members say up front", () => {
+    const flat = (rows: Member[]) =>
+      serveViewQuery(
+        salesView({
+          rowDims: [regionsList],
+          columnDims: [lineItemsDim],
+          totalRows: rows.length,
+          totalColumns: 1,
+          lineItems: [lineItem("li-0", "Revenue")],
+          rowHeader: (row) => header(rows[row]),
+          columnHeader: () => header(member("li-0", "Revenue")),
+          cell: (row) => numberCell(row),
+        }),
+      )
+    const regionsQuery: GridQuery = {
+      module: MODULE_ID,
+      rows: [regionsList],
+      columns: [lineItemsDim],
+    }
+
+    it("keeps the room of a chevron for a dimension that has children somewhere, before they load", async () => {
+      flat([member("a", "Alpha"), member("b", "Beta")])
+      renderGrid({
+        query: regionsQuery,
+        onToggleCollapse: vi.fn(),
+        rowInfo: [{ maxDepth: 1, collapsible: true, labelWidth: 40 }],
+      })
+      const grid = await loadedGrid()
+
+      const alpha = within(grid).getByRole("rowheader", { name: "Alpha" })
+      expect(alpha.querySelector("span[aria-hidden].size-6")).toBeInTheDocument()
+    })
+
+    it("sizes the row header from its widest label, indent and chevron", async () => {
+      flat([member("a", "Alpha")])
+      renderGrid({
+        query: regionsQuery,
+        onToggleCollapse: vi.fn(),
+        rowInfo: [{ maxDepth: 2, collapsible: true, labelWidth: 107 }],
+      })
+      const grid = await loadedGrid()
+
+      // 16 of padding, 2 steps of 16, 26 for a chevron, the label and 4 of slack.
+      expect(within(grid).getByRole("rowheader", { name: "Alpha" })).toHaveStyle({ width: "185px" })
+    })
+
+    it("ignores what is known for other rows than the view's", async () => {
+      flat([member("a", "Alpha")])
+      renderGrid({
+        query: regionsQuery,
+        rowInfo: [
+          { maxDepth: 0, collapsible: false, labelWidth: 10 },
+          { maxDepth: 0, collapsible: false, labelWidth: 10 },
+        ],
+      })
+      const grid = await loadedGrid()
+
+      expect(within(grid).getByRole("rowheader", { name: "Alpha" })).toHaveStyle({ width: "240px" })
+    })
+  })
+
+  describe("the corner", () => {
+    it("names the row and column dimensions, truncated, with the whole name as its title", async () => {
+      serveViewQuery()
+      renderGrid({ corner: "Products / Versions, Line items" })
+      const grid = await loadedGrid()
+
+      const label = grid.querySelector<HTMLElement>("[data-corner-label]")
+      expect(label).toHaveTextContent("Products / Versions, Line items")
+      expect(label).toHaveAttribute("title", "Products / Versions, Line items")
+      expect(label?.firstElementChild).toHaveClass("truncate")
+    })
+
+    it("makes the row headers wide enough for the name, when they are sized from their labels", async () => {
+      serveViewQuery(
+        salesView({
+          rowDims: [productsList],
+          columnDims: [lineItemsDim],
+          totalRows: 1,
+          totalColumns: 1,
+          lineItems: [lineItem("li-0", "Revenue")],
+          rowHeader: () => header(member("p0", "Gadgets")),
+          columnHeader: () => header(member("li-0", "Revenue")),
+          cell: () => numberCell(1),
+        }),
+      )
+      renderGrid({
+        query: { module: MODULE_ID, rows: [productsList], columns: [lineItemsDim] },
+        rowInfo: [{ maxDepth: 0, collapsible: false, labelWidth: 56 }],
+        corner: "Products / Line items",
+      })
+      const grid = await loadedGrid()
+
+      // 21 characters of 8 px, and the 20 px the corner's label is padded with.
+      expect(within(grid).getByRole("rowheader", { name: "Gadgets" })).toHaveStyle({ width: "188px" })
+    })
+
+    it("is blank without a name", async () => {
+      serveViewQuery()
+      renderGrid()
+      const grid = await loadedGrid()
+
+      expect(grid.querySelector("[data-corner-label]")).toBeNull()
+    })
+  })
+
   it("draws headers on the page background, summaries on the muted one", async () => {
     serveViewQuery(hierarchyFor(query))
     renderGrid({ query })

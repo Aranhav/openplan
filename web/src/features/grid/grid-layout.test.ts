@@ -10,6 +10,7 @@ import {
   lineItemSource,
   prefixSums,
   revealOffset,
+  rowHeaderWidthsFor,
   startsRowGroup,
   without,
 } from "./grid-layout"
@@ -33,6 +34,43 @@ describe("defaultRowHeaderWidth", () => {
     [3, 106],
   ])("gives each of %s row dimensions %s px", (count, width) => {
     expect(defaultRowHeaderWidth(count)).toBe(width)
+  })
+})
+
+describe("rowHeaderWidthsFor", () => {
+  const plain = { maxDepth: 0, collapsible: false }
+
+  it("gives each dimension what its widest label needs, with the padding of a header", () => {
+    expect(rowHeaderWidthsFor([{ ...plain, labelWidth: 100 }])).toEqual([120])
+  })
+
+  it("adds the steps of a hierarchy and the room of a chevron", () => {
+    expect(
+      rowHeaderWidthsFor([{ maxDepth: 2, collapsible: true, labelWidth: 100 }]),
+    ).toEqual([100 + 16 + 2 * 16 + 26 + 4])
+  })
+
+  it("keeps a dimension between the least and the most a header is given", () => {
+    expect(rowHeaderWidthsFor([{ ...plain, labelWidth: 10 }, { ...plain, labelWidth: 900 }])).toEqual([
+      96, 320,
+    ])
+  })
+
+  it("gives the last dimension what the name in the corner needs besides", () => {
+    const dims = [
+      { ...plain, labelWidth: 10 },
+      { ...plain, labelWidth: 10 },
+    ]
+
+    expect(rowHeaderWidthsFor(dims, 300)).toEqual([96, 204])
+    expect(rowHeaderWidthsFor(dims, 100)).toEqual([96, 96])
+  })
+
+  it("fits 'United Kingdom' under a chevron where the shared budget of two dimensions did not", () => {
+    // 107 px of label under one step and a chevron: 16 + 16 + 26 + 107 + 4.
+    const [width] = rowHeaderWidthsFor([{ maxDepth: 1, collapsible: true, labelWidth: 107 }])
+
+    expect(width).toBeGreaterThan(defaultRowHeaderWidth(2))
   })
 })
 
