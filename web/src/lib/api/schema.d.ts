@@ -3003,7 +3003,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description The list was deleted */
+            /** @description The list, its properties and the saved views of those properties were deleted */
             204: {
                 headers: {
                     [name: string]: unknown;
@@ -3891,6 +3891,15 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
+            /** @description The module has a dimension of more than 100,000 members, whose members cannot be listed to prune the views (structure.invalid) */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
             /** @description Too many pieces of heavy work are going on and none was free within 10 seconds (server.busy); `Retry-After` says when to try again */
             503: {
                 headers: {
@@ -3956,7 +3965,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description A view of the module has that name (structure.name_taken) */
+            /** @description A view of the module has that name (structure.name_taken), or another became the default at the same time (view.default_conflict) */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -3974,7 +3983,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description The name is blank or longer than 80 characters, the module has 200 views already, a field of the definition is invalid or over its limit (validation) */
+            /** @description The name is blank or longer than 80 characters, the module has 200 views already, a field of the definition is invalid or over its limit, or a conditional format's name, values or line items are invalid (validation) */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -4753,7 +4762,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description Another view of the module has that name (structure.name_taken) */
+            /** @description Another view of the module has that name (structure.name_taken), or another became the default at the same time (view.default_conflict) */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -4771,7 +4780,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description The name is blank or longer than 80 characters, or a field of the definition is invalid or over its limit (validation) */
+            /** @description The name is blank or longer than 80 characters, or a field of the definition is invalid or over its limit, or a conditional format's name, values or line items are invalid (validation) */
             422: {
                 headers: {
                     [name: string]: unknown;
