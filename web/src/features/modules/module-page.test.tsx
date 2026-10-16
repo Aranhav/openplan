@@ -377,7 +377,10 @@ describe("renaming a module in its title", () => {
     await typist.type(input, "Turnover")
     await typist.tab()
 
-    expect(await content.findByRole("heading", { level: 1, name: "Turnover" })).toBeVisible()
+    // The title is the same name for a moment in the input's hidden heading and then in its own.
+    await waitFor(() =>
+      expect(content.getByRole("heading", { level: 1, name: "Turnover" })).toBeVisible(),
+    )
     expect(store.requests).toHaveLength(1)
   })
 
