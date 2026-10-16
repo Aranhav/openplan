@@ -21,12 +21,17 @@ function quoteCell(cell: string): string {
  * Tab-separated text as rows of cells, the way Excel and Sheets write it. A quoted cell may
  * hold tabs, line breaks and doubled quotes. One trailing line break ends the last row
  * instead of starting another. Empty text has no rows. With a `limit`, only the first `rows`
- * rows and the first `cols` cells of each are kept, and the text after them is not read, for a
- * paste that cannot use more than the grid has room for.
+ * rows and the first `cols` cells of each are kept, for a paste that cannot use more than the
+ * grid has room for, and the text is not read past the row at which the rows times the widest
+ * row come to more than `cells`, since a block of that many cells that fits is refused whole.
  */
-export function parseTsv(text: string, limit?: { rows: number; cols: number }): string[][] {
+export function parseTsv(
+  text: string,
+  limit?: { rows: number; cols: number; cells: number },
+): string[][] {
   const rows: string[][] = []
   let row: string[] = []
+  let widest = 0
   let field = ""
   let fieldStart = true
   let rowOpen = false
@@ -41,12 +46,15 @@ export function parseTsv(text: string, limit?: { rows: number; cols: number }): 
   const endRow = () => {
     endField()
     rows.push(row)
+    widest = Math.max(widest, row.length)
     row = []
     rowOpen = false
   }
+  const full = () =>
+    limit !== undefined && (rows.length >= limit.rows || rows.length * widest > limit.cells)
 
   let i = 0
-  while (i < text.length && !(limit && rows.length >= limit.rows)) {
+  while (i < text.length && !full()) {
     const char = text[i]
     if (char === "\n" || char === "\r") {
       endRow()
@@ -79,7 +87,7 @@ export function parseTsv(text: string, limit?: { rows: number; cols: number }): 
       i++
     }
   }
-  if (rowOpen && !(limit && rows.length >= limit.rows)) {
+  if (rowOpen && !full()) {
     endRow()
   }
   return rows

@@ -160,28 +160,72 @@ describe("parseTsv with a limit", () => {
   const text = "a\tb\tc\nd\te\tf\ng\th\ti\n"
 
   it("reads only the rows and columns that can land", () => {
-    expect(parseTsv(text, { rows: 2, cols: 2 })).toEqual([
+    expect(parseTsv(text, { rows: 2, cols: 2, cells: 100 })).toEqual([
       ["a", "b"],
       ["d", "e"],
     ])
   })
 
   it("reads everything when the limit is larger", () => {
-    expect(parseTsv(text, { rows: 10, cols: 10 })).toEqual(parseTsv(text))
+    expect(parseTsv(text, { rows: 10, cols: 10, cells: 100 })).toEqual(parseTsv(text))
   })
 
   it("stops after the last row, however long the text goes on", () => {
     const long = "x\n".repeat(100_000)
 
-    expect(parseTsv(long, { rows: 3, cols: 1 })).toEqual([["x"], ["x"], ["x"]])
+    expect(parseTsv(long, { rows: 3, cols: 1, cells: 100 })).toEqual([["x"], ["x"], ["x"]])
   })
 
   it("keeps a quoted cell that holds line breaks whole", () => {
-    expect(parseTsv('"a\nb"\tc\nd\te\n', { rows: 2, cols: 1 })).toEqual([["a\nb"], ["d"]])
+    expect(parseTsv('"a\nb"\tc\nd\te\n', { rows: 2, cols: 1, cells: 100 })).toEqual([
+      ["a\nb"],
+      ["d"],
+    ])
   })
 
   it("does not limit when there is no limit", () => {
     expect(parseTsv("a\tb\n")).toEqual([["a", "b"]])
+  })
+
+  describe("by cells", () => {
+    it("stops at the row where the rows times the widest row come to more than the limit", () => {
+      const rows = parseTsv("a\tb\tc\n".repeat(1_000), { rows: 1_000, cols: 3, cells: 10 })
+
+      // Three rows of three are nine cells, four are twelve.
+      expect(rows).toHaveLength(4)
+    })
+
+    it("reads a block of exactly the limit whole", () => {
+      const rows = parseTsv("a\tb\tc\n".repeat(3), { rows: 1_000, cols: 3, cells: 9 })
+
+      expect(rows).toHaveLength(3)
+    })
+
+    it("counts every row as wide as the widest, since a ragged block is a rectangle", () => {
+      const ragged = "a\nb\nc\td\te\nf\ng\nh\n".repeat(100)
+
+      // After the third row the widest is 3: four rows of three come to 12.
+      expect(parseTsv(ragged, { rows: 1_000, cols: 5, cells: 10 })).toHaveLength(4)
+    })
+
+    it("counts the cells that are kept, not the ones past the column limit", () => {
+      const wide = "a\tb\tc\td\te\tf\n".repeat(1_000)
+
+      expect(parseTsv(wide, { rows: 1_000, cols: 2, cells: 10 })).toHaveLength(6)
+    })
+
+    it("stops in a text with a million rows without reading on", () => {
+      const huge = "x\ty\n".repeat(1_000_000)
+
+      expect(parseTsv(huge, { rows: 2_000_000, cols: 2, cells: 10_000 })).toHaveLength(5_001)
+    })
+
+    it("keeps the last row of a text that has no final line break", () => {
+      expect(parseTsv("a\tb\nc\td", { rows: 10, cols: 2, cells: 100 })).toEqual([
+        ["a", "b"],
+        ["c", "d"],
+      ])
+    })
   })
 })
 

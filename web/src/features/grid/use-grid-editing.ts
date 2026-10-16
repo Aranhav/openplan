@@ -367,11 +367,13 @@ export function useGridEditing({
     if (readOnly) {
       return
     }
-    // Only what can land is read: the rest of a long clipboard is not needed to refuse it.
+    // Only what can land is read, and no more than what is refused for being too much: the rest
+    // of a long clipboard is not needed for either.
     const start = rangeOf(selection)
     const block = parseTsv(text, {
-      rows: Math.min(bounds.rows - start.rowStart, MAX_CELLS + 1),
-      cols: Math.min(bounds.cols - start.colStart, MAX_CELLS + 1),
+      rows: bounds.rows - start.rowStart,
+      cols: bounds.cols - start.colStart,
+      cells: MAX_CELLS,
     })
     if (block.length === 0) {
       return
