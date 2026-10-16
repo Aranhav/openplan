@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { LINE_ITEM_ERRORS, pivotOfKey, queryKeys } from "./keys"
+import { pivotOfKey, queryKeys } from "./keys"
 
 describe("queryKeys.query", () => {
   it("starts with the model's key, so invalidating a model reaches its queries", () => {
@@ -28,12 +28,21 @@ describe("queryKeys.structure", () => {
   })
 })
 
+describe("queryKeys.formulaCompletions", () => {
+  it("sits under the structure's key, so a change to the structure makes what was offered stale", () => {
+    const key = queryKeys.formulaCompletions("m1", "li1", "Rev")
+
+    expect(key.slice(0, queryKeys.structure("m1").length)).toEqual(queryKeys.structure("m1"))
+    expect(key).not.toEqual(queryKeys.formulaCompletions("m1", "li1", "Re"))
+    expect(key).not.toEqual(queryKeys.formulaCompletions("m1", "li2", "Rev"))
+  })
+})
+
 describe("pivotOfKey", () => {
-  it("finds the pivot of a view and the part that names another query", () => {
+  it("finds the pivot of a view", () => {
     const pivot = { module: "mod", rows: [], columns: [] }
 
     expect(pivotOfKey(queryKeys.query("m1", pivot, { rowBlock: 0, colBlock: 0 }))).toBe(pivot)
-    expect(pivotOfKey(queryKeys.query("m1", LINE_ITEM_ERRORS, "mod"))).toBe(LINE_ITEM_ERRORS)
     expect(pivotOfKey(queryKeys.query("m1"))).toBeUndefined()
   })
 })

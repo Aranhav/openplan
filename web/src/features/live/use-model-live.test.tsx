@@ -6,7 +6,7 @@ import { toast } from "sonner"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { GridQuery, QueryResult } from "@/features/grid/view-types"
 import { useDeleteModel } from "@/features/models/api"
-import { LINE_ITEM_ERRORS, queryKeys } from "@/lib/api/keys"
+import { queryKeys } from "@/lib/api/keys"
 import { FakeWebSocket, hello } from "@/test/live"
 import { problem } from "@/test/problem"
 import { createTestQueryClient } from "@/test/render"
@@ -78,7 +78,6 @@ function isInvalidated(queryClient: Client, key: unknown[]) {
 
 const salesKey = (modelId = MODEL_ID) => queryKeys.query(modelId, salesQuery, ORIGIN_BLOCK)
 const costsKey = (modelId = MODEL_ID) => queryKeys.query(modelId, costsQuery, ORIGIN_BLOCK)
-const errorsKey = queryKeys.query(MODEL_ID, LINE_ITEM_ERRORS, "module-1")
 
 /** Sends a message from the server on the newest socket. */
 function tell(message: Record<string, unknown>) {
@@ -434,16 +433,6 @@ describe("useModelLive", () => {
       expect(isInvalidated(queryClient, costsKey())).toBe(false)
     })
 
-    it("leaves the formula errors of a module alone: they change with the structure", async () => {
-      const { queryClient } = await connected()
-      queryClient.setQueryData(errorsKey, viewResult(["li-1"], 5))
-
-      tell(cellsChanged(6, "li-1"))
-      await read()
-
-      expect(isInvalidated(queryClient, errorsKey)).toBe(false)
-    })
-
     it("leaves the views of other models alone", async () => {
       const { queryClient } = await connected()
       seedView(queryClient, salesQuery, ["li-1"], 5, OTHER_MODEL)
@@ -632,7 +621,6 @@ describe("useModelLive", () => {
       queryClient.setQueryData(queryKeys.listItems(MODEL_ID, "list-1"), [])
       seedView(queryClient, salesQuery, ["li-1"], 5)
       seedView(queryClient, costsQuery, ["li-3"], 5)
-      queryClient.setQueryData(errorsKey, viewResult(["li-1"], 5))
       seedView(queryClient, salesQuery, ["li-1"], 5, OTHER_MODEL)
 
       tell({ type: "structure_changed", seq: 6 })
@@ -642,7 +630,6 @@ describe("useModelLive", () => {
       expect(isInvalidated(queryClient, queryKeys.listItems(MODEL_ID, "list-1"))).toBe(true)
       expect(isInvalidated(queryClient, salesKey())).toBe(true)
       expect(isInvalidated(queryClient, costsKey())).toBe(true)
-      expect(isInvalidated(queryClient, errorsKey)).toBe(true)
       expect(isInvalidated(queryClient, salesKey(OTHER_MODEL))).toBe(false)
       expect(isInvalidated(queryClient, queryKeys.model(MODEL_ID))).toBe(false)
     })

@@ -2,7 +2,7 @@ import { type Query, type QueryClient, useQueryClient } from "@tanstack/react-qu
 import { useEffect, useState } from "react"
 import type { QueryResult } from "@/features/grid/view-types"
 import { ApiError, api, isRecord, unwrap } from "@/lib/api/client"
-import { LINE_ITEM_ERRORS, mutationKeys, pivotOfKey, queryKeys } from "@/lib/api/keys"
+import { mutationKeys, pivotOfKey, queryKeys } from "@/lib/api/keys"
 
 /**
  * Whether the model's screens hear of changes: `connecting` until the server has greeted the
@@ -88,14 +88,11 @@ function filteredOn(pivot: unknown): string[] {
 
 /**
  * Picks the views that show a line item of `changed`, or filter on one, or have nothing loaded to
- * tell by. The formula errors of a module are left out: they change with the structure only.
+ * tell by.
  */
 function showsAny(changed: ReadonlySet<string>) {
   return (query: Query) => {
     const pivot = pivotOfKey(query.queryKey)
-    if (pivot === LINE_ITEM_ERRORS) {
-      return false
-    }
     const { data } = query.state
     return (
       !isQueryResult(data) ||

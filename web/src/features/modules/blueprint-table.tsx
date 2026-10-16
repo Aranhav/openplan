@@ -36,7 +36,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import type { FormulaError } from "@/features/grid/view-types"
 import {
   dimsLabel,
   formatLabel,
@@ -59,8 +58,6 @@ interface BlueprintTableProps {
   lineItems: LineItemDto[]
   module: ModuleDto
   structure: StructureDto
-  /** What is wrong with the formulas, by line item. */
-  errors: ReadonlyMap<string, FormulaError[]>
   selectedId: string | undefined
   onSelect: (id: string) => void
   onOpenSettings: (id: string) => void
@@ -87,7 +84,6 @@ export function BlueprintTable({
   lineItems,
   module,
   structure,
-  errors,
   selectedId,
   onSelect,
   onOpenSettings,
@@ -243,7 +239,6 @@ export function BlueprintTable({
                   item={item}
                   structure={structure}
                   inherited={inherited}
-                  errors={errors.get(item.id) ?? NO_ERRORS}
                   first={index === 0}
                   last={index === lineItems.length - 1}
                   selected={item.id === selectedId}
@@ -267,13 +262,12 @@ export function BlueprintTable({
   )
 }
 
-const NO_ERRORS: FormulaError[] = []
-
 /**
  * What assistive technology reads out as the arrow keys reach a row, in place of every cell of it.
  * A formula with errors says what is wrong, since the icon's tooltip is for the pointer.
  */
-function rowLabel(item: LineItemDto, structure: StructureDto, errors: FormulaError[]) {
+function rowLabel(item: LineItemDto, structure: StructureDto) {
+  const errors = item.formula_errors
   return [
     item.name,
     formatLabel(item.format, structure),
@@ -306,7 +300,6 @@ interface BlueprintRowProps {
   item: LineItemDto
   structure: StructureDto
   inherited: Inheritance
-  errors: FormulaError[]
   first: boolean
   last: boolean
   selected: boolean
@@ -324,7 +317,6 @@ function BlueprintRow({
   item,
   structure,
   inherited,
-  errors,
   first,
   last,
   selected,
@@ -354,7 +346,7 @@ function BlueprintRow({
       ref={setNodeRef}
       id={id}
       aria-selected={selected}
-      aria-label={rowLabel(item, structure, errors)}
+      aria-label={rowLabel(item, structure)}
       data-state={selected ? "selected" : undefined}
       style={{ transform: CSS.Translate.toString(transform), transition }}
       className={cn(
@@ -398,7 +390,7 @@ function BlueprintRow({
       <TableCell className="truncate">
         <FormulaCell
           formula={item.formula}
-          errors={errors}
+          errors={item.formula_errors}
           tabIndex={tabIndex}
           onOpen={() => onOpenSettings(item.id)}
         />

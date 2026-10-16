@@ -1,5 +1,4 @@
-import { CircleAlert } from "lucide-react"
-import type { ComponentProps, Ref } from "react"
+import type { Ref } from "react"
 import type { UseFormReturn } from "react-hook-form"
 import {
   FormControl,
@@ -9,32 +8,35 @@ import {
   FormLabel,
   useFormField,
 } from "@/components/ui/form"
-import { Textarea } from "@/components/ui/textarea"
-import type { FormulaProblem } from "@/lib/api/client"
-import { formulaSpan } from "./formula-text"
+import {
+  FormulaEditor,
+  type FormulaEditorHandle,
+} from "@/features/formula/formula-editor"
+import type { KnownProblems } from "@/features/formula/lint"
 import type { LineItemValues } from "./line-item-form"
 
 interface FormulaFieldProps {
   form: UseFormReturn<LineItemValues>
-  /** What is wrong with the formula: what the model says of the saved one, or the server's refusal. */
-  problems: FormulaProblem[]
-  /** The problems are the server's answer to a save just now, which is announced as it comes. */
-  refused: boolean
-  /** The formula was edited, which makes what the server said about it out of date. */
-  onEdit: () => void
+  modelId: string
+  lineItemId: string
+  /** What the server says is wrong with the saved formula, or with the one it just refused. */
+  known: KnownProblems
   /** The formula can be read and copied but not changed. */
   readOnly?: boolean
-  textareaRef: Ref<HTMLTextAreaElement>
+  /** Enter in the formula saves the line item, as it does in the other fields. */
+  onSubmit: () => void
+  editorRef: Ref<FormulaEditorHandle>
 }
 
-/** The formula of a line item, typed in a monospace field, with every problem found in it listed below. */
+/** The formula of a line item, in the formula editor, with every problem found in it listed below. */
 export function FormulaField({
   form,
-  problems,
-  refused,
-  onEdit,
+  modelId,
+  lineItemId,
+  known,
   readOnly,
-  textareaRef,
+  onSubmit,
+  editorRef,
 }: FormulaFieldProps) {
   return (
     <FormField
@@ -44,110 +46,46 @@ export function FormulaField({
         <FormItem>
           <FormLabel>Formula</FormLabel>
           <FormControl>
-            <FormulaTextarea
-              invalid={problems.length > 0}
-              {...field}
-              ref={(element) => {
-                field.ref(element)
-                if (typeof textareaRef === "function") {
-                  textareaRef(element)
-                } else if (textareaRef) {
-                  textareaRef.current = element
+            <FormulaEditor
+              modelId={modelId}
+              lineItemId={lineItemId}
+              aria-label="Formula"
+              placeholder="Revenue * Margin"
+              value={field.value}
+              onChange={field.onChange}
+              onSubmit={onSubmit}
+              readOnly={readOnly}
+              known={known}
+              editorRef={(handle) => {
+                // The form moves the focus to a field it refused, through the ref it was given.
+                field.ref(handle)
+                if (typeof editorRef === "function") {
+                  editorRef(handle)
+                } else if (editorRef) {
+                  editorRef.current = handle
                 }
               }}
-              onChange={(event) => {
-                field.onChange(event)
-                onEdit()
-              }}
-              rows={4}
-              spellCheck={false}
-              autoCapitalize="off"
-              autoCorrect="off"
-              autoComplete="off"
-              readOnly={readOnly}
-              className="font-mono text-sm"
-              placeholder="Revenue * Margin"
             />
           </FormControl>
           <FormDescription>
             Leave it empty to type the values in yourself. A line item with a formula is calculated.
           </FormDescription>
-          <FormulaMessage problems={problems} refused={refused} formula={field.value} />
+          <FormulaFormMessage />
         </FormItem>
       )}
     />
   )
 }
 
-/** The field, marked invalid and described by the list of problems even when the form has no error of its own. */
-function FormulaTextarea({
-  invalid,
-  ...props
-}: ComponentProps<typeof Textarea> & { invalid: boolean }) {
-  const { formDescriptionId, formMessageId } = useFormField()
-  return (
-    <Textarea
-      {...props}
-      aria-invalid={invalid || props["aria-invalid"]}
-      aria-describedby={
-        invalid ? `${formDescriptionId} ${formMessageId}` : props["aria-describedby"]
-      }
-    />
-  )
-}
-
-interface FormulaMessageProps {
-  problems: FormulaProblem[]
-  refused: boolean
-  formula: string
-}
-
-function FormulaMessage({ problems, refused, formula }: FormulaMessageProps) {
+/** What the form itself finds wrong with the formula; the server's refusal is shown by the editor. */
+function FormulaFormMessage() {
   const { error, formMessageId } = useFormField()
-  if (problems.length === 0) {
-    return error ? (
-      <p id={formMessageId} className="text-sm text-destructive">
-        {String(error.message ?? "")}
-      </p>
-    ) : null
+  if (!error || error.type === "server") {
+    return null
   }
   return (
-    <div
-      id={formMessageId}
-      role={refused ? "alert" : undefined}
-      className="flex flex-col gap-2 text-sm text-destructive"
-    >
-      <p className="font-medium">
-        {problems.length === 1
-          ? "The formula has a problem."
-          : `The formula has ${problems.length} problems.`}
-      </p>
-      <ul className="flex flex-col gap-2">
-        {problems.map((problem, index) => {
-          const span = formulaSpan(formula, problem.start, problem.end)
-          return (
-            <li key={index} className="flex items-start gap-2">
-              <CircleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
-              <span className="min-w-0 break-words">
-                {problem.message}
-                {span && !problem.message.includes(span) && (
-                  <>
-                    {" "}
-                    <code className="rounded-sm bg-destructive/10 px-1 py-0.5 font-mono text-xs">
-                      {span}
-                    </code>
-                  </>
-                )}
-                {problem.suggestion && (
-                  <span className="block text-muted-foreground">
-                    Did you mean <code className="font-mono text-xs">{problem.suggestion}</code>?
-                  </span>
-                )}
-              </span>
-            </li>
-          )
-        })}
-      </ul>
-    </div>
+    <p id={formMessageId} className="text-sm text-destructive">
+      {String(error.message ?? "")}
+    </p>
   )
 }

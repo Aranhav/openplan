@@ -11,9 +11,9 @@ export interface ModuleStore {
   structure: StructureDto
   /** The body of every request that changed a module or a line item, by what it did. */
   requests: { action: string; id?: string; body?: unknown }[]
-  /** What is wrong with the formula of a line item, by line item, as a query says. */
+  /** What is wrong with the formula of a line item, by line item, as the structure says. */
   formulaErrors: Record<string, FormulaError[]>
-  /** The problems the server finds in a formula it is asked to save; none accepts it. */
+  /** The problems the server finds in a formula it is asked to save or to check; none accepts it. */
   checkFormula: (formula: string) => FormulaError[]
   /** Makes every change wait, for a test to look at the page while one is being saved; call the result to let them through. */
   hold: () => () => void
@@ -52,6 +52,10 @@ export function serveModuleStore(structure: StructureDto): ModuleStore {
     },
   }
   let gate: Promise<void> | undefined
+  const withProblems = (item: LineItemDto): LineItemDto => ({
+    ...item,
+    formula_errors: store.formulaErrors[item.id] ?? item.formula_errors,
+  })
   const lineItem = (id: unknown) => store.structure.line_items.find((item) => item.id === id)
   const change = (patch: Partial<StructureDto>) => {
     store.structure = { ...store.structure, ...patch }
@@ -60,7 +64,21 @@ export function serveModuleStore(structure: StructureDto): ModuleStore {
     store.structure.line_items.filter((item) => item.module === moduleId)
 
   server.use(
-    http.get("/api/v1/models/:id/structure", () => HttpResponse.json(store.structure)),
+    http.get("/api/v1/models/:id/structure", () =>
+      HttpResponse.json({
+        ...store.structure,
+        line_items: store.structure.line_items.map(withProblems),
+      }),
+    ),
+    http.post("/api/v1/models/:id/formula/check", async ({ request }) => {
+      const { formula } = (await request.json()) as Schemas["CheckFormulaRequest"]
+      const problems = store.checkFormula(formula)
+      return HttpResponse.json(
+        problems.length > 0 ? { ok: false, errors: problems } : { ok: true, type: { type: "number" } },
+      )
+    }),
+    http.get("/api/v1/models/:id/formula/completions", () => HttpResponse.json([])),
+    http.get("/api/v1/formula/functions", () => HttpResponse.json([])),
     http.post("/api/v1/models/:id/modules", async ({ request }) => {
       await gate
       const body = (await request.json()) as Schemas["CreateModuleRequest"]
@@ -189,6 +207,11 @@ export function serveModuleStore(structure: StructureDto): ModuleStore {
         } else {
           updated[field] = value
         }
+      }
+      // A formula the server accepted has no problems.
+      if (body.formula !== undefined) {
+        updated.formula_errors = []
+        delete store.formulaErrors[current.id]
       }
       change({
         line_items: store.structure.line_items.map((item) =>

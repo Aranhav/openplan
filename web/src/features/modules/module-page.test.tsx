@@ -13,11 +13,21 @@ import {
   makeStructure,
   productsId,
   regionsId,
+  revenueAmount,
   revenueModule,
   structure,
   unitsSold,
 } from "@/test/structure"
-import { serveViewQuery } from "@/test/view-query"
+import { formulaText } from "@/test/formula"
+import {
+  header,
+  lineItem,
+  lineItemsDim,
+  member,
+  numberCell,
+  salesView,
+  serveViewQuery,
+} from "@/test/view-query"
 import type { ViewQuery } from "@/features/grid/view-types"
 import { mockViewport } from "@/test/viewport"
 
@@ -253,6 +263,50 @@ describe("the grid tab", () => {
 
     expect(router.state.location.search).toEqual({ tab: "blueprint" })
     expect(await content.findByRole("heading", { name: "Add your first line item" })).toBeVisible()
+  })
+})
+
+describe("the formula bar in the grid tab", () => {
+  /** The line items of Revenue down the rows, and three months across. */
+  const revenueView = salesView({
+    rowDims: [lineItemsDim],
+    columnDims: [{ kind: "time" }],
+    totalRows: 2,
+    totalColumns: 3,
+    lineItems: [unitsSold, revenueAmount].map((item) => lineItem(item.id, item.name)),
+    rowHeader: (row) => {
+      const item = [unitsSold, revenueAmount][row]
+      return header(member(item.id, item.name))
+    },
+    columnHeader: (col) => header(member(`m${col}`, `Month ${col + 1}`)),
+    cell: () => numberCell(1),
+  })
+
+  it("shows the formula of the line item of the active cell, and follows the active cell", async () => {
+    const typist = userEvent.setup()
+    const { served } = openApp(revenuePath)
+    served.fixture = revenueView
+    const content = await page()
+
+    const grid = await content.findByRole("grid", { name: "Revenue grid" })
+    const first = await content.findByRole("textbox", { name: "Formula of Units sold" })
+    expect(formulaText(first)).toBe("")
+
+    const secondRow = grid.querySelector<HTMLElement>("[data-row='1'][data-col='0']")
+    expect(secondRow).not.toBeNull()
+    await typist.click(secondRow as HTMLElement)
+
+    const second = await content.findByRole("textbox", { name: "Formula of Revenue amount" })
+    expect(formulaText(second)).toBe("Units sold * Pricing.Unit price")
+  })
+
+  it("lets a planner read the formula but not change it", async () => {
+    const { served } = openApp(revenuePath, structure, { role: "planner" })
+    served.fixture = revenueView
+    const content = await page()
+
+    const formula = await content.findByRole("textbox", { name: "Formula of Units sold" })
+    expect(formula).toHaveAttribute("contenteditable", "false")
   })
 })
 

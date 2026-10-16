@@ -1,10 +1,13 @@
 import { screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
+import { HttpResponse, http } from "msw"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { StructureDto } from "@/features/structure/types"
 import { makeModel, me, mockSession, renderApp, serveModels, workspace } from "@/test/app"
 import { violations } from "@/test/axe"
+import { setFormula } from "@/test/formula"
 import { type ModuleStore, serveModuleStore } from "@/test/module-edits"
+import { server } from "@/test/server"
 import {
   makeLineItem,
   makeStructure,
@@ -141,6 +144,42 @@ describe("a module's page", () => {
     await typist.click(await within(table).findByRole("button", { name: /Formula error/ }))
     const sheet = within(await screen.findByRole("dialog", { name: "Line item settings" }))
     await sheet.findByText("The formula has a problem.")
+
+    expect(await violations()).toEqual([])
+  })
+
+  it("has none with the formula bar showing the problems of a formula", async () => {
+    open(`${modulePath}?tab=blueprint&li=${revenueAmount.id}`, {
+      rows: false,
+      prepare: (store) => {
+        store.formulaErrors[revenueAmount.id] = [
+          { code: "formula.unknown_name", message: "Unknown name 'Units'", start: 0, end: 5 },
+        ]
+      },
+    })
+    const bar = within(await screen.findByRole("group", { name: "Formula bar" }))
+    await bar.findByText("The formula has a problem.")
+
+    expect(await violations()).toEqual([])
+  })
+
+  it("has none with a list of completions open", async () => {
+    open(`${modulePath}?tab=blueprint&li=${revenueAmount.id}`, { rows: false })
+    // After the store, which offers nothing.
+    server.use(
+      http.get("/api/v1/models/:id/formula/completions", () =>
+        HttpResponse.json([
+          { label: "Units sold", kind: "line_item", detail: "Number" },
+          { label: "ROUND", kind: "function", detail: "Rounds a number." },
+          { label: "Regions", kind: "list", detail: "List" },
+        ]),
+      ),
+    )
+    const bar = within(await screen.findByRole("group", { name: "Formula bar" }))
+    const input = await bar.findByRole("textbox", { name: "Formula of Revenue amount" })
+    input.focus()
+    setFormula(input, "Un")
+    await screen.findAllByRole("option")
 
     expect(await violations()).toEqual([])
   })

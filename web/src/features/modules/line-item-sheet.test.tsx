@@ -1,11 +1,14 @@
 import { screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
+import { HttpResponse, http } from "msw"
 import { toast } from "sonner"
 import { describe, expect, it, vi } from "vitest"
 import type { StructureDto } from "@/features/structure/types"
 import type { components } from "@/lib/api/schema"
 import { makeModel, me, mockSession, renderApp, serveModels, workspace } from "@/test/app"
+import { formulaText, formulaView, setFormula } from "@/test/formula"
 import { type ModuleStore, serveModuleStore } from "@/test/module-edits"
+import { server } from "@/test/server"
 import {
   forecastId,
   makeLineItem,
@@ -92,7 +95,7 @@ describe("the settings of a line item", () => {
     expect(sheet.getByLabelText("Currency code")).toHaveValue("USD")
     expect(sheet.getByRole("switch", { name: "Thousands separator" })).toBeChecked()
     expect(sheet.getByRole("radio", { name: "Parentheses" })).toBeChecked()
-    expect(sheet.getByLabelText("Formula")).toHaveValue("Units sold * Pricing.Unit price")
+    expect(formulaText(sheet.getByLabelText("Formula"))).toBe("Units sold * Pricing.Unit price")
     expect(sheet.getByRole("combobox", { name: "Summary" })).toHaveTextContent("Sum")
     expect(sheet.getByRole("combobox", { name: "Time summary" })).toHaveTextContent(
       "Same as summary",
@@ -111,10 +114,9 @@ describe("the settings of a line item", () => {
     const typist = userEvent.setup()
     await openSheet(typist)
 
-    expect(screen.getByText("Units sold", { selector: "span.font-medium" })).toBeVisible()
-    expect(screen.getByRole("dialog", { name: "Line item settings" })).toHaveTextContent(
-      "Units sold in Revenue.",
-    )
+    const dialog = screen.getByRole("dialog", { name: "Line item settings" })
+    expect(within(dialog).getByText("Units sold", { selector: "span.font-medium" })).toBeVisible()
+    expect(dialog).toHaveTextContent("Units sold in Revenue.")
   })
 
   it("saves a new name, code and notes, sending only those", async () => {
@@ -673,7 +675,7 @@ describe("clearing input values", () => {
     const typist = userEvent.setup()
     const { sheet } = await openSheet(typist)
 
-    await typist.type(sheet.getByLabelText("Formula"), "1 + 1")
+    setFormula(sheet.getByLabelText("Formula"), "1 + 1")
     await save(typist, sheet)
 
     expect(await screen.findByRole("alertdialog", { name: "Clear input values?" })).toBeVisible()
@@ -719,31 +721,24 @@ describe("the formula", () => {
     },
   ]
 
-  it("is typed in a monospace field", async () => {
-    const typist = userEvent.setup()
-    const { sheet } = await openSheet(typist, revenueAmount.id)
-
-    expect(sheet.getByLabelText("Formula")).toHaveClass("font-mono")
-  })
-
   it("lists every problem the server finds under the formula, and selects the first", async () => {
     const typist = userEvent.setup()
     const { store, sheet } = await openSheet(typist, revenueAmount.id)
     store.checkFormula = () => problems
 
-    const formula = sheet.getByLabelText<HTMLTextAreaElement>("Formula")
-    await typist.clear(formula)
-    await typist.type(formula, "1 + Revnue + SUM(1, 2)")
+    const formula = sheet.getByLabelText("Formula")
+    setFormula(formula, "1 + Revnue + SUM(1, 2)")
     await save(typist, sheet)
 
     const alert = within(await sheet.findByRole("alert"))
     expect(alert.getByText("The formula has 2 problems.")).toBeVisible()
     expect(alert.getByText(/Unknown name 'Revnue'/)).toBeVisible()
-    expect(alert.getByText("Revenue")).toBeVisible()
+    expect(alert.getByText(/Did you mean 'Revenue'\?/)).toBeVisible()
     expect(alert.getByText(/SUM takes 1 argument/)).toBeVisible()
     expect(formula).toHaveAttribute("aria-invalid", "true")
     expect(formula).toHaveFocus()
-    expect([formula.selectionStart, formula.selectionEnd]).toEqual([4, 10])
+    const { from, to } = formulaView(formula).state.selection.main
+    expect([from, to]).toEqual([4, 10])
     expect(screen.getByRole("dialog", { name: "Line item settings" })).toBeVisible()
   })
 
@@ -760,13 +755,13 @@ describe("the formula", () => {
       },
     ]
 
-    const formula = sheet.getByLabelText<HTMLTextAreaElement>("Formula")
-    await typist.clear(formula)
-    await typist.type(formula, "Umsätze + Cost")
+    const formula = sheet.getByLabelText("Formula")
+    setFormula(formula, "Umsätze + Cost")
     await save(typist, sheet)
 
     await sheet.findByRole("alert")
-    expect([formula.selectionStart, formula.selectionEnd]).toEqual([10, 14])
+    const { from, to } = formulaView(formula).state.selection.main
+    expect([from, to]).toEqual([10, 14])
   })
 
   it("lists the problems of the saved formula as soon as the sheet opens, without announcing them", async () => {
@@ -777,7 +772,7 @@ describe("the formula", () => {
       },
     })
 
-    const formula = sheet.getByLabelText<HTMLTextAreaElement>("Formula")
+    const formula = sheet.getByLabelText("Formula")
     expect(await sheet.findByText("The formula has 2 problems.")).toBeVisible()
     expect(sheet.getByText(/Unknown name 'Revnue'/)).toBeVisible()
     expect(sheet.getByText(/SUM takes 1 argument/)).toBeVisible()
@@ -804,7 +799,7 @@ describe("the formula", () => {
     store.checkFormula = () => [problems[1]]
     await sheet.findByText("The formula has a problem.")
 
-    await typist.type(sheet.getByLabelText("Formula"), " + 1")
+    setFormula(sheet.getByLabelText("Formula"), "Units sold + 1")
     expect(sheet.queryByText("The formula has a problem.")).toBeNull()
     await save(typist, sheet)
 
@@ -813,26 +808,56 @@ describe("the formula", () => {
     expect(alert.queryByText(/Unknown name 'Revnue'/)).toBeNull()
   })
 
-  it("takes the problems away once the formula is edited", async () => {
+  it("takes the refusal away once the formula is edited, and the problems once it checks out", async () => {
     const typist = userEvent.setup()
     const { store, sheet } = await openSheet(typist, revenueAmount.id)
     store.checkFormula = () => problems
 
-    await typist.type(sheet.getByLabelText("Formula"), " + 1")
+    setFormula(sheet.getByLabelText("Formula"), "Units sold + 1")
     await save(typist, sheet)
     await sheet.findByRole("alert")
-    await typist.type(sheet.getByLabelText("Formula"), "2")
+    store.checkFormula = () => []
+    setFormula(sheet.getByLabelText("Formula"), "Units sold + 2")
 
     expect(sheet.queryByRole("alert")).toBeNull()
-    expect(sheet.getByLabelText("Formula")).not.toHaveAttribute("aria-invalid", "true")
+    expect(sheet.queryByText(/The formula has/)).toBeNull()
+    // The form takes the server's refusal off the field once it has checked the new formula.
+    await waitFor(() =>
+      expect(sheet.getByLabelText("Formula")).not.toHaveAttribute("aria-invalid", "true"),
+    )
+    // And the new formula checks out, so the problems stay away.
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    expect(sheet.queryByText(/The formula has/)).toBeNull()
+  })
+
+  it("closes the list of completions on Escape before it closes the sheet", async () => {
+    const typist = userEvent.setup()
+    const { sheet } = await openSheet(typist, revenueAmount.id)
+    // After the store, which offers nothing.
+    server.use(
+      http.get("/api/v1/models/:id/formula/completions", () =>
+        HttpResponse.json([{ label: "Units sold", kind: "line_item", detail: "Number" }]),
+      ),
+    )
+    const formula = sheet.getByLabelText("Formula")
+    formula.focus()
+    setFormula(formula, "Un")
+    await screen.findAllByRole("option")
+    // The list ignores keys for a moment after it opens.
+    await new Promise((resolve) => setTimeout(resolve, 100))
+
+    await typist.keyboard("{Escape}")
+
+    expect(screen.queryByRole("option")).toBeNull()
+    expect(screen.getByRole("dialog", { name: "Line item settings" })).toBeVisible()
+    expect(screen.queryByRole("alertdialog")).toBeNull()
   })
 
   it("saves a formula the server accepts", async () => {
     const typist = userEvent.setup()
     const { store, sheet } = await openSheet(typist, revenueAmount.id)
 
-    await typist.clear(sheet.getByLabelText("Formula"))
-    await typist.type(sheet.getByLabelText("Formula"), "Units sold * 2")
+    setFormula(sheet.getByLabelText("Formula"), "Units sold * 2")
     await save(typist, sheet)
 
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
@@ -843,7 +868,7 @@ describe("the formula", () => {
     const typist = userEvent.setup()
     const { store, sheet } = await openSheet(typist, revenueAmount.id)
 
-    await typist.clear(sheet.getByLabelText("Formula"))
+    setFormula(sheet.getByLabelText("Formula"), "")
     await save(typist, sheet)
 
     await waitFor(() => expect(store.requests[0].body).toEqual({ formula: null }))
@@ -860,8 +885,8 @@ describe("who may change the settings", () => {
     expect(sheet.getByLabelText("Name")).toBeDisabled()
     expect(sheet.getByRole("combobox", { name: "Format type" })).toBeDisabled()
     expect(sheet.getByRole("combobox", { name: "Summary" })).toBeDisabled()
-    expect(sheet.getByLabelText("Formula")).toHaveAttribute("readonly")
-    expect(sheet.getByLabelText("Formula")).toHaveValue("Units sold * Pricing.Unit price")
+    expect(sheet.getByLabelText("Formula")).toHaveAttribute("contenteditable", "false")
+    expect(formulaText(sheet.getByLabelText("Formula"))).toBe("Units sold * Pricing.Unit price")
     expect(sheet.queryByRole("button", { name: "Save changes" })).toBeNull()
     expect(screen.getByRole("dialog")).toHaveTextContent(
       "Only workspace builders and admins can change it.",

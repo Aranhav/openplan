@@ -187,6 +187,8 @@ function ModuleScreen({
             module={module}
             structure={structure}
             readOnly={workspace === undefined || !canEditCells(workspace.role)}
+            canEditFormulas={canEdit}
+            locked={locked}
             onOpenBlueprint={() => onTabChange("blueprint")}
           />
         </TabsContent>

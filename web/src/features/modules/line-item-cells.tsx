@@ -1,4 +1,5 @@
 import { CircleAlert } from "lucide-react"
+import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import type { FormulaError } from "@/features/grid/view-types"
 
@@ -76,15 +77,17 @@ function FormulaErrorButton({ errors, tabIndex, onOpen }: FormulaErrorButtonProp
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <button
+        <Button
           type="button"
+          variant="ghost"
+          size="icon-xs"
           aria-label={label}
           tabIndex={tabIndex}
-          className="inline-flex shrink-0 rounded-sm text-destructive outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+          className="text-destructive hover:text-destructive"
           onClick={onOpen}
         >
           <CircleAlert className="size-4" />
-        </button>
+        </Button>
       </TooltipTrigger>
       <TooltipContent className="max-w-sm">
         <ul className="flex flex-col gap-1">

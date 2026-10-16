@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import type { StructureDto } from "@/features/structure/types"
 import type { components } from "@/lib/api/schema"
 import { makeModel, me, mockSession, renderApp, serveModels, workspace } from "@/test/app"
+import { formulaText, setFormula } from "@/test/formula"
 import { serveModuleStore } from "@/test/module-edits"
 import { problem } from "@/test/problem"
 import { server } from "@/test/server"
@@ -292,6 +293,73 @@ describe("the line items", () => {
     expect(await content.findByRole("heading", { name: "Add your first line item" })).toBeVisible()
     expect(content.getAllByRole("button", { name: "Add line item" })).toHaveLength(1)
     expect(content.queryByRole("grid", { name: "Line items" })).toBeNull()
+  })
+})
+
+describe("the formula bar", () => {
+  async function findBar() {
+    return within(await screen.findByRole("group", { name: "Formula bar" }))
+  }
+
+  it("asks to select a line item while none is selected", async () => {
+    openBlueprint()
+
+    expect(await (await findBar()).findByText("Select a line item to see its formula.")).toBeVisible()
+  })
+
+  it("shows the formula of the selected line item, and follows the selection", async () => {
+    const typist = userEvent.setup()
+    openBlueprint(withLineItems, { path: `${blueprintPath}&li=${revenueAmount.id}` })
+    const bar = await findBar()
+
+    const formula = await bar.findByRole("textbox", { name: "Formula of Revenue amount" })
+    expect(formulaText(formula)).toBe("Units sold * Pricing.Unit price")
+    expect(bar.getByText("Revenue amount")).toBeVisible()
+
+    await typist.click(rowNamed(await findTable(), "Units sold"))
+
+    const input = await bar.findByRole("textbox", { name: "Formula of Units sold" })
+    expect(formulaText(input)).toBe("")
+    expect(input.closest(".cm-editor")).toHaveTextContent("Type a formula to calculate")
+  })
+
+  it("saves a formula, which the table then shows", async () => {
+    const typist = userEvent.setup()
+    const { store } = openBlueprint(withLineItems, {
+      path: `${blueprintPath}&li=${revenueAmount.id}`,
+    })
+    const bar = await findBar()
+    setFormula(await bar.findByRole("textbox", { name: "Formula of Revenue amount" }), "1 + 1")
+
+    await typist.click(await bar.findByRole("button", { name: "Save" }))
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith("Formula saved"))
+    expect(store.requests).toEqual([
+      { action: "update line item", id: revenueAmount.id, body: { formula: "1 + 1" } },
+    ])
+    expect(await within(await findTable()).findByText("1 + 1")).toBeVisible()
+  })
+
+  it("shows a planner the formula but lets them change nothing", async () => {
+    openBlueprint(withLineItems, {
+      role: "planner",
+      path: `${blueprintPath}&li=${revenueAmount.id}`,
+    })
+    const bar = await findBar()
+
+    const formula = await bar.findByRole("textbox", { name: "Formula of Revenue amount" })
+    expect(formulaText(formula)).toBe("Units sold * Pricing.Unit price")
+    expect(formula).toHaveAttribute("contenteditable", "false")
+  })
+
+  it("is switched off in production mode", async () => {
+    openBlueprint(withLineItems, { mode: "prod", path: `${blueprintPath}&li=${revenueAmount.id}` })
+    const bar = await findBar()
+
+    expect(await bar.findByRole("textbox", { name: "Formula of Revenue amount" })).toHaveAttribute(
+      "contenteditable",
+      "false",
+    )
   })
 })
 
@@ -907,7 +975,7 @@ describe("who may change the line items", () => {
 
     const sheet = within(await screen.findByRole("dialog", { name: "Line item settings" }))
     expect(sheet.getByLabelText("Name")).toBeDisabled()
-    expect(sheet.getByLabelText("Formula")).toHaveAttribute("readonly")
+    expect(sheet.getByLabelText("Formula")).toHaveAttribute("contenteditable", "false")
     expect(sheet.queryByRole("button", { name: "Save changes" })).toBeNull()
     expect(sheet.getAllByRole("button", { name: "Close" }).length).toBeGreaterThan(0)
   })

@@ -28,14 +28,16 @@ import { Textarea } from "@/components/ui/textarea"
 import { useUpdateLineItem } from "@/features/structure/api"
 import { lineItemsOf } from "@/features/structure/modules"
 import type { LineItemDto, ModuleDto, StructureDto } from "@/features/structure/types"
-import type { FormulaError } from "@/features/grid/view-types"
-import { ApiError } from "@/lib/api/client"
+import { closeCompletionsOnEscape } from "@/features/formula/escape"
+import type { FormulaEditorHandle } from "@/features/formula/formula-editor"
+import type { KnownProblems } from "@/features/formula/lint"
+import { byteToUtf16 } from "@/features/formula/offsets"
+import { ApiError, type FormulaProblem } from "@/lib/api/client"
 import { closeUnlessBusy } from "@/lib/close-unless-busy"
 import { NAME_TAKEN_FIELD_ERRORS, reportFormError } from "@/lib/form-errors"
 import { ClearValuesDialog } from "./clear-values-dialog"
 import { DiscardChangesDialog } from "./discard-changes-dialog"
 import { FormulaField } from "./formula-field"
-import { formulaIndex } from "./formula-text"
 import {
   type LineItemValues,
   clearsInputValues,
@@ -54,8 +56,6 @@ interface LineItemSheetProps {
   structure: StructureDto
   module: ModuleDto
   lineItem: LineItemDto
-  /** What is wrong with its formula as the model last read it, listed when the sheet opens. */
-  errors: FormulaError[]
   open: boolean
   onOpenChange: (open: boolean) => void
   /** Whether the user may change the line item; if not, the settings are shown as they are. */
@@ -72,7 +72,6 @@ export function LineItemSheet({
   structure,
   module,
   lineItem,
-  errors,
   open,
   onOpenChange,
   canEdit,
@@ -98,6 +97,8 @@ export function LineItemSheet({
       <Sheet open={open} onOpenChange={(next) => closeUnlessBusy(update.isPending, dismiss)(next)}>
         <SheetContent
           onOpenAutoFocus={focusFirstField}
+          // Escape closes a list of completions of the formula before it closes the sheet.
+          onEscapeKeyDown={(event) => closeCompletionsOnEscape(event) && event.preventDefault()}
           onCloseAutoFocus={onCloseAutoFocus}
           showCloseButton={!update.isPending}
           className="w-full gap-0 sm:max-w-xl"
@@ -111,11 +112,11 @@ export function LineItemSheet({
           </SheetHeader>
           <LineItemForm
             key={lineItem.id}
+            modelId={modelId}
             update={update}
             structure={structure}
             module={module}
             lineItem={lineItem}
-            errors={errors}
             canEdit={canEdit}
             locked={locked}
             dirty={dirty}
@@ -137,11 +138,11 @@ export function LineItemSheet({
 }
 
 interface LineItemFormProps {
+  modelId: string
   update: ReturnType<typeof useUpdateLineItem>
   structure: StructureDto
   module: ModuleDto
   lineItem: LineItemDto
-  errors: FormulaError[]
   canEdit: boolean
   locked: boolean
   dirty: RefObject<boolean>
@@ -149,11 +150,11 @@ interface LineItemFormProps {
 }
 
 function LineItemForm({
+  modelId,
   update,
   structure,
   module,
   lineItem,
-  errors,
   canEdit,
   locked,
   dirty,
@@ -166,14 +167,17 @@ function LineItemForm({
     values: lineItemValues(lineItem, module),
     resetOptions: { keepDirtyValues: true },
   })
-  // What the server refused the formula for when it was last saved; until then, and when the
-  // formula is edited, what the model says of the saved one.
-  const [refused, setRefused] = useState<FormulaError[]>()
-  const problems = refused ?? errors
+  // What the server refused the formula for when it was last saved. The editor shows it for as
+  // long as the formula is the one that was refused, and otherwise what the model says of the
+  // saved formula, until it has checked the one being typed.
+  const [refused, setRefused] = useState<{ formula: string; problems: FormulaProblem[] }>()
+  const known: KnownProblems = refused
+    ? { ...refused, refused: true }
+    : { formula: lineItem.formula ?? "", problems: lineItem.formula_errors }
   // The values waiting for a yes to clearing the line item's input values.
   const [confirming, setConfirming] = useState<LineItemValues>()
   const { saveRef, markSaved, afterConfirmation } = useSheetForm(form, dirty)
-  const formula = useRef<HTMLTextAreaElement | null>(null)
+  const formula = useRef<FormulaEditorHandle | null>(null)
   const disabled = !canEdit || locked
 
   const ratioParts = lineItemsOf(structure, module.id).filter(
@@ -202,14 +206,10 @@ function LineItemForm({
 
   // Lists everything the server found, and selects the first problem in the formula.
   function showProblems(error: ApiError, text: string) {
-    setRefused(error.formulaErrors)
+    setRefused({ formula: text, problems: error.formulaErrors })
     form.setError("formula", { type: "server", message: error.detail })
     const [first] = error.formulaErrors
-    formula.current?.focus()
-    formula.current?.setSelectionRange(
-      formulaIndex(text, first.start),
-      formulaIndex(text, first.end),
-    )
+    formula.current?.select(byteToUtf16(text, first.start), byteToUtf16(text, first.end))
   }
 
   async function onSubmit(values: LineItemValues) {
@@ -266,11 +266,12 @@ function LineItemForm({
           <Section title="Calculation">
             <FormulaField
               form={form}
-              problems={problems}
-              refused={refused !== undefined}
-              onEdit={() => setRefused([])}
+              modelId={modelId}
+              lineItemId={lineItem.id}
+              known={known}
               readOnly={disabled}
-              textareaRef={formula}
+              onSubmit={() => void form.handleSubmit(onSubmit)()}
+              editorRef={formula}
             />
             <LineItemSummaryFields
               form={form}

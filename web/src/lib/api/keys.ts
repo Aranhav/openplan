@@ -15,6 +15,17 @@ export const queryKeys = {
     listId,
     "items",
   ],
+  /** What the formula editor offers after a prefix. It sits under the structure's key, so a change to the structure makes it stale. */
+  formulaCompletions: (modelId: string, lineItemId: string, prefix: string) => [
+    "models",
+    modelId,
+    "structure",
+    "formula-completions",
+    lineItemId,
+    prefix,
+  ],
+  /** The built-in functions of the formula language, which are the same for every model. */
+  formulaFunctions: ["formula-functions"],
   /** Every query of a model starts with this key, so one invalidation reaches them all. */
   query: (modelId: string, ...rest: unknown[]) => ["models", modelId, "query", ...rest],
   users: ["users"],
@@ -25,14 +36,7 @@ export const mutationKeys = {
   deleteModel: ["delete-model"],
 } as const
 
-/** The part of a query key that tells the formula errors of a module from the pivot of a view. */
-export const LINE_ITEM_ERRORS = "line-item-errors"
-
-/**
- * The pivot a view's key holds: `queryKeys.query(modelId, pivot, block)` puts it right after the
- * model's `query` key. It is not an object for another query of the model, such as the formula
- * errors of a module.
- */
+/** The pivot a view's key holds: `queryKeys.query(modelId, pivot, block)` puts it right after the model's `query` key. */
 export function pivotOfKey(queryKey: readonly unknown[]): unknown {
   return queryKey[queryKeys.query("").length]
 }
