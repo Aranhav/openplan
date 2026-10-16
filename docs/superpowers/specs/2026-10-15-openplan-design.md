@@ -18,7 +18,7 @@ OpenPlan is an open-source Enterprise Performance Management (EPM) / connected-p
 3. Editing one input cell in a 1M-cell model shows recalculated results in under 50 ms of server time.
 4. All tests (engine, server, web unit, Playwright E2E) pass in CI on every merge.
 
-**Non-goals (initial release):** sparse storage engine (Anaplan Polaris-style), week/day time granularity, Excel add-in, native mobile apps, multi-node clustering (one server process owns all loaded models), ERP-specific connectors (REST API + CSV/XLSX cover integration).
+**Non-goals (initial release):** sparse storage engine (Anaplan Polaris-style; roadmap M9, §15), week/day time granularity (roadmap M10, §15), Excel add-in, native mobile apps, multi-node clustering (one server process owns all loaded models), ERP-specific connectors (REST API + CSV/XLSX cover integration).
 
 ## 2. Architecture
 
@@ -459,3 +459,12 @@ Each milestone gets its own implementation plan in `docs/superpowers/plans/`, is
 | M6 | Collaboration & ALM | Comments + mentions, presence, audit log, cell history, drill to source, revisions, diff, sync, `.openplan` export/import, model copy |
 | M7 | Advanced | Scenario sandboxes, forecasting action, AI provider settings + four AI features |
 | M8 | Launch | Demo model, docs (user guide, formula reference, API guide), perf benchmarks, accessibility audit, README with screenshots, release Docker image workflow |
+
+### Roadmap after the initial release
+
+Built only after M8 merges, in this order. Each gets its own design spec and plan before any code.
+
+| # | Name | Deliverables |
+|---|---|---|
+| M9 | Sparse engine | Hybrid storage chosen per line item from its fill: dense columns as today for well-filled data, block-sparse storage for sparse data. Block-sparse means sparse across the outer dimensions (only combinations that hold data get a block) and dense inside a block (time and versions as plain arrays, so the vectorised kernels keep dense speed). Sorted mixed-radix keys with a default value per line item (only exceptions stored); sparsity-aware operators (product → intersection, sum → union, IF follows its condition); formulas that would fill a huge space keep a default instead of materialising; summaries as streaming group-by over sorted keys, parallel over blocks; change-set (key-level) incremental recalc; codec and checkpoints for blocks; view queries and alignment over sparse keys. The per-line-item cell cap moves from allocated to populated cells. Every engine test runs on both storages with property tests proving identical results. Targets: 100M populated cells in a 54-billion-cell space within about 3 GB; a one-cell edit recalculates in under 50 ms; well-filled data within 1.2× of today's dense speed. |
+| M10 | Week and day time | Week and day time levels; ISO weeks and 4-4-5 / 4-5-4 / 5-4-4 retail calendars and 13-period years; week↔month mapping for weeks that span months; time functions, summaries, switchover and time ranges at week and day level; Time screen and grid support. Depends on M9 because day-level models are large and sparse. |
