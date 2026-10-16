@@ -636,3 +636,44 @@ fn line_item_without_list_axes_broadcasts_down_a_list() {
         vec![ViewDim::Time, ViewDim::Versions]
     );
 }
+
+#[test]
+fn cells_of_every_level_of_time_read_their_own_totals() {
+    // Fiscal year 27 runs from April 2026: April to June is its first quarter, and its first half
+    // runs to September.
+    let mut model = Model::new(calendar());
+    let flow = new_module(&mut model, "Flow", vec![month_axis()]);
+    let units = number_item(&mut model, flow, "Units", 1);
+    for (month, value) in [
+        ("Apr 26", 1.0),
+        ("Jul 26", 2.0),
+        ("Oct 26", 4.0),
+        ("Jan 27", 8.0),
+    ] {
+        set(&mut model, units, vec![period(month)], num(value));
+    }
+    let q = query_of(
+        flow,
+        vec![ViewDim::Time],
+        vec![ViewDim::LineItems],
+        Vec::new(),
+    );
+
+    let result = run(&model, &q);
+
+    let rows = labels(&result.rows, 0);
+    let value_of = |label: &str| {
+        let at = rows.iter().position(|found| *found == label).unwrap();
+        let cell = &result.cells[at][0];
+        (number(cell), cell.flags.clone())
+    };
+    let total = vec![CellFlag::Summary, CellFlag::Readonly];
+    assert_eq!(value_of("Q1 FY27"), (1.0, total.clone()));
+    assert_eq!(value_of("Q2 FY27"), (2.0, total.clone()));
+    assert_eq!(value_of("Q4 FY27"), (8.0, total.clone()));
+    assert_eq!(value_of("H1 FY27"), (3.0, total.clone()));
+    assert_eq!(value_of("H2 FY27"), (12.0, total.clone()));
+    assert_eq!(value_of("FY27"), (15.0, total.clone()));
+    assert_eq!(value_of("Total"), (15.0, total));
+    assert_eq!(value_of("Apr 26"), (1.0, vec![CellFlag::Input]));
+}

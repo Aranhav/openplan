@@ -374,24 +374,45 @@ mod tests {
 
     #[test]
     fn values_are_blank_exactly_when_their_stored_cells_are() {
-        let blank = [
-            Value::Number(0.0),
-            Value::Boolean(false),
-            Value::Text(Arc::from("")),
-            Value::Date(None),
-            Value::Item(None),
-            Value::Period(None),
+        // A column of a blank cell and a filled one, and the values that read as them.
+        let cases = [
+            (
+                Column::Number(vec![0.0, 1.5]),
+                Value::Number(0.0),
+                Value::Number(1.5),
+            ),
+            (
+                Column::Boolean(vec![false, true]),
+                Value::Boolean(false),
+                Value::Boolean(true),
+            ),
+            (
+                Column::Text(vec![Arc::from(""), Arc::from("a")]),
+                Value::Text(Arc::from("")),
+                Value::Text(Arc::from("a")),
+            ),
+            (
+                Column::Date(vec![i32::MIN, 0]),
+                Value::Date(None),
+                Value::Date(NaiveDate::from_ymd_opt(1970, 1, 1)),
+            ),
+            (
+                Column::Item(vec![u32::MAX, 0]),
+                Value::Item(None),
+                Value::Item(Some(ItemId::new())),
+            ),
+            (
+                Column::Period(vec![u32::MAX, 0]),
+                Value::Period(None),
+                Value::Period(Some((TimeLevel::Month, 0))),
+            ),
         ];
-        assert!(blank.iter().all(Value::is_blank));
-        let filled = [
-            Value::Number(1.5),
-            Value::Boolean(true),
-            Value::Text(Arc::from("a")),
-            Value::Date(NaiveDate::from_ymd_opt(2026, 1, 1)),
-            Value::Item(Some(ItemId::new())),
-            Value::Period(Some((TimeLevel::Month, 0))),
-        ];
-        assert!(filled.iter().all(|value| !value.is_blank()));
+        for (column, blank, filled) in cases {
+            assert!(column.is_blank_at(0));
+            assert_eq!(blank.is_blank(), column.is_blank_at(0), "{blank:?}");
+            assert!(!column.is_blank_at(1));
+            assert_eq!(filled.is_blank(), column.is_blank_at(1), "{filled:?}");
+        }
     }
 
     #[test]
