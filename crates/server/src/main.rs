@@ -40,6 +40,12 @@ async fn main() -> anyhow::Result<()> {
 async fn serve() -> anyhow::Result<()> {
     let config = Config::from_env()?;
     logging::init(&config.log)?;
+    if config.public_origin().is_none() {
+        tracing::warn!(
+            public_url = %config.public_url,
+            "OPENPLAN_PUBLIC_URL is not an http or https address, so live sockets are not checked for their Origin"
+        );
+    }
 
     let db = db::connect(&config.database_url, config.db_pool_size).await?;
     db::MIGRATOR

@@ -9,12 +9,15 @@ use common::{
     sign_in_beside, url,
 };
 use futures_util::{SinkExt, StreamExt};
-use openplan_server::{auth::SESSION_COOKIE, live::LiveSettings};
+use openplan_server::{actor::ModelRegistry, auth::SESSION_COOKIE, live::LiveSettings};
 use serde_json::{Value, json};
 use sqlx::PgPool;
-use tokio::{net::TcpStream, time::timeout};
+use tokio::{
+    net::{TcpSocket, TcpStream},
+    time::timeout,
+};
 use tokio_tungstenite::{
-    MaybeTlsStream, WebSocketStream, connect_async,
+    MaybeTlsStream, WebSocketStream, client_async, connect_async,
     tungstenite::{self, Message, client::IntoClientRequest},
 };
 use uuid::Uuid;
@@ -42,8 +45,11 @@ async fn open(
     connect_async(request).await.map(|(socket, _)| socket)
 }
 
-/// The status and the problem of a socket that was refused before it was opened.
-fn refusal(result: Result<Socket, tungstenite::Error>) -> (StatusCode, Value) {
+/// The status, the problem and the `Retry-After` of a socket that was refused before it was
+/// opened.
+fn refusal_with_retry(
+    result: Result<Socket, tungstenite::Error>,
+) -> (StatusCode, Value, Option<String>) {
     match result {
         Err(tungstenite::Error::Http(response)) => {
             let content_type = response.headers()["content-type"].to_str().unwrap();
@@ -51,15 +57,26 @@ fn refusal(result: Result<Socket, tungstenite::Error>) -> (StatusCode, Value) {
                 content_type.starts_with("application/problem+json"),
                 "{content_type}"
             );
+            let retry = response
+                .headers()
+                .get("retry-after")
+                .map(|value| value.to_str().unwrap().to_string());
             let body = response.body().as_deref().unwrap_or_default();
             (
                 StatusCode::from_u16(response.status().as_u16()).unwrap(),
                 serde_json::from_slice(body).unwrap(),
+                retry,
             )
         }
         Err(other) => panic!("expected a refusal, got {other}"),
         Ok(_) => panic!("expected a refusal, got a socket"),
     }
+}
+
+/// The status and the problem of a socket that was refused before it was opened.
+fn refusal(result: Result<Socket, tungstenite::Error>) -> (StatusCode, Value) {
+    let (status, problem, _) = refusal_with_retry(result);
+    (status, problem)
 }
 
 async fn ticket_response(app: &mut TestApp, model: &str) -> TestResponse {
@@ -115,6 +132,18 @@ async fn closed_with(socket: &mut Socket) -> u16 {
 async fn quiet(socket: &mut Socket) -> bool {
     loop {
         match timeout(Duration::from_millis(300), socket.next()).await {
+            Err(_) => return true,
+            Ok(Some(Ok(Message::Ping(_) | Message::Pong(_)))) => {}
+            Ok(_) => return false,
+        }
+    }
+}
+
+/// Whether the socket is still open, with nothing but pings, after `time` of reading it.
+async fn stays_open(socket: &mut Socket, time: Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + time;
+    loop {
+        match tokio::time::timeout_at(deadline, socket.next()).await {
             Err(_) => return true,
             Ok(Some(Ok(Message::Ping(_) | Message::Pong(_)))) => {}
             Ok(_) => return false,
@@ -267,18 +296,23 @@ async fn ws_hello_then_cells_changed_after_edit(pool: PgPool) {
 async fn a_socket_hears_of_the_model_it_follows_only(pool: PgPool) {
     let (mut admin, workspace, id) = plan(&pool).await;
     let elsewhere = create_model(&mut admin, &workspace, "Elsewhere").await;
-    let counts = counts(&mut admin, &id).await;
+    let here = counts(&mut admin, &id).await;
+    let there = counts(&mut admin, &elsewhere).await;
     let address = admin.serve().await;
     let (mut socket, _) = follow(address, &mut admin, &elsewhere).await;
 
-    write(&mut admin, &id, &counts, 1.0).await;
-
+    write(&mut admin, &id, &here, 1.0).await;
     assert!(quiet(&mut socket).await);
+
+    // The next thing it hears is the change of the model it follows, not a late one of the other.
+    let seq = write(&mut admin, &elsewhere, &there, 1.0).await;
+    assert_eq!(next_json(&mut socket).await["seq"], seq);
 }
 
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn ticket_single_use(pool: PgPool) {
     let (mut admin, _, id) = plan(&pool).await;
+    let counts = counts(&mut admin, &id).await;
     let address = admin.serve().await;
     let ticket = ticket(&mut admin, &id).await;
 
@@ -289,8 +323,8 @@ async fn ticket_single_use(pool: PgPool) {
     assert_eq!(again.0, StatusCode::FORBIDDEN);
     assert_eq!(again.1["code"], "auth.forbidden");
     // The socket that used it goes on.
-    let (_, seq) = follow(address, &mut admin, &id).await;
-    assert!(seq >= 0);
+    let seq = write(&mut admin, &id, &counts, 1.0).await;
+    assert_eq!(next_json(&mut socket).await["seq"], seq);
 }
 
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
@@ -556,4 +590,234 @@ async fn an_open_socket_does_not_hold_up_a_graceful_shutdown(pool: PgPool) {
 
     let ended = timeout(WAIT, server).await;
     assert!(ended.is_ok(), "the server waits for the socket to close");
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn a_user_holds_20_tickets_at_most(pool: PgPool) {
+    let (mut admin, workspace, id) = plan(&pool).await;
+    create_member(&mut admin, &workspace, "vera@acme.com", "Vera", "viewer").await;
+    let mut viewer = sign_in_beside(&admin, "vera@acme.com").await;
+    for _ in 0..20 {
+        ticket(&mut admin, &id).await;
+    }
+
+    let refused = ticket_response(&mut admin, &id).await;
+
+    assert_problem(&refused, StatusCode::TOO_MANY_REQUESTS, "auth.rate_limited");
+    assert_eq!(refused.headers["retry-after"], "60");
+    // Another user is not held up by it.
+    ticket(&mut viewer, &id).await;
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn a_user_has_20_sockets_open_at_most(pool: PgPool) {
+    let (mut admin, workspace, id) = plan(&pool).await;
+    create_member(&mut admin, &workspace, "vera@acme.com", "Vera", "viewer").await;
+    let mut viewer = sign_in_beside(&admin, "vera@acme.com").await;
+    let address = admin.serve().await;
+    let mut sockets = Vec::new();
+    for _ in 0..20 {
+        sockets.push(follow(address, &mut admin, &id).await.0);
+    }
+
+    let ticket_for_the_21st = ticket(&mut admin, &id).await;
+    let (status, problem, retry) =
+        refusal_with_retry(open(address, &id, &ticket_for_the_21st, None).await);
+
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(problem["code"], "auth.rate_limited");
+    assert_eq!(retry.as_deref(), Some("30"));
+    // Another user is not held up by it.
+    follow(address, &mut viewer, &id).await;
+    // A socket that closes makes room: the server gives its place back when it has seen it close.
+    let mut closing = sockets.pop().unwrap();
+    closing.close(None).await.unwrap();
+    while let Some(Ok(_)) = timeout(WAIT, closing.next()).await.unwrap() {}
+    let mut tries = 0;
+    loop {
+        let ticket = ticket(&mut admin, &id).await;
+        match open(address, &id, &ticket, None).await {
+            Ok(mut socket) => {
+                assert_eq!(next_json(&mut socket).await["type"], "hello");
+                break;
+            }
+            Err(_) if tries < 50 => {
+                tries += 1;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Err(error) => panic!("the place was not given back: {error}"),
+        }
+    }
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn a_socket_whose_client_answers_no_pings_is_closed(pool: PgPool) {
+    let (mut admin, _, id) = plan_in(TestApp::with_live(pool.clone(), short(100, 60_000))).await;
+    let address = admin.serve().await;
+    let (mut silent, _) = follow(address, &mut admin, &id).await;
+    let (mut listening, _) = follow(address, &mut admin, &id).await;
+
+    // A client that reads answers the pings of a second, ten of them, and stays.
+    assert!(stays_open(&mut listening, Duration::from_millis(900)).await);
+
+    // The one that did not read has been left by the server after the first ping that nothing
+    // answered, without a word about it: it finds the connection gone.
+    let mut pings = 0;
+    let ended = timeout(WAIT, async {
+        loop {
+            match silent.next().await {
+                None | Some(Err(_)) => return None,
+                Some(Ok(Message::Close(frame))) => return frame,
+                Some(Ok(Message::Ping(_))) => pings += 1,
+                Some(Ok(_)) => {}
+            }
+        }
+    })
+    .await;
+    assert!(
+        matches!(ended, Ok(None)),
+        "the socket was not left as it should: {ended:?}"
+    );
+    assert_eq!(pings, 1);
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn a_client_that_sends_too_often_is_closed(pool: PgPool) {
+    let (mut admin, _, id) = plan(&pool).await;
+    let address = admin.serve().await;
+    let (mut socket, _) = follow(address, &mut admin, &id).await;
+
+    for at in 0..25 {
+        if socket.send(Message::text(format!("{at}"))).await.is_err() {
+            break;
+        }
+    }
+
+    assert_eq!(closed_with(&mut socket).await, 1008);
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn the_server_answers_a_client_that_closes(pool: PgPool) {
+    let (mut admin, _, id) = plan(&pool).await;
+    let address = admin.serve().await;
+    let (mut socket, _) = follow(address, &mut admin, &id).await;
+
+    socket.close(None).await.unwrap();
+
+    // The close is answered, and the connection ends there and not in a reset.
+    let mut answered = false;
+    loop {
+        match timeout(WAIT, socket.next()).await.unwrap() {
+            Some(Ok(Message::Close(_))) => answered = true,
+            Some(Ok(_)) => {}
+            Some(Err(error)) => {
+                assert!(
+                    matches!(error, tungstenite::Error::ConnectionClosed),
+                    "{error}"
+                );
+                break;
+            }
+            None => break,
+        }
+    }
+    assert!(answered, "the server did not answer the close");
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn an_instance_admin_who_is_no_member_follows_a_model(pool: PgPool) {
+    let (mut admin, _, id) = plan_in(TestApp::with_live(pool.clone(), short(60_000, 100))).await;
+    let boss = admin
+        .post(
+            "/api/v1/users",
+            Some(json!({
+                "email": "boss@acme.com",
+                "name": "Bo Boss",
+                "password": common::PASSWORD,
+                "is_instance_admin": true,
+            })),
+        )
+        .await;
+    assert_eq!(boss.status, StatusCode::CREATED, "{}", boss.text);
+    let mut boss = sign_in_beside(&admin, "boss@acme.com").await;
+    let address = admin.serve().await;
+    let (mut socket, _) = follow(address, &mut boss, &id).await;
+
+    // Several checks later, with no membership to find, the socket is open.
+    assert!(quiet(&mut socket).await);
+    assert!(quiet(&mut socket).await);
+}
+
+/// The server on a port of the local machine with a send buffer of a few kilobytes, and a client
+/// of it with a receive buffer as small, so that a client that does not read holds up the
+/// server's sends after a few dozen messages and not a few thousand.
+async fn follow_through_small_buffers(app: &mut TestApp, model: &str) -> Socket {
+    let server = TcpSocket::new_v4().unwrap();
+    server.set_send_buffer_size(2048).unwrap();
+    server.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let listener = server.listen(16).unwrap();
+    let address = listener.local_addr().unwrap();
+    let router = app
+        .router
+        .clone()
+        .into_make_service_with_connect_info::<SocketAddr>();
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+
+    let ticket = ticket(app, model).await;
+    let client = TcpSocket::new_v4().unwrap();
+    client.set_recv_buffer_size(2048).unwrap();
+    let stream = client.connect(address).await.unwrap();
+    let request = format!("ws://{address}/api/v1/models/{model}/live?ticket={ticket}")
+        .into_client_request()
+        .unwrap();
+    let (mut socket, _) = client_async(request, MaybeTlsStream::Plain(stream))
+        .await
+        .unwrap();
+    assert_eq!(next_json(&mut socket).await["type"], "hello");
+    socket
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn a_socket_that_falls_behind_is_told_to_resync_and_goes_on(pool: PgPool) {
+    // Two events of room for a subscriber that falls behind, and a client that reads nothing
+    // while the model is changed 200 times.
+    let settings_pool = pool.clone();
+    let (mut admin, _, id) = plan_in(TestApp::with_state(pool.clone(), move |state| {
+        state.models =
+            ModelRegistry::with_event_buffer(settings_pool, Duration::from_secs(1800), 2);
+    }))
+    .await;
+    let counts = counts(&mut admin, &id).await;
+    let mut socket = follow_through_small_buffers(&mut admin, &id).await;
+    let mut last = 0;
+    for at in 0..200 {
+        last = write(&mut admin, &id, &counts, f64::from(at)).await;
+    }
+
+    // What the client reads is some of the changes, then the word that it missed some, and the
+    // last change, which is among the newest and so is not lost.
+    let mut resync = None;
+    loop {
+        let message = next_json(&mut socket).await;
+        match message["type"].as_str().unwrap() {
+            "resync" => resync = Some(message["seq"].as_i64().unwrap()),
+            _ if message["seq"] == last => break,
+            _ => {}
+        }
+    }
+    let resync = resync.expect("the client missed changes and was not told");
+    // It was told of the model as it was then, which is not before a change that it is told of
+    // later.
+    assert!(
+        resync >= last - 2,
+        "the resync says {resync}, the last change is {last}"
+    );
+    // It follows on.
+    let next = write(&mut admin, &id, &counts, 1_000.0).await;
+    loop {
+        if next_json(&mut socket).await["seq"] == next {
+            break;
+        }
+    }
 }

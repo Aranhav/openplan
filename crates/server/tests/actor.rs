@@ -500,6 +500,52 @@ async fn snapshot_reflects_latest(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn a_subscriber_told_of_a_batch_finds_it_in_the_snapshot(pool: PgPool) {
+    // A client of the live channel keeps the highest seq it has seen, and a resync says the seq of
+    // the snapshot, which is never below the seq of an event still to come: that holds only
+    // because the snapshot is published before the event is sent. The subscriber is a thread of
+    // its own that does nothing but look for the next event and then at the snapshot, so that an
+    // actor that sent the event first would be caught.
+    const BATCHES: usize = 200;
+    let Setup {
+        stored,
+        handle,
+        plan,
+        ..
+    } = setup(&pool, 2).await;
+    let mut events = handle.subscribe();
+    let watching = handle.clone();
+    let watcher = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        let mut seen = 0;
+        while seen < BATCHES {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "only {seen} events came"
+            );
+            match events.try_recv() {
+                Ok(event) => {
+                    let (ModelEvent::CellsChanged { seq, .. }
+                    | ModelEvent::StructureChanged { seq }) = event;
+                    let (_, published) = watching.snapshot_seq();
+                    assert!(published >= seq, "told of {seq}, snapshot is {published}");
+                    seen += 1;
+                }
+                Err(TryRecvError::Empty) => std::hint::spin_loop(),
+                Err(other) => panic!("{other}"),
+            }
+        }
+    });
+
+    for at in 0..BATCHES {
+        let write = numbers(plan.units, [(plan.regions[0], at as f64)]);
+        handle.apply(stored.user, vec![write]).await.unwrap();
+    }
+
+    watcher.join().unwrap();
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn subscribers_receive_events(pool: PgPool) {
     let Setup {
         stored,

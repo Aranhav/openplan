@@ -356,7 +356,7 @@ async fn delete_with(
 }
 
 /// The model's row: its workspace and mode. `NotFound` when there is no such model.
-pub(crate) async fn model_row(db: &PgPool, model_id: Uuid) -> AppResult<(Uuid, ModelMode)> {
+async fn model_row(db: &PgPool, model_id: Uuid) -> AppResult<(Uuid, ModelMode)> {
     sqlx::query_as::<_, (Uuid, ModelMode)>("SELECT workspace_id, mode FROM models WHERE id = $1")
         .bind(model_id)
         .fetch_optional(db)
