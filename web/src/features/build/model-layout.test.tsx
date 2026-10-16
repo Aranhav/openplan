@@ -1,6 +1,13 @@
-import { screen, within } from "@testing-library/react"
+import { act, screen, waitFor, within } from "@testing-library/react"
 import { describe, expect, it } from "vitest"
-import { makeModel, mockSession, renderApp, serveModels, serveStructure } from "@/test/app"
+import {
+  makeModel,
+  mockSession,
+  renderApp,
+  serveModels,
+  serveStructure,
+  workspace,
+} from "@/test/app"
 import { structure } from "@/test/structure"
 
 const model = makeModel({ name: "Revenue plan" })
@@ -21,10 +28,14 @@ describe("a model's address", () => {
   })
 
   it("replaces itself in the history, so Back does not return to a page that only redirects", async () => {
-    const { router } = openApp(`/m/${model.id}`)
+    const { router } = openApp(`/w/${workspace.id}`)
+    await screen.findByRole("heading", { level: 1, name: "Models" })
+    await act(() => router.navigate({ to: "/m/$modelId", params: { modelId: model.id } }))
     await screen.findByRole("heading", { level: 1, name: "Modules" })
 
-    expect(router.history.length).toBe(1)
+    act(() => router.history.back())
+
+    await waitFor(() => expect(router.state.location.pathname).toBe(`/w/${workspace.id}`))
   })
 
   it("keeps the other pages of the model where they are", async () => {
