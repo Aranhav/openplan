@@ -1,4 +1,4 @@
-import { Ellipsis, Eye, Filter, Paintbrush, Sigma } from "lucide-react"
+import { EllipsisVertical, Eye, Filter, Paintbrush, Sigma } from "lucide-react"
 import { type RefObject, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
 import {
@@ -50,7 +50,8 @@ interface GridToolbarProps {
 /**
  * The controls of the grid in one row: the pivot, a selector for each page, filter, show/hide,
  * summaries, conditional formatting and the saved views. When the row is too narrow for them
- * the last four go into a More menu, which opens the same panels.
+ * the last four go into a More menu, which opens the same panels. If it is too narrow even then,
+ * what does not fit goes on a line of its own: nothing is cut off or scrolls sideways.
  */
 export function GridToolbar({
   modelId,
@@ -96,7 +97,7 @@ export function GridToolbar({
         ref={row}
         role="group"
         aria-label="Grid controls"
-        className="flex h-9 items-center gap-1"
+        className="flex min-h-9 flex-wrap items-center gap-1"
       >
         <PivotPopover
           {...panelProps("pivot")}
@@ -106,11 +107,9 @@ export function GridToolbar({
           dispatch={dispatch}
         />
         <Separator orientation="vertical" className="mx-0.5 h-5" />
-        {/* The padding leaves room for the focus rings, which a scrolling box would cut off. */}
-        <div
-          ref={pages}
-          className="-mx-1 -my-1 flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto px-1 py-1 [scrollbar-width:thin]"
-        >
+        {/* The selectors wrap inside their own box when they are more than the row, and the box
+            takes what room the row has left, which pushes the controls after it to the end of it. */}
+        <div ref={pages} className="flex max-w-full min-w-0 flex-auto flex-wrap items-center gap-1.5">
           <PageSelectors
             modelId={modelId}
             module={module}
@@ -142,9 +141,8 @@ export function GridToolbar({
           {compact ? (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button ref={more} variant="ghost" size="sm" className="gap-1.5 px-2">
-                  <Ellipsis />
-                  More
+                <Button ref={more} variant="ghost" size="icon-sm" aria-label="More">
+                  <EllipsisVertical />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent

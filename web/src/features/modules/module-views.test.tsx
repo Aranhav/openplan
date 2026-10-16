@@ -995,8 +995,12 @@ describe("collapsing from the grid", () => {
 describe("a narrow toolbar", () => {
   it("puts filter, show/hide, summaries and formatting in a More menu that opens the same panels", async () => {
     const user = userEvent.setup()
-    // The page selectors have more in them than room.
-    vi.spyOn(HTMLElement.prototype, "scrollWidth", "get").mockReturnValue(1200)
+    // The controls are 500 px wide each, in a row of 800.
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+      const bar = '[aria-label="Grid controls"]'
+      const width = this.matches(bar) ? 800 : this.parentElement?.matches(bar) ? 500 : 0
+      return { width, height: 0, x: 0, y: 0, top: 0, left: 0, right: width, bottom: 0, toJSON: () => ({}) }
+    })
     const { served } = openModule()
 
     const bar = await toolbar()
