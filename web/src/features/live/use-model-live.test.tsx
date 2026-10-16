@@ -355,8 +355,9 @@ describe("useModelLive", () => {
         )
       }
 
-      it("stops for good when the page may not open an address of that kind, without a word", async () => {
+      it("stops for good when the page may not open an address of that kind, with a word in the console and none to the user", async () => {
         const asked = serveTickets()
+        const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
         refuseSockets(new DOMException("An insecure socket from a secure page.", "SecurityError"))
         const { queryClient, result } = mount()
         queryClient.setQueryData(queryKeys.model(MODEL_ID), { id: MODEL_ID })
@@ -367,6 +368,7 @@ describe("useModelLive", () => {
         expect(asked).toHaveLength(1)
         expect(isInvalidated(queryClient, queryKeys.model(MODEL_ID))).toBe(false)
         expect(toast.error).not.toHaveBeenCalled()
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining("An insecure socket from a secure page."))
       })
 
       it("tries again, as after a lost connection, when the address does not fit", async () => {
@@ -532,6 +534,25 @@ describe("useModelLive", () => {
       await wait(1000)
       expect(reads).toHaveLength(2)
       expect(queryClient.getQueryData<QueryResult>(salesKey())?.seq).toBe(9)
+    })
+
+    it("is marked stale once done when the last screen to show it left meanwhile", async () => {
+      const { queryClient } = await connected()
+      const { reads, queryFn } = slowReads<QueryResult>()
+      const { observer, stop } = show(queryClient, salesKey(), queryFn, viewResult(["li-1"], 5))
+      void observer.refetch()
+      await until(() => reads.length === 1)
+      tell(cellsChanged(9, "li-1"))
+      await read()
+
+      // The library puts a view back as it was before the read when nothing shows it any more,
+      // and the change that made it stale is forgotten with the rest.
+      stop()
+      await wait(1000)
+
+      expect(reads).toHaveLength(1)
+      expect(queryClient.getQueryData<QueryResult>(salesKey())?.seq).toBe(5)
+      expect(isInvalidated(queryClient, salesKey())).toBe(true)
     })
 
     it("is not read again once done if it holds the change", async () => {

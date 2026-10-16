@@ -7,7 +7,11 @@ import { LINE_ITEM_ERRORS, mutationKeys, pivotOfKey, queryKeys } from "@/lib/api
 /**
  * Whether the model's screens hear of changes: `connecting` until the server has greeted the
  * first socket, `live` once it has, `reconnecting` when the socket is lost or could not be made,
- * and `off` when there is nothing to follow (the model is gone, or the user may not read it).
+ * and `off` when there is nothing to follow and nothing will be tried again: the model is gone,
+ * the user may not read it, or the browser refuses to open a socket to the address the server
+ * gave (a `ws://` address from an `https://` page, which no retry would change). In that last
+ * case the screens keep what they loaded and no longer hear of other users' changes until the
+ * page is loaded again.
  */
 export type LiveStatus = "connecting" | "live" | "reconnecting" | "off"
 
@@ -220,6 +224,9 @@ class LiveConnection {
     // be refused every time. Another address that does not fit may be mended by the server, so
     // that is tried again.
     if (isRecord(error) && error.name === "SecurityError") {
+      console.warn(
+        `Live updates are off: the browser would not open the socket (${String(error.message)}).`,
+      )
       this.onStatus("off")
       return
     }
@@ -352,6 +359,10 @@ class LiveConnection {
     }
     // A read that is under way may have been made before the server began to follow the model.
     void this.readAgainViews((view) => view.state.fetchStatus === "fetching", seq)
+    // The cutoff, `attemptedAt`, is taken when the ticket is asked for, not when the server began to
+    // follow the model, so a read of the structure or of a list that finishes during the ticket's
+    // round trip can still have missed a change made meanwhile. The remedy is a sequence number
+    // on the structure document, to tell it as the views are told (parked to M8).
     // The model's own query, which holds no part of its structure, is left out.
     const olderThanSocket = (query: Query) =>
       query.queryKey.length > queryKeys.model(this.modelId).length &&
@@ -407,8 +418,10 @@ class LiveConnection {
   /**
    * Reads again the views that `select` picks. A read that is already under way is let be, which
    * keeps a first load from starting over with each message, but it may have been made before
-   * the change, so the views that are on screen are checked once they have loaded: one that is
-   * as of an older number than the change is read again.
+   * the change, so the views are checked once the read is done: one that is as of an older number
+   * than the change is read again, or marked stale if nothing shows it any more. That is also the
+   * case when the last screen to show it left during the read: the query library then puts the
+   * view back as it was before the read, which forgets that the change made it stale.
    */
   private async readAgainViews(select: (view: Query) => boolean, seq: number) {
     const queryKey = queryKeys.query(this.modelId)
@@ -422,7 +435,7 @@ class LiveConnection {
     }
     const older = selected.filter(
       (view) =>
-        view.getObserversCount() > 0 && isQueryResult(view.state.data) && view.state.data.seq < seq,
+        !view.state.isInvalidated && isQueryResult(view.state.data) && view.state.data.seq < seq,
     )
     if (older.length > 0) {
       await this.queryClient.invalidateQueries(
