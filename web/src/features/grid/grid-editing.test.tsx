@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event"
 import { HttpResponse, delay, http } from "msw"
 import { toast } from "sonner"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { queryKeys } from "@/lib/api/keys"
 import { QUERY_STALE_TIME } from "@/lib/query-client"
 import { problem } from "@/test/problem"
 import { createTestQueryClient } from "@/test/render"
@@ -35,6 +36,7 @@ import {
 } from "@/test/edit-view"
 import {
   MODEL_ID,
+  answer,
   header,
   lineItem,
   member,
@@ -946,6 +948,105 @@ describe("after undo, redo and paste", () => {
     await waitFor(() => expect(bodies).toHaveLength(2))
     expect(bodies[1].edits).toEqual([written("li-budget", 4, number(40))])
     expectActive(grid, 0, NOTES)
+  })
+
+  describe("when the view changes while a write or a paste is under way", () => {
+    // Hiding a product moves the ones below it up a row, so the same positions are other cells.
+    const PRODUCTS = 1000
+    const rowsOf = (q: ViewQuery) => {
+      const hidden = new Set((q.hidden ?? []).map((ref) => ref.key))
+      return Array.from({ length: PRODUCTS }, (_, product) => product).filter(
+        (product) => !hidden.has(`p${product}`),
+      )
+    }
+
+    async function setupChanging() {
+      const fixtureFor = (q: ViewQuery) => {
+        const products = rowsOf(q)
+        return editView({
+          totalRows: products.length,
+          rowHeader: (row) => header(member(`p${products[row]}`, `Product ${products[row]}`)),
+        })
+      }
+      // The view as it was before the change answers late once it is told to, so that the new
+      // view is on show by the time the old one's cells come.
+      const slow = { on: false }
+      server.use(
+        http.post("/api/v1/models/:id/query", async ({ request }) => {
+          const query = (await request.json()) as ViewQuery
+          if (slow.on && (query.hidden ?? []).length === 0) {
+            await delay(300)
+          }
+          return HttpResponse.json(answer(fixtureFor(query), query))
+        }),
+      )
+      const bodies = serveCells()
+      const queryClient = createTestQueryClient({ staleTime: QUERY_STALE_TIME })
+      const gridOf = (query: GridQuery) => (
+        <QueryClientProvider client={queryClient}>
+          <Grid modelId={MODEL_ID} query={query} reference={reference} />
+        </QueryClientProvider>
+      )
+      const { rerender } = render(gridOf(editQuery))
+      const grid = await screen.findByRole("grid")
+      await waitFor(() => expect(cellAt(grid, 0, 0).textContent).not.toBe(""))
+      const hideProduct = () =>
+        rerender(gridOf({ ...editQuery, hidden: [{ dim: productsList, key: "p1" }] }))
+      const scrollToRow = async (row: number) => {
+        grid.scrollTop = row * 32
+        fireEvent.scroll(grid)
+        await waitFor(() => cellAt(grid, row + 1, NOTES))
+      }
+      return { grid, bodies, hideProduct, slow, queryClient, scrollToRow }
+    }
+
+    it("does not select the place of an undone batch when the view changed before the undo was taken up", async () => {
+      const { grid, bodies, hideProduct } = await setupChanging()
+      await select(grid, 4, BUDGET)
+      await userEvent.keyboard("42{Enter}")
+      await waitFor(() => expect(bodies).toHaveLength(1))
+      // The next write waits, and the undo that is pressed meanwhile waits behind it.
+      const release = holdCells(bodies)
+      await select(grid, 3, BUDGET)
+      await userEvent.keyboard("43{Enter}")
+      await waitFor(() => expect(bodies).toHaveLength(2))
+      await select(grid, 0, NOTES)
+      await userEvent.keyboard("{Control>}z{/Control}")
+
+      hideProduct()
+      await waitFor(() =>
+        expect(within(grid).queryByRole("rowheader", { name: "Product 1" })).not.toBeInTheDocument(),
+      )
+      release()
+
+      await waitFor(() => expect(bodies).toHaveLength(3))
+      expect(bodies[2].edits).toEqual([written("li-budget", 3, number(30))])
+      expectActive(grid, 0, NOTES)
+    })
+
+    it("does not select the pasted block when the view changed while the cells were being read", async () => {
+      const { grid, bodies, hideProduct, slow, queryClient, scrollToRow } = await setupChanging()
+      // A cell of the second block of rows, which is left behind by scrolling to the end.
+      await scrollToRow(150)
+      await select(grid, 150, NOTES)
+      await scrollToRow(900)
+      // What the paste has to read is stale and nobody is showing it, so it is read from the
+      // server, and the old view answers late.
+      slow.on = true
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.query(MODEL_ID, editQuery, { rowBlock: 1, colBlock: 0 }),
+        exact: true,
+      })
+
+      // Two columns of text cells; the second is a calculated one, which a paste skips.
+      fireEvent.paste(document.body, { clipboardData: { getData: () => "a\tb\nc\td" } })
+      hideProduct()
+      await waitFor(() => expect(grid).not.toHaveAttribute("aria-busy"))
+
+      await waitFor(() => expect(bodies).toHaveLength(1))
+      expect(bodies[0].edits.map((edit) => edit.coords)).toEqual([["p150"], ["p151"]])
+      expect(grid.querySelector("[data-selection='range']")).toBeNull()
+    })
   })
 
   it("paste selects the block that was pasted, with the active cell at its top left", async () => {

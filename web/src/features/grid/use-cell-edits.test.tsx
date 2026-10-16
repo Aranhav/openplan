@@ -301,6 +301,117 @@ describe("useCellEdits undo and redo", () => {
     ])
   })
 
+  describe("pressed while a new edit is being written", () => {
+    /** Accepts every write but the one numbered `refused`, which waits to be released and is then refused. */
+    function refuse(refused: number) {
+      const release = gate()
+      const bodies: { edits: CellWrite[] }[] = []
+      let call = 0
+      server.use(
+        http.post("/api/v1/models/:id/cells", async ({ request }) => {
+          call += 1
+          bodies.push((await request.json()) as { edits: CellWrite[] })
+          if (call === refused) {
+            await release.opened
+            return problem(422, "cells.invalid_value", "Enter a number")
+          }
+          return HttpResponse.json({ seq: call, changed_line_item_ids: ["li-1"] })
+        }),
+      )
+      return { release: release.release, bodies }
+    }
+
+    it("does not undo the edit before it when the new edit is refused", async () => {
+      const { release, bodies } = refuse(2)
+      const { result, onSaved } = setup()
+      await act(async () => {
+        await result.current.commit([edit(5)])
+      })
+
+      let undoing!: Promise<void>
+      act(() => {
+        void result.current.commit([edit(6, 5)])
+        undoing = result.current.undo()
+      })
+      await waitFor(() => expect(bodies).toHaveLength(2))
+      await act(async () => {
+        release()
+        await undoing
+      })
+
+      expect(bodies).toHaveLength(2)
+      expect(onSaved).not.toHaveBeenCalledWith(1, "undo")
+      // An undo asked for once the refusal is known takes back the edit before it.
+      await act(async () => {
+        await result.current.undo()
+      })
+      expect(bodies[2].edits).toEqual([written(1)])
+    })
+
+    it("does not redo what was undone when the new edit is refused", async () => {
+      const { release, bodies } = refuse(3)
+      const { result, onSaved } = setup()
+      await act(async () => {
+        await result.current.commit([edit(5)])
+        await result.current.undo()
+      })
+      onSaved.mockClear()
+
+      let redoing!: Promise<void>
+      act(() => {
+        void result.current.commit([edit(6, 1)])
+        redoing = result.current.redo()
+      })
+      await waitFor(() => expect(bodies).toHaveLength(3))
+      await act(async () => {
+        release()
+        await redoing
+      })
+
+      expect(bodies).toHaveLength(3)
+      expect(onSaved).not.toHaveBeenCalledWith(1, "redo")
+    })
+
+    it("still undoes the new edit when it is accepted", async () => {
+      const served = serveCells()
+      const { result } = setup()
+
+      let undoing!: Promise<void>
+      act(() => {
+        void result.current.commit([edit(5)])
+        undoing = result.current.undo()
+      })
+      await act(async () => {
+        await undoing
+      })
+
+      expect(served.bodies.map((body) => body.edits[0].value)).toEqual([
+        { t: "number", v: 5 },
+        { t: "number", v: 1 },
+      ])
+    })
+
+    it("undoes the edit before a refusal that was known when it was pressed", async () => {
+      const { release, bodies } = refuse(2)
+      const { result } = setup()
+      await act(async () => {
+        await result.current.commit([edit(5)])
+      })
+      release()
+      await act(async () => {
+        await result.current.commit([edit(6, 5)])
+      })
+      expect(toast.error).toHaveBeenCalledOnce()
+
+      await act(async () => {
+        await result.current.undo()
+      })
+
+      expect(bodies).toHaveLength(3)
+      expect(bodies[2].edits).toEqual([written(1)])
+    })
+  })
+
   it("undoes the newest batch first", async () => {
     const served = serveCells()
     const { result } = setup()

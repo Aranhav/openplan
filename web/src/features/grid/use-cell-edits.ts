@@ -28,6 +28,9 @@ type Handlers = {
 
 type Shown = { value: Value; batch: number }
 
+/** The write of a new edit: whether the server refused it, and whether it has answered yet. */
+type Attempt = { refused: boolean; answered: boolean }
+
 /** The words for a refused write: for a value that does not fit, the first cell's own message. */
 function failureMessage(error: unknown): string {
   if (error instanceof ApiError && error.code === "cells.invalid_value" && error.errors[0]) {
@@ -51,6 +54,8 @@ export function useCellEdits(modelId: string, moduleId: string, handlers: Handle
   const [shown, setShown] = useState<ReadonlyMap<string, Shown>>(new Map())
   const batches = useRef(0)
   const turn = useRef<Promise<unknown>>(Promise.resolve())
+  // The newest new edit, which an undo or redo pressed while it is being written is meant for.
+  const newest = useRef<Attempt | null>(null)
   const history = useRef<{ moduleId: string; stack: UndoStack } | null>(null)
 
   const pending = useMemo<ReadonlyMap<string, Value>>(
@@ -131,10 +136,19 @@ export function useCellEdits(modelId: string, moduleId: string, handlers: Handle
     }
     const history = stack()
     const batch = show(edits, "after")
+    const attempt: Attempt = { refused: false, answered: false }
+    newest.current = attempt
     try {
       await inOrder(async () => {
-        await post(edits, "after")
-        history.push({ edits: [...edits], where })
+        try {
+          await post(edits, "after")
+          history.push({ edits: [...edits], where })
+        } catch (error) {
+          attempt.refused = true
+          throw error
+        } finally {
+          attempt.answered = true
+        }
       })
       await reread()
       handlers.onSaved?.(edits.length, source)
@@ -150,10 +164,16 @@ export function useCellEdits(modelId: string, moduleId: string, handlers: Handle
   async function replay(direction: "undo" | "redo") {
     const history = stack()
     const side: Side = direction === "undo" ? "before" : "after"
+    // A new edit that is still being written is what this was pressed for; if the server refuses
+    // it, there is nothing to take back, and the batch before it is not what the user meant.
+    const meant = newest.current?.answered === false ? newest.current : undefined
     let batch: number | undefined
     let count = 0
     try {
       const replayed = await inOrder(async () => {
+        if (meant?.refused) {
+          return false
+        }
         const entry = direction === "undo" ? history.undo() : history.redo()
         if (!entry) {
           return false

@@ -195,7 +195,14 @@ describe("parseTsv with a limit", () => {
       expect(rows).toHaveLength(4)
     })
 
-    it("reads a block of exactly the limit whole", () => {
+    it("reads a block of exactly the limit whole, and the row that tips it over, so that it is refused", () => {
+      const rows = parseTsv("a\tb\tc\n".repeat(10), { rows: 1_000, cols: 3, cells: 9 })
+
+      // Three rows of three are nine cells, which is not more than the limit: the fourth is read.
+      expect(rows).toHaveLength(4)
+    })
+
+    it("reads a text of exactly the limit whole", () => {
       const rows = parseTsv("a\tb\tc\n".repeat(3), { rows: 1_000, cols: 3, cells: 9 })
 
       expect(rows).toHaveLength(3)
