@@ -44,11 +44,15 @@ async function findLoadedNav() {
 }
 
 describe("the build navigation", () => {
-  it("links to the modules and the settings of the model", async () => {
+  it("links to the lists, the modules and the settings of the model", async () => {
     openApp()
 
     const nav = await findBuildNav()
     expect(nav.getByText("Structure")).toBeVisible()
+    expect(nav.getByRole("link", { name: "Lists" })).toHaveAttribute(
+      "href",
+      `/m/${model.id}/lists`,
+    )
     expect(nav.getByRole("link", { name: "Modules" })).toHaveAttribute(
       "href",
       `/m/${model.id}/modules`,
@@ -64,6 +68,7 @@ describe("the build navigation", () => {
 
     const nav = await findLoadedNav()
     expect(nav.getAllByRole("link").map((link) => link.textContent)).toEqual([
+      "Lists",
       "Time",
       "Versions",
       "Modules",

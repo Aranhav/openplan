@@ -1,10 +1,11 @@
 import { useNavigate } from "@tanstack/react-router"
 import { useCommandState } from "cmdk"
-import { Grid3x3, Rows3 } from "lucide-react"
+import { Grid3x3, ListTree, Rows3 } from "lucide-react"
 import { ErrorState } from "@/components/error-state"
 import { CommandGroup, CommandItem } from "@/components/ui/command"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useModelNotFound } from "@/features/models/api"
+import { countOf } from "@/features/lists/words"
 import { useStructure } from "@/features/structure/api"
 import { BUILD_GROUPS } from "./build-nav"
 
@@ -65,11 +66,35 @@ function StructureCommands({ modelId, run }: ModelCommandsProps) {
       </CommandGroup>
     )
   }
-  const { modules, line_items: lineItems } = structure.data
+  const { lists, modules, line_items: lineItems } = structure.data
   const moduleOf = new Map(modules.map((module) => [module.id, module]))
 
   return (
     <>
+      {lists.length > 0 && (
+        <CommandGroup heading="Lists">
+          {lists.map((list) => (
+            <CommandItem
+              key={list.id}
+              value={`Open list ${list.name}`}
+              onSelect={() =>
+                run(() =>
+                  navigate({
+                    to: "/m/$modelId/lists/$listId",
+                    params: { modelId, listId: list.id },
+                  }),
+                )
+              }
+            >
+              <ListTree />
+              {list.name}
+              <span className="ml-auto text-xs text-muted-foreground">
+                {countOf(list.items.length, "item")}
+              </span>
+            </CommandItem>
+          ))}
+        </CommandGroup>
+      )}
       {modules.length > 0 && (
         <CommandGroup heading="Modules">
           {modules.map((module) => (

@@ -22,6 +22,8 @@ import { Route as AppMModelIdTimeRouteImport } from './routes/_app/m/$modelId/ti
 import { Route as AppMModelIdVersionsRouteImport } from './routes/_app/m/$modelId/versions'
 import { Route as AppWWorkspaceIdIndexRouteImport } from './routes/_app/w/$workspaceId/index'
 import { Route as AppWWorkspaceIdMembersRouteImport } from './routes/_app/w/$workspaceId/members'
+import { Route as AppMModelIdListsIndexRouteImport } from './routes/_app/m/$modelId/lists/index'
+import { Route as AppMModelIdListsListIdRouteImport } from './routes/_app/m/$modelId/lists/$listId'
 import { Route as AppMModelIdModulesIndexRouteImport } from './routes/_app/m/$modelId/modules/index'
 import { Route as AppMModelIdModulesModuleIdRouteImport } from './routes/_app/m/$modelId/modules/$moduleId'
 
@@ -89,6 +91,16 @@ const AppWWorkspaceIdMembersRoute = AppWWorkspaceIdMembersRouteImport.update({
   path: '/w/$workspaceId/members',
   getParentRoute: () => AppRoute,
 } as any)
+const AppMModelIdListsIndexRoute = AppMModelIdListsIndexRouteImport.update({
+  id: '/lists/',
+  path: '/lists/',
+  getParentRoute: () => AppMModelIdRouteRoute,
+} as any)
+const AppMModelIdListsListIdRoute = AppMModelIdListsListIdRouteImport.update({
+  id: '/lists/$listId',
+  path: '/lists/$listId',
+  getParentRoute: () => AppMModelIdRouteRoute,
+} as any)
 const AppMModelIdModulesIndexRoute = AppMModelIdModulesIndexRouteImport.update({
   id: '/modules/',
   path: '/modules/',
@@ -114,7 +126,9 @@ export interface FileRoutesByFullPath {
   '/w/$workspaceId/members': typeof AppWWorkspaceIdMembersRoute
   '/m/$modelId/': typeof AppMModelIdIndexRoute
   '/w/$workspaceId/': typeof AppWWorkspaceIdIndexRoute
+  '/m/$modelId/lists/$listId': typeof AppMModelIdListsListIdRoute
   '/m/$modelId/modules/$moduleId': typeof AppMModelIdModulesModuleIdRoute
+  '/m/$modelId/lists/': typeof AppMModelIdListsIndexRoute
   '/m/$modelId/modules/': typeof AppMModelIdModulesIndexRoute
 }
 export interface FileRoutesByTo {
@@ -129,7 +143,9 @@ export interface FileRoutesByTo {
   '/w/$workspaceId/members': typeof AppWWorkspaceIdMembersRoute
   '/m/$modelId': typeof AppMModelIdIndexRoute
   '/w/$workspaceId': typeof AppWWorkspaceIdIndexRoute
+  '/m/$modelId/lists/$listId': typeof AppMModelIdListsListIdRoute
   '/m/$modelId/modules/$moduleId': typeof AppMModelIdModulesModuleIdRoute
+  '/m/$modelId/lists': typeof AppMModelIdListsIndexRoute
   '/m/$modelId/modules': typeof AppMModelIdModulesIndexRoute
 }
 export interface FileRoutesById {
@@ -147,7 +163,9 @@ export interface FileRoutesById {
   '/_app/w/$workspaceId/members': typeof AppWWorkspaceIdMembersRoute
   '/_app/m/$modelId/': typeof AppMModelIdIndexRoute
   '/_app/w/$workspaceId/': typeof AppWWorkspaceIdIndexRoute
+  '/_app/m/$modelId/lists/$listId': typeof AppMModelIdListsListIdRoute
   '/_app/m/$modelId/modules/$moduleId': typeof AppMModelIdModulesModuleIdRoute
+  '/_app/m/$modelId/lists/': typeof AppMModelIdListsIndexRoute
   '/_app/m/$modelId/modules/': typeof AppMModelIdModulesIndexRoute
 }
 export interface FileRouteTypes {
@@ -165,7 +183,9 @@ export interface FileRouteTypes {
     | '/w/$workspaceId/members'
     | '/m/$modelId/'
     | '/w/$workspaceId/'
+    | '/m/$modelId/lists/$listId'
     | '/m/$modelId/modules/$moduleId'
+    | '/m/$modelId/lists/'
     | '/m/$modelId/modules/'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -180,7 +200,9 @@ export interface FileRouteTypes {
     | '/w/$workspaceId/members'
     | '/m/$modelId'
     | '/w/$workspaceId'
+    | '/m/$modelId/lists/$listId'
     | '/m/$modelId/modules/$moduleId'
+    | '/m/$modelId/lists'
     | '/m/$modelId/modules'
   id:
     | '__root__'
@@ -197,7 +219,9 @@ export interface FileRouteTypes {
     | '/_app/w/$workspaceId/members'
     | '/_app/m/$modelId/'
     | '/_app/w/$workspaceId/'
+    | '/_app/m/$modelId/lists/$listId'
     | '/_app/m/$modelId/modules/$moduleId'
+    | '/_app/m/$modelId/lists/'
     | '/_app/m/$modelId/modules/'
   fileRoutesById: FileRoutesById
 }
@@ -300,6 +324,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppWWorkspaceIdMembersRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/m/$modelId/lists/': {
+      id: '/_app/m/$modelId/lists/'
+      path: '/lists'
+      fullPath: '/m/$modelId/lists/'
+      preLoaderRoute: typeof AppMModelIdListsIndexRouteImport
+      parentRoute: typeof AppMModelIdRouteRoute
+    }
+    '/_app/m/$modelId/lists/$listId': {
+      id: '/_app/m/$modelId/lists/$listId'
+      path: '/lists/$listId'
+      fullPath: '/m/$modelId/lists/$listId'
+      preLoaderRoute: typeof AppMModelIdListsListIdRouteImport
+      parentRoute: typeof AppMModelIdRouteRoute
+    }
     '/_app/m/$modelId/modules/': {
       id: '/_app/m/$modelId/modules/'
       path: '/modules'
@@ -322,7 +360,9 @@ interface AppMModelIdRouteRouteChildren {
   AppMModelIdTimeRoute: typeof AppMModelIdTimeRoute
   AppMModelIdVersionsRoute: typeof AppMModelIdVersionsRoute
   AppMModelIdIndexRoute: typeof AppMModelIdIndexRoute
+  AppMModelIdListsListIdRoute: typeof AppMModelIdListsListIdRoute
   AppMModelIdModulesModuleIdRoute: typeof AppMModelIdModulesModuleIdRoute
+  AppMModelIdListsIndexRoute: typeof AppMModelIdListsIndexRoute
   AppMModelIdModulesIndexRoute: typeof AppMModelIdModulesIndexRoute
 }
 
@@ -331,7 +371,9 @@ const AppMModelIdRouteRouteChildren: AppMModelIdRouteRouteChildren = {
   AppMModelIdTimeRoute: AppMModelIdTimeRoute,
   AppMModelIdVersionsRoute: AppMModelIdVersionsRoute,
   AppMModelIdIndexRoute: AppMModelIdIndexRoute,
+  AppMModelIdListsListIdRoute: AppMModelIdListsListIdRoute,
   AppMModelIdModulesModuleIdRoute: AppMModelIdModulesModuleIdRoute,
+  AppMModelIdListsIndexRoute: AppMModelIdListsIndexRoute,
   AppMModelIdModulesIndexRoute: AppMModelIdModulesIndexRoute,
 }
 

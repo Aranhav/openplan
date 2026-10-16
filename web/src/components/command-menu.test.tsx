@@ -16,7 +16,13 @@ import {
 } from "@/test/app"
 import { problem } from "@/test/problem"
 import { server } from "@/test/server"
-import { hiringModule, revenueModule, structure, unitsSold } from "@/test/structure"
+import {
+  hiringModule,
+  regionsId,
+  revenueModule,
+  structure,
+  unitsSold,
+} from "@/test/structure"
 
 const revenue = makeModel({ id: "0192f3a0-0000-7000-8000-000000000011", name: "Revenue plan" })
 const headcount = makeModel({ id: "0192f3a0-0000-7000-8000-000000000012", name: "Headcount plan" })
@@ -333,6 +339,21 @@ describe("the command palette inside a model", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
   })
 
+  it("finds a list and opens it", async () => {
+    const typist = userEvent.setup()
+    const { router } = openModel()
+    const palette = await openPalette(typist)
+
+    const option = await within(palette).findByRole("option", { name: /^Regions/ })
+    expect(within(option).getByText("0 items")).toBeVisible()
+    await typist.click(option)
+
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe(`/m/${model.id}/lists/${regionsId}`),
+    )
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+  })
+
   it("names the functional area of a module beside it", async () => {
     const typist = userEvent.setup()
     openModel()
@@ -358,7 +379,7 @@ describe("the command palette inside a model", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
   })
 
-  it("groups what it finds as Modules and Line items", async () => {
+  it("groups what it finds as Lists, Modules and Line items", async () => {
     const typist = userEvent.setup()
     openModel()
     const palette = await openPalette(typist)
@@ -370,7 +391,7 @@ describe("the command palette inside a model", () => {
         .getAllByRole("group")
         .map((group) => group.getAttribute("aria-labelledby"))
         .map((id) => document.getElementById(id ?? "")?.textContent),
-    ).toEqual(expect.arrayContaining(["Modules", "Line items"]))
+    ).toEqual(expect.arrayContaining(["Lists", "Modules", "Line items"]))
   })
 
   it("lists the line items only once the search has two characters", async () => {
@@ -393,7 +414,8 @@ describe("the command palette inside a model", () => {
     await within(palette).findByRole("option", { name: /^Hiring plan/ })
 
     const options = within(palette).getAllByRole("option")
-    expect(options.slice(0, 4).map((option) => option.textContent)).toEqual([
+    expect(options.slice(0, 5).map((option) => option.textContent)).toEqual([
+      "Lists",
       "Time",
       "Versions",
       "Modules",

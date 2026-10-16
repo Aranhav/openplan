@@ -135,14 +135,19 @@ interface ModelCrumbsProps {
 }
 
 /**
- * The workspace, the model and the screen of the model, or a module's own name. One `TrailCrumbs`
- * serves every screen, so choosing a crumb from its menu leaves the menu's button in place for the
- * focus to return to.
+ * The workspace, the model and the screen of the model, or the own name of a module or a list. One
+ * `TrailCrumbs` serves every screen, so choosing a crumb from its menu leaves the menu's button in
+ * place for the focus to return to.
  */
 function ModelCrumbs({ modelId, routeId, workspace }: ModelCrumbsProps) {
-  const { moduleId } = useParams({ strict: false })
+  const { moduleId, listId } = useParams({ strict: false })
   const inModule = routeId === "/_app/m/$modelId/modules/$moduleId" && Boolean(moduleId)
-  const trail = useModelTrail(modelId, workspace, inModule)
+  const inList = routeId === "/_app/m/$modelId/lists/$listId" && Boolean(listId)
+  const trail = useModelTrail(
+    modelId,
+    workspace,
+    inModule ? "modules" : inList ? "lists" : undefined,
+  )
 
   // From the route id, as the module is, so that both agree in the moment of a navigation: the
   // crumbs are never left out in between, which would unmount the menu's button.
@@ -153,6 +158,9 @@ function ModelCrumbs({ modelId, routeId, workspace }: ModelCrumbsProps) {
     return (
       <TrailCrumbs trail={trail} current={<ModuleCrumb modelId={modelId} moduleId={moduleId} />} />
     )
+  }
+  if (inList && listId) {
+    return <TrailCrumbs trail={trail} current={<ListCrumb modelId={modelId} listId={listId} />} />
   }
   return screen ? (
     <TrailCrumbs trail={trail} current={<CurrentCrumb>{screen.label}</CurrentCrumb>} />
@@ -182,17 +190,34 @@ function ModuleCrumb({ modelId, moduleId }: { modelId: string; moduleId: string 
   return <CurrentCrumb title={name}>{name}</CurrentCrumb>
 }
 
+/** A list's own name, once the structure that holds it has arrived. */
+function ListCrumb({ modelId, listId }: { modelId: string; listId: string }) {
+  const structure = useStructure(modelId)
+  if (structure.isPending) {
+    return (
+      <CurrentCrumb>
+        <Skeleton className="h-4 w-28" />
+      </CurrentCrumb>
+    )
+  }
+  const name = structure.data?.lists.find((list) => list.id === listId)?.name ?? "List"
+  return <CurrentCrumb title={name}>{name}</CurrentCrumb>
+}
+
 interface TrailCrumb {
   key: string
   /** The link to the crumb's page; none while what it names is still loading. */
   link: ReactNode
 }
 
-/** The links above a screen of a model: its workspace, the model and, for a module, the modules. */
+/**
+ * The links above a screen of a model: its workspace, the model and, for a module or a list, the
+ * modules or the lists it sits among.
+ */
 function useModelTrail(
   modelId: string,
   workspace: Workspace | undefined,
-  withModules: boolean,
+  among: "modules" | "lists" | undefined,
 ): TrailCrumb[] {
   const model = useModel(modelId)
   const name = model.data?.name ?? "Model"
@@ -206,13 +231,25 @@ function useModelTrail(
         </CrumbLink>
       ),
     },
-    ...(withModules
+    ...(among === "modules"
       ? [
           {
             key: "modules",
             link: (
               <CrumbLink to="/m/$modelId/modules" params={{ modelId }} title="Modules">
                 Modules
+              </CrumbLink>
+            ),
+          },
+        ]
+      : []),
+    ...(among === "lists"
+      ? [
+          {
+            key: "lists",
+            link: (
+              <CrumbLink to="/m/$modelId/lists" params={{ modelId }} title="Lists">
+                Lists
               </CrumbLink>
             ),
           },
