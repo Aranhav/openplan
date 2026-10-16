@@ -425,6 +425,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/models/{id}/modules/{module_id}/views": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_views"];
+        put?: never;
+        post: operations["create_view"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/models/{id}/query": {
         parameters: {
             query?: never;
@@ -551,6 +567,22 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/v1/models/{id}/views/{view_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["delete_view"];
+        options?: never;
+        head?: never;
+        patch: operations["update_view"];
         trace?: never;
     };
     "/api/v1/setup": {
@@ -842,6 +874,20 @@ export interface components {
          * @enum {string}
          */
         CompletionKindDto: "line_item" | "list" | "function" | "keyword" | "item" | "version" | "period";
+        /**
+         * @description A rule that styles the cells of some line items whose values match it. Of the rules that match
+         *     a cell, the first one applies.
+         */
+        ConditionalFormat: {
+            line_item_ids: string[];
+            name: string;
+            op: components["schemas"]["FormatOp"];
+            style: components["schemas"]["FormatStyle"];
+            /** Format: double */
+            value?: number | null;
+            /** Format: double */
+            value2?: number | null;
+        };
         CreateItemsRequest: {
             /** @description At least one item. */
             items: components["schemas"]["ItemInput"][];
@@ -918,6 +964,13 @@ export interface components {
             name: string;
             password: string;
         };
+        /** @description The body of a request to save a view. */
+        CreateViewRequest: {
+            definition: components["schemas"]["ViewDefinition"];
+            /** @description False when absent. */
+            is_default?: boolean | null;
+            name: string;
+        };
         CurrentUser: {
             email: string;
             /** Format: uuid */
@@ -938,6 +991,11 @@ export interface components {
          * @enum {string}
          */
         FilterOpDto: "eq" | "ne" | "lt" | "le" | "gt" | "ge" | "contains" | "is_blank" | "not_blank" | "is_true" | "is_false";
+        /**
+         * @description The colour a conditional format shows its cells in.
+         * @enum {string}
+         */
+        FormatColor: "red" | "amber" | "green" | "blue" | "muted";
         /** @description How a line item's values are typed and displayed. */
         FormatDto: {
             /**
@@ -969,6 +1027,17 @@ export interface components {
             level: components["schemas"]["TimeLevelDto"];
             /** @enum {string} */
             type: "time_period";
+        };
+        /**
+         * @description How a conditional format compares the values of its line items: with `value`, with `value` and
+         *     `value2` as the two ends of a range, or without a value at all.
+         * @enum {string}
+         */
+        FormatOp: "lt" | "le" | "gt" | "ge" | "eq" | "ne" | "between" | "negative" | "positive" | "blank";
+        /** @description How a cell that a conditional format matches is shown. */
+        FormatStyle: {
+            bold: boolean;
+            color: components["schemas"]["FormatColor"];
         };
         /** @description A formula that would be accepted. */
         FormulaAccepted: {
@@ -1526,6 +1595,12 @@ export interface components {
             name?: string | null;
             password?: string | null;
         };
+        /** @description The parts of a view to change; the ones that are absent stay as they are. */
+        UpdateViewRequest: {
+            definition?: null | components["schemas"]["ViewDefinition"];
+            is_default?: boolean | null;
+            name?: string | null;
+        };
         UserDto: {
             /** Format: date-time */
             created_at: string;
@@ -1631,6 +1706,36 @@ export interface components {
         VersionsScopeDto: "module" | "none" | {
             only: string[];
         };
+        /**
+         * @description What a view shows of a module: the same as a query of the grid, with the same limits, less
+         *     the window.
+         */
+        ViewDefinition: {
+            /** @description At most 5,000. */
+            collapsed?: components["schemas"]["MemberRefDto"][];
+            /**
+             * @description The width of each column in pixels, by the joined keys of its members. At most 1,000
+             *     entries, each from 24 to 2,000.
+             */
+            column_widths?: {
+                [key: string]: number;
+            };
+            columns: components["schemas"]["ViewDimDto"][];
+            /** @description At most 50. */
+            conditional_formats?: components["schemas"]["ConditionalFormat"][];
+            /** @description At most 10. */
+            filters?: components["schemas"]["RowFilterDto"][];
+            /** @description At most 5,000. */
+            hidden?: components["schemas"]["MemberRefDto"][];
+            /**
+             * @description The line items to show and their order; all of them, by ordinal, when absent. At most
+             *     1,000.
+             */
+            line_items?: string[] | null;
+            pages?: components["schemas"]["PageSelectionDto"][];
+            rows: components["schemas"]["ViewDimDto"][];
+            show_summaries?: boolean;
+        };
         /** @description A dimension of a module's grid: one of its axes, or its line items. */
         ViewDimDto: {
             /** @enum {string} */
@@ -1651,6 +1756,30 @@ export interface components {
         } | {
             /** @enum {string} */
             kind: "versions";
+        };
+        /** @description A saved view, as it is returned. */
+        ViewDto: {
+            /**
+             * Format: uuid
+             * @description The user who saved the view; none once that user is deleted.
+             */
+            created_by?: string | null;
+            definition: components["schemas"]["ViewDefinition"];
+            /** Format: uuid */
+            id: string;
+            /** @description Whether the view opens first among the views of its module; a module has at most one. */
+            is_default: boolean;
+            /** Format: uuid */
+            module_id: string;
+            name: string;
+            /**
+             * @description Whether the definition returned differs from the stored one, because the module no longer
+             *     has something it names. Only a list says so; the stored definition is kept until the view
+             *     is saved again.
+             */
+            pruned: boolean;
+            /** Format: date-time */
+            updated_at: string;
         };
         /** @description One member of a dimension as a header shows it. */
         ViewMemberDto: {
@@ -3721,6 +3850,141 @@ export interface operations {
             };
         };
     };
+    list_views: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The model's id */
+                id: string;
+                /** @description The module's id */
+                module_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The views of the module, the default one first and then by name. A view whose definition names what the module no longer has comes back without it, with `pruned` true. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ViewDto"][];
+                };
+            };
+            /** @description Not signed in (auth.unauthenticated) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such model or module, or the caller is not a member of the model's workspace (not_found) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many pieces of heavy work are going on and none was free within 10 seconds (server.busy); `Retry-After` says when to try again */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    create_view: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The model's id */
+                id: string;
+                /** @description The module's id */
+                module_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateViewRequest"];
+            };
+        };
+        responses: {
+            /** @description The view as saved */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ViewDto"];
+                };
+            };
+            /** @description Not signed in (auth.unauthenticated) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not a workspace builder (auth.forbidden). It is also returned when the CSRF token is missing or invalid (auth.csrf). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such model or module, or the caller is not a member of the model's workspace (not_found) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A view of the module has that name (model.name_taken) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The body is more than 2 MiB (payload_too_large) */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The name is blank or longer than 80 characters, the module has 200 views already, a field of the definition is invalid or over its limit (validation) */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     query: {
         parameters: {
             query?: never;
@@ -4375,6 +4639,139 @@ export interface operations {
                 };
             };
             /** @description The actual and current versions cannot be deleted (structure.invalid) */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    delete_view: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The model's id */
+                id: string;
+                /** @description The view's id */
+                view_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The view is deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not signed in (auth.unauthenticated) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not a workspace builder (auth.forbidden). It is also returned when the CSRF token is missing or invalid (auth.csrf). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such view in the model, or the caller is not a member of the model's workspace (not_found) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    update_view: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The model's id */
+                id: string;
+                /** @description The view's id */
+                view_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateViewRequest"];
+            };
+        };
+        responses: {
+            /** @description The view as saved */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ViewDto"];
+                };
+            };
+            /** @description Not signed in (auth.unauthenticated) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Not a workspace builder (auth.forbidden). It is also returned when the CSRF token is missing or invalid (auth.csrf). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description No such view in the model, or the caller is not a member of the model's workspace (not_found) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Another view of the module has that name (model.name_taken) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The body is more than 2 MiB (payload_too_large) */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The name is blank or longer than 80 characters, or a field of the definition is invalid or over its limit (validation) */
             422: {
                 headers: {
                     [name: string]: unknown;
