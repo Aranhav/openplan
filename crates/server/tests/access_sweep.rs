@@ -13,7 +13,12 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 /// The POSTs under a model that only read it, which a viewer may make.
-const READS_BY_POST: [&str; 1] = ["/api/v1/models/{id}/cells/read"];
+const READS_BY_POST: [&str; 4] = [
+    "/api/v1/models/{id}/cells/read",
+    "/api/v1/models/{id}/query",
+    "/api/v1/models/{id}/members",
+    "/api/v1/models/{id}/live/ticket",
+];
 
 /// A value that fits `schema`, with the properties it requires and no more: the smallest request
 /// that a route accepts as well formed, which is what it reads before it looks at who is asking.

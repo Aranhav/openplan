@@ -23,6 +23,7 @@ use crate::{
         WriteCellsRequest, WriteCellsResponse,
     },
     error::Problem,
+    live::LiveTicketResponse,
     models::{Calendar, CreateModelRequest, ModelDto, ModelMode, UpdateModelRequest},
     modules_api::{
         CheckFormulaRequest, CheckFormulaResponse, CompletionDto, CompletionKindDto,
@@ -42,6 +43,11 @@ use crate::{
         ValueTypeDto, VersionsScopeDto,
     },
     users::{CreateUserRequest, UpdateUserRequest, UserDto},
+    view_dto::{
+        CellDto, CellFlagDto, FilterOpDto, HeaderDto, LineItemInfoDto, MemberRefDto,
+        MembersRequest, MembersResponse, PageMemberDto, PageSelectionDto, RowFilterDto, ViewDimDto,
+        ViewMemberDto, ViewQueryDto, ViewResultDto, WindowDto,
+    },
     workspaces::{
         AddMemberRequest, ChangeRoleRequest, MemberDto, WorkspaceNameRequest, WorkspaceSummary,
     },
@@ -54,13 +60,15 @@ const PROBLEM_JSON: &str = "application/problem+json";
 const CSRF_NOTE: &str =
     "It is also returned when the CSRF token is missing or invalid (auth.csrf).";
 
-/// Routes that work without a session.
-const PUBLIC_PATHS: [&str; 5] = [
+/// Routes that work without a session. The live socket is opened with a ticket, which is bought
+/// with a session, and not with the session itself.
+const PUBLIC_PATHS: [&str; 6] = [
     "/api/health",
     "/api/v1/setup/status",
     "/api/v1/setup",
     "/api/v1/auth/login",
     "/api/v1/auth/logout",
+    "/api/v1/models/{id}/live",
 ];
 
 /// Routes outside the CSRF check; see `auth::routes::session_router`.
@@ -125,6 +133,10 @@ const CSRF_EXEMPT_PATHS: [&str; 3] = ["/api/v1/setup", "/api/v1/auth/login", "/a
         crate::cells_api::write_cells,
         crate::cells_api::read_cells,
         crate::cells_api::cell_history,
+        crate::query_api::query,
+        crate::query_api::members,
+        crate::live::create_ticket,
+        crate::live::connect,
     ),
     components(schemas(
         Problem,
@@ -206,6 +218,23 @@ const CSRF_EXEMPT_PATHS: [&str; 3] = ["/api/v1/setup", "/api/v1/auth/login", "/a
         ReadCellsResponse,
         ChangedByDto,
         CellChangeDto,
+        ViewDimDto,
+        PageSelectionDto,
+        MemberRefDto,
+        WindowDto,
+        FilterOpDto,
+        RowFilterDto,
+        ViewQueryDto,
+        MembersRequest,
+        MembersResponse,
+        ViewMemberDto,
+        HeaderDto,
+        PageMemberDto,
+        CellFlagDto,
+        CellDto,
+        LineItemInfoDto,
+        ViewResultDto,
+        LiveTicketResponse,
     ))
 )]
 pub struct ApiDoc;
@@ -316,12 +345,13 @@ mod tests {
     use serde_json::Value;
 
     const CSRF_EXEMPT: [&str; 3] = ["/api/v1/setup", "/api/v1/auth/login", "/api/v1/auth/logout"];
-    const PUBLIC: [&str; 5] = [
+    const PUBLIC: [&str; 6] = [
         "/api/health",
         "/api/v1/setup/status",
         "/api/v1/setup",
         "/api/v1/auth/login",
         "/api/v1/auth/logout",
+        "/api/v1/models/{id}/live",
     ];
 
     fn document() -> Value {

@@ -26,9 +26,10 @@ use crate::{
     cells_api,
     config::Config,
     error::AppError,
+    live::{self, Live, LiveSettings},
     models, modules_api,
     openapi::ApiDoc,
-    static_files, structure_api, users, workspaces,
+    query_api, static_files, structure_api, users, workspaces,
 };
 
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
@@ -47,6 +48,8 @@ pub struct AppState {
     pub login_email_limiter: Arc<LoginLimiter>,
     /// The models held in memory, one actor each.
     pub models: ModelRegistry,
+    /// The tickets that open the live sockets of the models.
+    pub live: Live,
 }
 
 impl AppState {
@@ -54,6 +57,7 @@ impl AppState {
         let model_idle = Duration::from_secs(u64::from(config.model_idle_minutes) * 60);
         AppState {
             models: ModelRegistry::new(db.clone(), model_idle),
+            live: Live::new(LiveSettings::default()),
             db,
             config: Arc::new(config),
             login_limiter: Arc::new(LoginLimiter::new(LOGIN_MAX_FAILURES, LOGIN_FAILURE_WINDOW)),
@@ -133,6 +137,8 @@ pub fn build_router(state: AppState) -> Router {
         .merge(structure_api::router())
         .merge(modules_api::router())
         .merge(cells_api::router())
+        .merge(query_api::router())
+        .merge(live::router())
         .layer(middleware::from_fn(csrf::require_csrf));
     let api_v1: Router<AppState> = csrf_protected
         .merge(auth::routes::session_router())

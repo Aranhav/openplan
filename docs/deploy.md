@@ -36,7 +36,9 @@ Use this only to serve the web app from Vercel. The Render service already serve
 
 1. Import this repository as a Vercel project and set the root directory to `web`. The framework, install, build and output settings come from `web/vercel.json`.
 2. `web/vercel.json` rewrites `/api/*` to `https://openplan-api-qmsm.onrender.com/api/*`. If your Render service has a different URL, change the rewrite destination to match it, then redeploy.
-3. Deploy and note the Vercel domain. Then open `openplan-api` → Environment in Render, set `OPENPLAN_PUBLIC_URL` to `https://<vercel-domain>` and `OPENPLAN_TRUSTED_PROXY_HOPS` to `2`, and save. Render redeploys.
+3. Deploy and note the Vercel domain. Then open `openplan-api` → Environment in Render, set `OPENPLAN_PUBLIC_URL` to `https://<vercel-domain>`, `OPENPLAN_TRUSTED_PROXY_HOPS` to `2` and `OPENPLAN_LIVE_URL` to `wss://<render host>` (for example `wss://openplan-api-qmsm.onrender.com`), and save. Render redeploys.
+
+Vercel does not proxy WebSockets, so the live updates of a grid cannot go through the `/api/*` rewrite. With `OPENPLAN_LIVE_URL` set, the browser asks `/api` for a one-use ticket and then opens the WebSocket on the Render host directly. The ticket stands in for the session cookie, which belongs to the Vercel domain and is not sent to Render. The server refuses a socket from a page whose `Origin` is not that of `OPENPLAN_PUBLIC_URL`, which is why that variable must be the Vercel domain here. Without `OPENPLAN_LIVE_URL` the browser would try to open the socket on the Vercel domain, which fails, and the grid works but does not follow other people's edits.
 
 ### Free-tier caveats
 
@@ -54,7 +56,8 @@ Use this only to serve the web app from Vercel. The Render service already serve
 | `OPENPLAN_LOG` | `info` | Log filter. |
 | `OPENPLAN_TRUSTED_PROXY_HOPS` | `0` | Number of proxies in front of the server. See below. |
 | `OPENPLAN_DB_POOL_SIZE` | `10` | Most database connections the server holds open. A request that finds none free waits up to 10 seconds, then fails with a 500. Keep it below your database's connection limit. |
-| `OPENPLAN_MODEL_IDLE_MINUTES` | `30` | Minutes a model may go unused before it is saved as a checkpoint and unloaded from memory. Its next use loads it again. |
+| `OPENPLAN_MODEL_IDLE_MINUTES` | `30` | Minutes a model may go unused before it is saved as a checkpoint and unloaded from memory. Its next use loads it again. A model that someone follows live is not unloaded. |
+| `OPENPLAN_LIVE_URL` | `OPENPLAN_PUBLIC_URL` with `ws://` for `http://` and `wss://` for `https://` | Where browsers open the WebSocket of a model, such as `wss://openplan-api-qmsm.onrender.com`. Set it only when the web app is served from another host than the API, as with Vercel in front (see [Vercel in front (optional)](#vercel-in-front-optional)). Must start with `ws://` or `wss://`. |
 
 ### Trusted proxy hops
 

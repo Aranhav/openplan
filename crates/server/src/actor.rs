@@ -31,6 +31,7 @@ use uuid::Uuid;
 use crate::{
     engine_store,
     error::{AppError, AppResult},
+    view_cache::PassingCache,
 };
 
 /// How many change-log rows, batches and the cells they changed, pile up before an actor has a
@@ -101,6 +102,9 @@ pub struct ModelHandle {
     /// Weak, so that the channel closes with the actor and not when the last handle is gone.
     events: broadcast::WeakSender<ModelEvent>,
     last_used: Arc<Mutex<Instant>>,
+    /// The rows that pass the filters of the views read lately, which go with the model for as
+    /// long as it is loaded.
+    passing: Arc<PassingCache>,
 }
 
 impl ModelHandle {
@@ -167,6 +171,11 @@ impl ModelHandle {
     pub fn snapshot_seq(&self) -> (Arc<Model>, i64) {
         let published = self.published.borrow();
         (Arc::clone(&published.model), published.seq)
+    }
+
+    /// The rows that pass the filters of the views read lately.
+    pub fn passing_cache(&self) -> Arc<PassingCache> {
+        Arc::clone(&self.passing)
     }
 
     /// Follows the batches applied from now on. The channel closes when the actor stops, so
@@ -536,6 +545,7 @@ impl Running {
             published: snapshots,
             events: events.downgrade(),
             last_used: Arc::new(Mutex::new(Instant::now())),
+            passing: Arc::new(PassingCache::new()),
         };
         let actor = Actor {
             model_id,

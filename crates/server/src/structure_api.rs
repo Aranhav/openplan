@@ -356,7 +356,7 @@ async fn delete_with(
 }
 
 /// The model's row: its workspace and mode. `NotFound` when there is no such model.
-async fn model_row(db: &PgPool, model_id: Uuid) -> AppResult<(Uuid, ModelMode)> {
+pub(crate) async fn model_row(db: &PgPool, model_id: Uuid) -> AppResult<(Uuid, ModelMode)> {
     sqlx::query_as::<_, (Uuid, ModelMode)>("SELECT workspace_id, mode FROM models WHERE id = $1")
         .bind(model_id)
         .fetch_optional(db)
@@ -385,22 +385,37 @@ pub(crate) async fn handle_for(
     min_role: WorkspaceRole,
     lock: ProdLock,
 ) -> AppResult<ModelHandle> {
+    access_for(state, user, model_id, min_role, lock)
+        .await
+        .map(|(handle, _)| handle)
+}
+
+/// [`handle_for`], with the caller's role in the model's workspace as well, for a handler that
+/// shows what that role may do.
+async fn access_for(
+    state: &AppState,
+    user: &CurrentUser,
+    model_id: Uuid,
+    min_role: WorkspaceRole,
+    lock: ProdLock,
+) -> AppResult<(ModelHandle, WorkspaceRole)> {
     let (workspace_id, mode) = model_row(&state.db, model_id).await?;
-    require_workspace_role(&state.db, user, workspace_id, min_role).await?;
+    let role = require_workspace_role(&state.db, user, workspace_id, min_role).await?;
     if lock == ProdLock::Enforce && mode == ModelMode::Prod {
         return Err(AppError::Conflict {
             code: "model.production_locked",
             detail: PRODUCTION_LOCKED.into(),
         });
     }
-    state.models.get(model_id).await
+    Ok((state.models.get(model_id).await?, role))
 }
 
-/// The actor of the model, for a caller who may read the model. It is taken from the head of the
-/// request, ahead of the body, so that a caller who may not read the model is refused without the
-/// body, which may be megabytes, being read.
+/// The actor of the model and the caller's role, for a caller who may read the model. It is taken
+/// from the head of the request, ahead of the body, so that a caller who may not read the model is
+/// refused without the body, which may be megabytes, being read.
 pub(crate) struct Viewer {
     pub(crate) handle: ModelHandle,
+    pub(crate) role: WorkspaceRole,
 }
 
 impl FromRequestParts<AppState> for Viewer {
@@ -409,7 +424,7 @@ impl FromRequestParts<AppState> for Viewer {
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> AppResult<Viewer> {
         let user = CurrentUser::from_request_parts(parts, state).await?;
         let ApiPath(model_id) = ApiPath::<Uuid>::from_request_parts(parts, state).await?;
-        let handle = handle_for(
+        let (handle, role) = access_for(
             state,
             &user,
             model_id,
@@ -417,7 +432,7 @@ impl FromRequestParts<AppState> for Viewer {
             ProdLock::Ignore,
         )
         .await?;
-        Ok(Viewer { handle })
+        Ok(Viewer { handle, role })
     }
 }
 

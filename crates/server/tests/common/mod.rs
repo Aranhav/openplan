@@ -15,6 +15,7 @@ use openplan_server::{
     app::{AppState, build_router},
     auth::{CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE},
     config::Config,
+    live::{Live, LiveSettings},
 };
 use serde_json::{Value, json};
 use sqlx::{PgPool, postgres::PgPoolOptions, types::Json};
@@ -56,13 +57,19 @@ impl TestApp {
     }
 
     pub fn new(db: PgPool) -> TestApp {
+        TestApp::with_live(db, LiveSettings::default())
+    }
+
+    /// An app whose live sockets keep the times in `live`, which a test makes short.
+    pub fn with_live(db: PgPool, live: LiveSettings) -> TestApp {
         let config = Config::from_lookup(|name| match name {
             "DATABASE_URL" => Some("postgres://invalid".to_string()),
             "OPENPLAN_PUBLIC_URL" => Some("http://localhost:8080".to_string()),
             _ => None,
         })
         .expect("test config is valid");
-        let state = AppState::new(db.clone(), config);
+        let mut state = AppState::new(db.clone(), config);
+        state.live = Live::new(live);
         TestApp {
             router: build_router(state.clone()),
             state,
@@ -367,7 +374,11 @@ pub fn id_of(json: &Value) -> String {
 /// years from January 2026, so that the period labels in these tests mean the same whatever the
 /// date they run on. Returns the admin, the workspace and the model.
 pub async fn plan(pool: &PgPool) -> (TestApp, String, String) {
-    let mut admin = TestApp::new(pool.clone());
+    plan_in(TestApp::new(pool.clone())).await
+}
+
+/// [`plan`] in an app that was made, such as one with short times for its live sockets.
+pub async fn plan_in(mut admin: TestApp) -> (TestApp, String, String) {
     let workspace = setup_admin(&mut admin).await;
     let model = create_model(&mut admin, &workspace, "Plan").await;
     let calendar = admin
