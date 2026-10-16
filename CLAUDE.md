@@ -113,3 +113,9 @@ OpenPlan is built by a controller session acting as architect, plus subagents. T
 | Final whole-milestone review | Sonnet | One pass per milestone before merging to `main`. |
 
 Rules: implementers never spawn subagents; fixes are new commits (never amend); stage files by explicit path; the implementer writes its report to the file named in its dispatch.
+
+Testing cost (every task keeps writing tests; this limits how often they are run and re-checked):
+
+- Implementers run only the tests relevant to what they are changing while they work, then the full suite once before writing the report, and quote only the summary lines.
+- Reviewers run the suites once. Extra deep checks (building every commit on its own, deliberately breaking code to prove a test catches it, re-running tests to look for flakes) are only for security- and concurrency-critical code: authentication and sessions, the live-update sockets, model actors and the calculation engine. Never for UI screens, docs or config.
+- CI on the pull request is the final full gate.
