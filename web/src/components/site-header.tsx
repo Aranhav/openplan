@@ -19,6 +19,7 @@ import { BUILD_GROUPS } from "@/features/build/build-nav"
 import { useModel } from "@/features/models/api"
 import { useStructure } from "@/features/structure/api"
 import { useCurrentWorkspace } from "@/hooks/use-current-workspace"
+import { isMac } from "@/lib/platform"
 import { cn } from "@/lib/utils"
 import type { FileRouteTypes } from "@/routeTree.gen"
 
@@ -29,11 +30,10 @@ const WORKSPACE_PAGES: Partial<Record<FileRouteTypes["id"], string>> = {
 
 const HIDDEN_ON_PHONE = "hidden md:inline-flex"
 
-const IS_APPLE = /Mac|iPhone|iPad/.test(navigator.userAgent)
-
 export function SiteHeader() {
   const [searching, setSearching] = useState(false)
   const searchButton = useRef<HTMLButtonElement>(null)
+  const mac = isMac()
   return (
     <header className="sticky top-0 z-10 flex h-14 shrink-0 items-center gap-2 border-b bg-background px-4">
       <SidebarTrigger className="-ml-1" />
@@ -44,14 +44,14 @@ export function SiteHeader() {
         variant="outline"
         size="sm"
         className="ml-auto justify-between gap-2 text-muted-foreground md:w-56"
-        aria-keyshortcuts={IS_APPLE ? "Meta+K" : "Control+K"}
+        aria-keyshortcuts={mac ? "Meta+K" : "Control+K"}
         onClick={() => setSearching(true)}
       >
         <span className="flex items-center gap-2">
           <Search />
           <span className="sr-only md:not-sr-only">Search…</span>
         </span>
-        <Kbd className="hidden md:inline-flex">{IS_APPLE ? "⌘K" : "Ctrl K"}</Kbd>
+        <Kbd className="hidden md:inline-flex">{mac ? "⌘K" : "Ctrl K"}</Kbd>
       </Button>
       <CommandMenu open={searching} onOpenChange={setSearching} searchButton={searchButton} />
     </header>

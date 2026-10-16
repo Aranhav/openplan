@@ -1,7 +1,7 @@
 import { screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { HttpResponse, http } from "msw"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import {
   makeModel,
   me,
@@ -166,6 +166,10 @@ describe("the sidebar's saved state", () => {
 })
 
 describe("the header", () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
   it("names the workspace and the page", async () => {
     mockSession()
     renderApp(`/w/${workspace.id}/members`)
@@ -229,6 +233,19 @@ describe("the header", () => {
       `/m/${model.id}/modules`,
     )
     expect(within(crumbs).getByRole("link", { name: "Revenue plan" })).toBeInTheDocument()
+  })
+
+  it.each([
+    ["Win32", "Ctrl K", "Control+K"],
+    ["MacIntel", "⌘K", "Meta+K"],
+  ])("tells a %s keyboard the search shortcut", async (platform, hint, keys) => {
+    vi.spyOn(navigator, "platform", "get").mockReturnValue(platform)
+    mockSession()
+    renderApp(`/w/${workspace.id}`)
+
+    const search = await screen.findByRole("button", { name: /^Search/ })
+    expect(search).toHaveTextContent(hint)
+    expect(search).toHaveAttribute("aria-keyshortcuts", keys)
   })
 
   it("does not tie the profile to a workspace", async () => {
