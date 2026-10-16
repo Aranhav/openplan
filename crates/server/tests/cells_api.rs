@@ -7,6 +7,7 @@ use common::{
     TestApp, TestResponse, assert_problem, change_rows, create_items, create_list, create_member,
     create_module, create_user, id_of, list_axis, month, plan, sign_in, sign_in_beside, url,
 };
+use openplan_engine::MAX_MODULE_DIMENSIONS;
 use openplan_server::auth::SESSION_COOKIE;
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -1534,6 +1535,14 @@ async fn the_cells_routes_are_in_the_openapi_document(pool: PgPool) {
         "ValueDto",
     ] {
         assert!(schemas.contains_key(name), "{name}");
+    }
+    // The text names the limit that the server reads a cell's coordinates up to.
+    for text in [
+        &document["components"]["schemas"]["CellEditDto"]["properties"]["coords"]["description"],
+        &document["components"]["schemas"]["ReadCellsRequest"]["properties"]["cells"]["description"],
+    ] {
+        let text = text.as_str().unwrap();
+        assert!(text.contains(&MAX_MODULE_DIMENSIONS.to_string()), "{text}");
     }
 }
 

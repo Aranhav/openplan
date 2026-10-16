@@ -1,14 +1,15 @@
 mod common;
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use axum::http::StatusCode;
 use common::{
     TestApp, TestResponse, assert_problem, create_items, create_line_item, create_list,
-    create_member, create_module, create_user, id_of, list_axis, month, plan, sign_in_beside, url,
+    create_member, create_module, create_user, id_of, list_axis, month, plan, plan_in,
+    sign_in_beside, url,
 };
 use openplan_engine::ViewQuery;
-use openplan_server::auth::SESSION_COOKIE;
+use openplan_server::{auth::SESSION_COOKIE, work::Work};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -273,30 +274,35 @@ async fn invalid_query_422(pool: PgPool) {
             with(&|body| body["columns"] = json!([])),
             "structure.invalid",
             None,
+            "The view is missing the dimension 'Line items': put it in the rows, columns or pages.",
         ),
         (
             "a window of too many rows",
             with(&|body| body["window"]["row_limit"] = json!(1001)),
             "structure.invalid",
             None,
+            "Row_limit can't be more than 1000.",
         ),
         (
             "a module that does not exist",
             with(&|body| body["module"] = json!(stranger)),
             "structure.invalid",
             Some("module"),
+            "The module does not exist.",
         ),
         (
             "a member that does not exist",
             with(&|body| body["pages"][0]["key"] = json!("Jan 99")),
             "structure.invalid",
             None,
+            "'Jan 99' is not a member of 'Time'.",
         ),
         (
             "a line item that does not exist",
             with(&|body| body["line_items"] = json!([stranger])),
             "structure.invalid",
             None,
+            "The view lists a line item that isn't in module 'Sales'.",
         ),
         (
             "a filter on a line item that does not exist",
@@ -307,18 +313,21 @@ async fn invalid_query_422(pool: PgPool) {
             }),
             "structure.invalid",
             Some("query"),
+            "The line item does not exist.",
         ),
         (
             "a filter without its value",
             with(&|body| body["filters"] = json!([{ "line_item": s.units, "op": "gt" }])),
             "structure.invalid",
             None,
+            "The filter on 'Units' needs a value.",
         ),
         (
             "a dimension of a kind that does not exist",
             with(&|body| body["rows"] = json!([{ "kind": "weeks" }])),
             "validation",
-            None,
+            Some("rows[0].kind"),
+            "Some fields are invalid.",
         ),
         (
             "no window",
@@ -327,12 +336,14 @@ async fn invalid_query_422(pool: PgPool) {
             }),
             "validation",
             Some("window"),
+            "Some fields are invalid.",
         ),
     ];
 
-    for (what, body, code, field) in cases {
+    for (what, body, code, field, detail) in cases {
         let response = query(&mut admin, &id, body).await;
         assert_problem(&response, StatusCode::UNPROCESSABLE_ENTITY, code);
+        assert_eq!(response.json["detail"], detail, "{what}");
         if let Some(field) = field {
             assert_eq!(response.json["errors"][0]["field"], field, "{what}");
         }
@@ -680,4 +691,201 @@ async fn the_view_routes_are_in_the_openapi_document(pool: PgPool) {
             .is_none()
     );
     assert!(document["paths"]["/api/v1/models/{id}/live/ticket"]["post"]["security"].is_array());
+}
+
+/// A call that waits for a permit for the heavy work of a request at most `wait`.
+fn busy_after(wait: Duration) -> impl FnOnce(&mut openplan_server::app::AppState) {
+    move |state| state.work = Work::new(1, wait)
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn heavy_work_that_waits_too_long_is_a_503_after_the_caller_is_known(pool: PgPool) {
+    let (mut admin, _, id) = plan_in(TestApp::with_state(
+        pool.clone(),
+        busy_after(Duration::from_millis(100)),
+    ))
+    .await;
+    let s = sales(&mut admin, &id).await;
+    create_user(&mut admin, "olga@acme.com", "Olga Outsider").await;
+    let mut outsider = sign_in_beside(&admin, "olga@acme.com").await;
+    let read = json!({ "line_item_id": s.units, "cells": [[s.widget, "Jan 26"]] });
+    let members_of = json!({ "module_id": s.module, "dim": { "kind": "line_items" } });
+    let held = admin.state.work.permit().await.unwrap();
+
+    let started = std::time::Instant::now();
+    let queried = query(&mut admin, &id, grid(&s)).await;
+    let listed = members(&mut admin, &id, members_of.clone()).await;
+    let cells = admin
+        .post(&url(&id, "/cells/read"), Some(read.clone()))
+        .await;
+
+    // Each waited for its turn, and then said when to try again.
+    assert!(started.elapsed() >= Duration::from_millis(300));
+    for refused in [&queried, &listed, &cells] {
+        assert_problem(refused, StatusCode::SERVICE_UNAVAILABLE, "server.busy");
+        assert_eq!(refused.headers["retry-after"], "2");
+    }
+    // The caller is known before the turn is waited for, and a write is not held up by it.
+    let refused = query(&mut outsider, &id, grid(&s)).await;
+    assert_problem(&refused, StatusCode::NOT_FOUND, "not_found");
+    put(&mut admin, &id, &s.units, &s.widget, 1.0).await;
+
+    drop(held);
+    assert_eq!(
+        query(&mut admin, &id, grid(&s)).await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        members(&mut admin, &id, members_of).await.status,
+        StatusCode::OK
+    );
+    let cells = admin.post(&url(&id, "/cells/read"), Some(read)).await;
+    assert_eq!(cells.status, StatusCode::OK, "{}", cells.text);
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn a_write_drops_the_rows_kept_at_once(pool: PgPool) {
+    let (mut admin, _, id) = plan(&pool).await;
+    let s = sales(&mut admin, &id).await;
+    put(&mut admin, &id, &s.units, &s.widget, 10.0).await;
+    let mut body = grid(&s);
+    body["filters"] = json!([{ "line_item": s.units, "op": "gt", "value": number(5.0) }]);
+    let cache = admin
+        .state
+        .models
+        .get(Uuid::parse_str(&id).unwrap())
+        .await
+        .unwrap()
+        .passing_cache();
+    query_ok(&mut admin, &id, body).await;
+    assert_eq!(cache.len(), 1);
+
+    // No query comes after it, and nothing of the model before it is kept.
+    put(&mut admin, &id, &s.units, &s.gadget, 20.0).await;
+
+    assert!(cache.is_empty());
+}
+
+/// A module of two lists of 1,000 and 1,500 items, with a line item of a single cell that a
+/// filter reads, which makes a view of 1,500,000 rows that takes more than a second to filter in
+/// a debug build and no more room than a small model.
+struct Pairs {
+    module: String,
+    rows: String,
+    columns: String,
+    flag: String,
+}
+
+async fn pairs(app: &mut TestApp, model: &str) -> Pairs {
+    let rows = create_list(app, model, json!({ "name": "Rows" })).await;
+    let columns = create_list(app, model, json!({ "name": "Columns" })).await;
+    for (list, count) in [(&rows, 1000), (&columns, 1500)] {
+        let items: Vec<Value> = (0..count)
+            .map(|at| json!({ "name": format!("{at}") }))
+            .collect();
+        create_items(app, model, list, json!(items)).await;
+    }
+    let module = create_module(
+        app,
+        model,
+        "Pairs",
+        vec![list_axis(&rows), list_axis(&columns)],
+    )
+    .await;
+    let flag = id_of(
+        &create_line_item(
+            app,
+            model,
+            &module,
+            json!({ "name": "Flag", "applies_to": [] }),
+        )
+        .await,
+    );
+    let write = app
+        .post(
+            &url(model, "/cells"),
+            Some(
+                json!({ "edits": [{ "line_item_id": flag, "coords": [], "value": number(1.0) }] }),
+            ),
+        )
+        .await;
+    assert_eq!(write.status, StatusCode::OK, "{}", write.text);
+    Pairs {
+        module,
+        rows,
+        columns,
+        flag,
+    }
+}
+
+impl Pairs {
+    /// The view of every row and column pair where the flag is over `above`, from row `offset`.
+    fn view(&self, above: f64, offset: usize) -> Value {
+        json!({
+            "module": self.module,
+            "rows": [
+                { "kind": "list", "list": self.rows },
+                { "kind": "list", "list": self.columns },
+            ],
+            "columns": [{ "kind": "line_items" }],
+            "show_summaries": false,
+            "filters": [{ "line_item": self.flag, "op": "gt", "value": number(above) }],
+            "window": { "row_offset": offset, "row_limit": 5, "col_offset": 0, "col_limit": 5 },
+        })
+    }
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn queries_for_one_view_that_is_not_kept_yet_read_it_once(pool: PgPool) {
+    // One permit: a query that waits for the view while it holds the permit would hold it up.
+    let (mut admin, _, id) = plan_in(TestApp::with_state(
+        pool.clone(),
+        busy_after(Duration::from_secs(15)),
+    ))
+    .await;
+    let pairs = pairs(&mut admin, &id).await;
+    let cache = admin
+        .state
+        .models
+        .get(Uuid::parse_str(&id).unwrap())
+        .await
+        .unwrap()
+        .passing_cache();
+    let (mut second, mut third, mut fourth) = (admin.fork(), admin.fork(), admin.fork());
+
+    let (first, a, b, c) = tokio::join!(
+        query(&mut admin, &id, pairs.view(0.0, 0)),
+        query(&mut second, &id, pairs.view(0.0, 100)),
+        query(&mut third, &id, pairs.view(0.0, 200)),
+        query(&mut fourth, &id, pairs.view(0.0, 300)),
+    );
+
+    for response in [&first, &a, &b, &c] {
+        assert_eq!(response.status, StatusCode::OK, "{}", response.text);
+        assert_eq!(response.json["total_rows"], 1_500_000);
+    }
+    assert_eq!(labels(&b.json["rows"]), ["0", "0", "0", "0", "0"]);
+    // The rows were read by one of them, and the others found them kept.
+    assert_eq!(cache.found(), 1);
+    assert_eq!(cache.len(), 1);
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn heavy_work_holds_its_permit_until_it_is_done(pool: PgPool) {
+    let (mut admin, _, id) = plan_in(TestApp::with_state(
+        pool.clone(),
+        busy_after(Duration::from_millis(100)),
+    ))
+    .await;
+    let pairs = pairs(&mut admin, &id).await;
+    let mut other = admin.fork();
+
+    // The second asks while the first reads a million and a half rows, for another view.
+    let (first, second) = tokio::join!(query(&mut admin, &id, pairs.view(0.0, 0)), async {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        query(&mut other, &id, pairs.view(0.5, 0)).await
+    });
+
+    assert_eq!(first.status, StatusCode::OK, "{}", first.text);
+    assert_problem(&second, StatusCode::SERVICE_UNAVAILABLE, "server.busy");
 }

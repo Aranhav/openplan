@@ -1561,3 +1561,43 @@ async fn modules_and_formulas_survive_unloading_the_model(pool: PgPool) {
 
     assert_eq!(structure(&mut admin, &model).await, before);
 }
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn a_module_has_at_most_16_dimensions(pool: PgPool) {
+    let (mut admin, _, id) = plan(&pool).await;
+    let mut axes = vec![month()];
+    for at in 0..16 {
+        let list = create_list(&mut admin, &id, json!({ "name": format!("List {at}") })).await;
+        axes.push(list_axis(&list));
+    }
+
+    // Sixteen dimensions, and then one more.
+    let wide = create_module(&mut admin, &id, "Wide", axes[..16].to_vec()).await;
+    let refused = admin
+        .post(
+            &url(&id, "/modules"),
+            Some(json!({ "name": "Wider", "axes": axes })),
+        )
+        .await;
+    assert_problem(
+        &refused,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "structure.invalid",
+    );
+    assert_eq!(
+        refused.json["detail"],
+        "A module can have at most 16 dimensions."
+    );
+    let grown = admin
+        .request(
+            Method::PATCH,
+            &url(&id, &format!("/modules/{wide}")),
+            Some(json!({ "axes": axes })),
+        )
+        .await;
+    assert_problem(
+        &grown,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "structure.invalid",
+    );
+}

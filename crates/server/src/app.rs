@@ -29,7 +29,9 @@ use crate::{
     live::{self, Live, LiveSettings},
     models, modules_api,
     openapi::ApiDoc,
-    query_api, static_files, structure_api, users, workspaces,
+    query_api, static_files, structure_api, users,
+    work::Work,
+    workspaces,
 };
 
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
@@ -50,6 +52,8 @@ pub struct AppState {
     pub models: ModelRegistry,
     /// The tickets that open the live sockets of the models.
     pub live: Live,
+    /// The permits for heavy work: view queries, members and reads of cells.
+    pub work: Work,
 }
 
 impl AppState {
@@ -58,6 +62,7 @@ impl AppState {
         AppState {
             models: ModelRegistry::new(db.clone(), model_idle),
             live: Live::new(LiveSettings::default()),
+            work: Work::default(),
             db,
             config: Arc::new(config),
             login_limiter: Arc::new(LoginLimiter::new(LOGIN_MAX_FAILURES, LOGIN_FAILURE_WINDOW)),

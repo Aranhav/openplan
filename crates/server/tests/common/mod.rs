@@ -57,11 +57,17 @@ impl TestApp {
     }
 
     pub fn new(db: PgPool) -> TestApp {
-        TestApp::with_live(db, LiveSettings::default())
+        TestApp::with_state(db, |_| {})
     }
 
     /// An app whose live sockets keep the times in `live`, which a test makes short.
     pub fn with_live(db: PgPool, live: LiveSettings) -> TestApp {
+        TestApp::with_state(db, |state| state.live = Live::new(live))
+    }
+
+    /// An app whose state `change` has changed before the router is made from it, such as to put
+    /// a limit that a test reaches in the place of the server's own.
+    pub fn with_state(db: PgPool, change: impl FnOnce(&mut AppState)) -> TestApp {
         let config = Config::from_lookup(|name| match name {
             "DATABASE_URL" => Some("postgres://invalid".to_string()),
             "OPENPLAN_PUBLIC_URL" => Some("http://localhost:8080".to_string()),
@@ -69,7 +75,7 @@ impl TestApp {
         })
         .expect("test config is valid");
         let mut state = AppState::new(db.clone(), config);
-        state.live = Live::new(live);
+        change(&mut state);
         TestApp {
             router: build_router(state.clone()),
             state,

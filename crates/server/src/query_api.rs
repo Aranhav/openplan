@@ -4,12 +4,14 @@
 //! Both are taken from the model as of the last change applied, which the answer to a query
 //! gives the sequence number of, so that a client can tell which changes of the live channel are
 //! in it. The caller is checked before the body is read, and the work is done on a thread that
-//! may block, since a filtered view of two million rows takes seconds. The rows that pass the
-//! filters of a view are kept by the model, so that scrolling the window over a view does not
-//! read them again.
+//! may block, since a filtered view of two million rows takes seconds, and only a few such
+//! pieces of work run at once ([`crate::work::Work`]). The rows that pass the filters of a view
+//! are kept, so that scrolling the window over a view does not read them again, and a view
+//! that is not kept yet is read by one request while the others for it wait.
 
 use axum::{
     Router,
+    extract::State,
     http::{HeaderValue, header},
     response::{IntoResponse, Response},
     routing::post,
@@ -87,11 +89,13 @@ async fn blocking<T: Send + 'static>(
         (status = 401, description = "Not signed in (auth.unauthenticated)"),
         (status = 404, description = "No such model, or the caller is not a member of its workspace (not_found)"),
         (status = 413, description = "The body is more than 2 MiB (payload_too_large)"),
+        (status = 503, description = "Too many pieces of heavy work are going on and none was free within 10 seconds (server.busy); `Retry-After` says when to try again"),
         (status = 422, description = "More than 10 filters, 1,000 line items, 5,000 collapsed members or 5,000 hidden members (validation); a module, list or line item that does not exist, a dimension that is not on the rows, columns or pages once, a member that does not exist, a window of more than 1,000 rows or 200 columns, a filter that does not fit its line item, a Contains filter on a line item that is not text or a list, or a filtered view of more than 2,000,000 rows (structure.invalid)"),
     )
 )]
 pub(crate) async fn query(
-    Viewer { handle, role, .. }: Viewer,
+    State(state): State<AppState>,
+    Viewer { handle, role }: Viewer,
     ApiJson(body): ApiJson<ViewQueryDto>,
 ) -> AppResult<Response> {
     let query = body.into_query()?;
@@ -101,12 +105,18 @@ pub(crate) async fn query(
     }
     let readonly = role == WorkspaceRole::Viewer;
     let cache = handle.passing_cache();
+    // A view with filters has its rows kept; one that is not is found by one request, which the
+    // others wait for without a permit, and then they find them kept.
+    let filtered = !query.filters.is_empty();
+    let mut known = filtered.then(|| cache.get(seq, &query)).flatten();
+    let mut flight = None;
+    if filtered && known.is_none() {
+        flight = Some(cache.flight(seq, &query).await);
+        known = cache.get(seq, &query);
+    }
+    let permit = state.work.permit().await?;
     let body = blocking(move || {
-        let known = if query.filters.is_empty() {
-            None
-        } else {
-            cache.get(seq, &query)
-        };
+        let (_permit, _flight) = (permit, flight);
         let (result, passing) =
             view::query_with(&model, &query, known.as_ref()).map_err(engine_error)?;
         if let Some(passing) = passing
@@ -132,10 +142,13 @@ pub(crate) async fn query(
         (status = 200, description = "The members of the dimension, in the order a view shows them", body = MembersResponse),
         (status = 401, description = "Not signed in (auth.unauthenticated)"),
         (status = 404, description = "No such model, or the caller is not a member of its workspace (not_found)"),
+        (status = 413, description = "The body is more than 2 MiB (payload_too_large)"),
+        (status = 503, description = "Too many pieces of heavy work are going on and none was free within 10 seconds (server.busy); `Retry-After` says when to try again"),
         (status = 422, description = "A module or list that does not exist, a dimension the module does not have, or one with more than 100,000 members (structure.invalid)"),
     )
 )]
 pub(crate) async fn members(
+    State(state): State<AppState>,
     Viewer { handle, .. }: Viewer,
     ApiJson(body): ApiJson<MembersRequest>,
 ) -> AppResult<Response> {
@@ -145,7 +158,9 @@ pub(crate) async fn members(
         return Err(missing("module_id", "module"));
     }
     let dim = body.dim.into();
+    let permit = state.work.permit().await?;
     let body = blocking(move || {
+        let _permit = permit;
         let members =
             view::members(&model, module, &dim, body.show_summaries).map_err(engine_error)?;
         to_json(&MembersResponse {

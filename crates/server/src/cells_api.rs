@@ -17,8 +17,8 @@ use axum::{
 };
 use chrono::{DateTime, NaiveDate, Utc};
 use openplan_engine::{
-    CellEdit, CellIssue, Command, CoordToken, EngineError, ItemId, LineItemId, Model, TimeLevel,
-    Value,
+    CellEdit, CellIssue, Command, CoordToken, EngineError, ItemId, LineItemId,
+    MAX_MODULE_DIMENSIONS, Model, TimeLevel, Value,
 };
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
@@ -40,10 +40,10 @@ use crate::{
 const MAX_EDITS: usize = 100_000;
 /// The most cells one read takes.
 const MAX_CELLS: usize = 10_000;
-/// The most coordinates a cell has, one for each dimension of its line item. A request is read
-/// into memory before it can be checked against the line item, and a coordinate takes some 10
-/// times the bytes it is written in.
-const MAX_COORDS: usize = 16;
+/// The most coordinates a cell has, one for each dimension of its line item, which no module has
+/// more of. A request is read into memory before it can be checked against the line item, and a
+/// coordinate takes some 10 times the bytes it is written in.
+const MAX_COORDS: usize = MAX_MODULE_DIMENSIONS;
 /// The most changes the history of a cell lists.
 const HISTORY_LIMIT: i64 = 100;
 /// The most problems of a request that an error lists.
@@ -415,10 +415,12 @@ pub(crate) async fn write_cells(
         (status = 401, description = "Not signed in (auth.unauthenticated)"),
         (status = 404, description = "No such model, or the caller is not a member of its workspace (not_found)"),
         (status = 413, description = "The body is more than 8 MiB (payload_too_large)"),
+        (status = 503, description = "Too many pieces of heavy work are going on and none was free within 10 seconds (server.busy); `Retry-After` says when to try again"),
         (status = 422, description = "More than 10,000 cells (validation), a line item that does not exist (structure.invalid), or a token that fits no level of its dimension or a cell with more than 16 coordinates (cells.invalid_coordinate)"),
     )
 )]
 pub(crate) async fn read_cells(
+    State(state): State<AppState>,
     Viewer { handle, .. }: Viewer,
     ApiJson(body): ApiJson<ReadCellsRequest>,
 ) -> AppResult<Json<ReadCellsResponse>> {
@@ -448,9 +450,13 @@ pub(crate) async fn read_cells(
         )]));
     }
     // Rolling up a large line item for the first time can take a while.
-    let values = tokio::task::spawn_blocking(move || model.read(line_item, &cells))
-        .await
-        .map_err(|error| AppError::Internal(error.into()))??;
+    let permit = state.work.permit().await?;
+    let values = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        model.read(line_item, &cells)
+    })
+    .await
+    .map_err(|error| AppError::Internal(error.into()))??;
     Ok(Json(ReadCellsResponse {
         values: values.iter().map(ValueDto::from).collect(),
     }))

@@ -156,12 +156,7 @@ pub struct Capped<T, const N: usize> {
 }
 
 impl<T, const N: usize> Capped<T, N> {
-    /// How many elements the list had, of which at most `N` were kept.
-    pub fn total(&self) -> usize {
-        self.total
-    }
-
-    /// Whether the list had more than `N` elements.
+    /// Whether the list had more than `N` elements, of which `N` were kept.
     pub fn is_over(&self) -> bool {
         self.total > N
     }
@@ -710,17 +705,14 @@ mod tests {
     #[test]
     fn a_capped_list_keeps_what_fits_and_counts_the_rest() {
         let list: Capped<u32, 3> = serde_json::from_str("[1,2,3,4,5]").unwrap();
-        assert_eq!(list.total(), 5);
         assert!(list.is_over());
         assert_eq!(list.into_vec(), [1, 2, 3]);
 
         let list: Capped<u32, 3> = serde_json::from_str("[1,2,3]").unwrap();
-        assert_eq!(list.total(), 3);
         assert!(!list.is_over());
         assert_eq!(list.into_vec(), [1, 2, 3]);
 
         let list: Capped<u32, 3> = serde_json::from_str("[]").unwrap();
-        assert_eq!(list.total(), 0);
         assert!(!list.is_over());
         assert!(list.into_vec().is_empty());
     }
@@ -729,7 +721,8 @@ mod tests {
     fn a_capped_list_reads_the_elements_it_does_not_keep_only_as_far_as_json_goes() {
         // Elements past the cap are not read into the type, so they need not fit it ...
         let list: Capped<u32, 1> = serde_json::from_str(r#"[1,"two",{"three":3}]"#).unwrap();
-        assert_eq!(list.total(), 3);
+        assert!(list.is_over());
+        assert_eq!(list.into_vec(), [1]);
         // ... but they are still JSON, and a kept one has to fit.
         assert!(serde_json::from_str::<Capped<u32, 1>>("[1,2,").is_err());
         assert!(serde_json::from_str::<Capped<u32, 2>>(r#"[1,"two"]"#).is_err());

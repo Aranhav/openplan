@@ -25,6 +25,8 @@ pub enum AppError {
     Csrf,
     #[error("rate limited, retry in {retry_after_secs}s")]
     RateLimited { retry_after_secs: u64 },
+    #[error("server busy, retry in {retry_after_secs}s")]
+    Busy { retry_after_secs: u64 },
     #[error("not found")]
     NotFound,
     #[error("method not allowed")]
@@ -188,6 +190,14 @@ impl IntoResponse for AppError {
                 "auth.csrf",
                 "The CSRF token is missing or invalid.".to_string(),
             ),
+            AppError::Busy { retry_after_secs } => {
+                retry_after = Some(retry_after_secs);
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "server.busy",
+                    "The server is busy. Try again in a moment.".to_string(),
+                )
+            }
             AppError::RateLimited { retry_after_secs } => {
                 retry_after = Some(retry_after_secs);
                 (
@@ -409,6 +419,20 @@ mod tests {
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(response.headers()[header::RETRY_AFTER], "30");
         assert_eq!(body_json(response).await["code"], "auth.rate_limited");
+    }
+
+    #[tokio::test]
+    async fn busy_is_503_and_says_when_to_try_again() {
+        let response = AppError::Busy {
+            retry_after_secs: 2,
+        }
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers()[header::RETRY_AFTER], "2");
+        let json = body_json(response).await;
+        assert_eq!(json["code"], "server.busy");
+        assert_eq!(json["detail"], "The server is busy. Try again in a moment.");
     }
 
     #[tokio::test]

@@ -161,6 +161,42 @@ async fn reading_and_parsing_the_body_of_a_cells_request_is_bounded(pool: PgPool
     assert!(largest.peak < PEAK_LIMIT, "{} bytes", largest.peak);
     drop(body);
 
+    // The other way to fill the body: 100,000 text edits of some 300 bytes, each of which is a
+    // string of its own as parsed, a value of the engine, a command, and a row of the change log.
+    let note = id_of(
+        &create_line_item(
+            &mut admin,
+            &id,
+            &module,
+            json!({ "name": "Note", "format": { "type": "text" } }),
+        )
+        .await,
+    );
+    let mut body = String::from(r#"{"edits":["#);
+    for at in 0..100_000usize {
+        if at > 0 {
+            body.push(',');
+        }
+        body.push_str(&format!(
+            r#"{{"line_item_id":"{note}","coords":["{}","{}","{}"],"value":{{"t":"text","v":"{at:0>6} {}"}}}}"#,
+            members[0][at % 100],
+            members[1][(at / 100) % 100],
+            months[at / 10_000],
+            "x".repeat(120),
+        ));
+    }
+    body.push_str("]}");
+    let texts = post(address, &admin, &write, body.as_bytes()).await;
+    eprintln!(
+        "100,000 text edits ({:.1} MiB): status {}, peak +{:.0} MiB",
+        mebibytes(body.len()),
+        texts.status,
+        mebibytes(texts.peak)
+    );
+    assert_eq!(texts.status, StatusCode::OK.as_u16());
+    assert!(texts.peak < PEAK_LIMIT, "{} bytes", texts.peak);
+    drop(body);
+
     // One edit whose coordinates are millions of empty texts, three bytes each, which a parsed
     // request keeps in 32 bytes each, and in twice that while the list of them grows.
     let mut body = format!(r#"{{"edits":[{{"line_item_id":"{units}","coords":["#);
