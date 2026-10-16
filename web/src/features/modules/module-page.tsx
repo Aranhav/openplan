@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { LiveIndicator } from "@/features/live/live-indicator"
 import { useStructure, useUpdateModule } from "@/features/structure/api"
 import { axisLabel } from "@/features/structure/labels"
 import type { ModuleDto, StructureDto } from "@/features/structure/types"
@@ -148,8 +149,9 @@ function ModuleScreen({
             ))}
           </div>
         </div>
-        {canEdit && (
-          <div className="flex shrink-0 items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2">
+          <LiveIndicator />
+          {canEdit && (
             <ProductionLock locked={locked}>
               <Button
                 ref={settingsRef}
@@ -161,8 +163,8 @@ function ModuleScreen({
                 Module settings
               </Button>
             </ProductionLock>
-          </div>
-        )}
+          )}
+        </div>
       </div>
       {locked && (
         <div className="mb-4">

@@ -8,6 +8,7 @@ import {
   serveStructure,
   workspace,
 } from "@/test/app"
+import { FakeWebSocket } from "@/test/live"
 import { structure } from "@/test/structure"
 
 const model = makeModel({ name: "Revenue plan" })
@@ -67,5 +68,35 @@ describe("a model that is gone", () => {
 
     expect(await screen.findByRole("heading", { level: 1, name: "Model not found" })).toBeVisible()
     expect(screen.getByRole("link", { name: "Back to models" })).toBeVisible()
+  })
+})
+
+describe("following the model live", () => {
+  it("keeps one socket open for all the model's screens, and closes it when they are left", async () => {
+    const { router } = openApp(`/m/${model.id}/modules`)
+    await screen.findByRole("heading", { level: 1, name: "Modules" })
+    await waitFor(() => expect(FakeWebSocket.sockets).toHaveLength(1))
+    expect(FakeWebSocket.last.url).toContain(`/api/v1/models/${model.id}/live?ticket=`)
+
+    await act(() => router.navigate({ to: "/m/$modelId/settings", params: { modelId: model.id } }))
+    await screen.findByRole("heading", { level: 1, name: "Revenue plan" })
+    expect(FakeWebSocket.sockets).toHaveLength(1)
+    expect(FakeWebSocket.last.closedWith).toBeUndefined()
+
+    await act(() =>
+      router.navigate({ to: "/w/$workspaceId", params: { workspaceId: workspace.id } }),
+    )
+    await screen.findByRole("heading", { level: 1, name: "Models" })
+    expect(FakeWebSocket.last.closedWith).toBe(1000)
+  })
+
+  it("follows no model that is gone", async () => {
+    mockSession()
+    serveModels([])
+    renderApp(`/m/${model.id}/modules`)
+
+    await screen.findByRole("heading", { level: 1, name: "Model not found" })
+
+    expect(FakeWebSocket.sockets.every((socket) => socket.closedWith !== undefined)).toBe(true)
   })
 })

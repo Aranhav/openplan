@@ -1,6 +1,7 @@
 import "@testing-library/jest-dom/vitest"
 import { cleanup, configure } from "@testing-library/react"
-import { afterAll, afterEach, beforeAll } from "vitest"
+import { afterAll, afterEach, beforeAll, beforeEach, vi } from "vitest"
+import { FakeWebSocket } from "./live"
 import { server } from "./server"
 
 // Node's Request rejects relative URLs; browsers resolve them against the page.
@@ -47,9 +48,17 @@ configure({ asyncUtilTimeout: 3000 })
 // Requests no test mocked fail loudly instead of reaching a real network.
 beforeAll(() => server.listen({ onUnhandledFrame: "error" }))
 
+// Live updates open a WebSocket; none of the tests may reach a network, so the page gets a fake.
+// It goes in after msw has listened, which puts a wrapper of its own in the place of the socket.
+beforeEach(() => {
+  vi.stubGlobal("WebSocket", FakeWebSocket)
+})
+
 afterEach(() => {
   cleanup()
+  vi.unstubAllGlobals()
   server.resetHandlers()
+  FakeWebSocket.sockets = []
   window.localStorage.clear()
   document.documentElement.classList.remove("dark")
   document.cookie = "sidebar_state=; max-age=0; path=/"
