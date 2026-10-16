@@ -3657,7 +3657,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description The module and its line items were deleted */
+            /** @description The module, its line items and its saved views were deleted */
             204: {
                 headers: {
                     [name: string]: unknown;
@@ -3956,7 +3956,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description A view of the module has that name (model.name_taken) */
+            /** @description A view of the module has that name (structure.name_taken) */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -4753,7 +4753,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description Another view of the module has that name (model.name_taken) */
+            /** @description Another view of the module has that name (structure.name_taken) */
             409: {
                 headers: {
                     [name: string]: unknown;
