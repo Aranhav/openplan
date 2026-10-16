@@ -438,6 +438,54 @@ async fn the_structure_lists_the_problems_of_formulas_that_stopped_working(pool:
 }
 
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn a_change_that_leaves_the_formula_alone_answers_with_its_problems(pool: PgPool) {
+    let (mut admin, _, model) = plan(&pool).await;
+    let module = create_module(&mut admin, &model, "Plan", vec![month()]).await;
+    let rent = create_line_item(&mut admin, &model, &module, json!({ "name": "Rent" })).await;
+    let per_head = id_of(
+        &create_line_item(
+            &mut admin,
+            &model,
+            &module,
+            json!({ "name": "Rent per head", "formula": "Rent / 12" }),
+        )
+        .await,
+    );
+    let deleted = admin
+        .delete(&url(&model, &format!("/line-items/{}", id_of(&rent))))
+        .await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.text);
+    let problems = formula_errors_of(&structure(&mut admin, &model).await, &per_head);
+    assert_eq!(problems.as_array().unwrap().len(), 1, "{problems}");
+
+    let renamed = patch_line_item(
+        &mut admin,
+        &model,
+        &per_head,
+        json!({ "name": "Rent each", "notes": "Monthly" }),
+    )
+    .await;
+
+    assert_eq!(renamed.status, StatusCode::OK, "{}", renamed.text);
+    assert_eq!(renamed.json["name"], "Rent each");
+    assert_eq!(renamed.json["formula"], "Rent / 12");
+    assert_eq!(renamed.json["formula_errors"], problems);
+
+    let same = patch_line_item(
+        &mut admin,
+        &model,
+        &per_head,
+        json!({ "formula": "Rent / 12" }),
+    )
+    .await;
+    assert_problem(
+        &same,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "formula.unknown_name",
+    );
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn formula_check_ok_and_errors(pool: PgPool) {
     let (mut admin, _, model) = plan(&pool).await;
     let module = create_module(&mut admin, &model, "Plan", vec![month()]).await;

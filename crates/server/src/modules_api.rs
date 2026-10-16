@@ -914,11 +914,15 @@ pub(crate) async fn update_line_item(
             references.finish()?;
             let mut updated = current.clone();
             patch.clone().apply_to(&mut updated);
-            // The formula was just accepted, so it has no problems.
-            Ok((
-                vec![Command::UpdateLineItem { id, patch }],
-                LineItemDto::new(&updated, &[]),
-            ))
+            // A formula that was just set was accepted, so it has no problems. Otherwise the line
+            // item has those the model last read in its formula, such as a name that was deleted.
+            let problems = if patch.formula.is_some() {
+                &[]
+            } else {
+                model.line_item_errors(id).unwrap_or_default()
+            };
+            let answer = LineItemDto::new(&updated, problems);
+            Ok((vec![Command::UpdateLineItem { id, patch }], answer))
         })
         .await?;
     Ok(Json(updated))
