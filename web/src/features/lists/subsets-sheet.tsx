@@ -1,12 +1,23 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { Layers, Loader2 } from "lucide-react"
-import { useEffect, useEffectEvent, useState } from "react"
+import { useEffect, useEffectEvent, useRef, useState } from "react"
 import { useForm } from "react-hook-form"
 import { toast } from "sonner"
 import { z } from "zod"
 import { DeleteDialog } from "@/components/delete-dialog"
+import { InlineText } from "@/components/inline-text"
 import { ProductionLock, ProductionNotice } from "@/components/production-lock"
 import { RowDeleteButton } from "@/components/row-delete-button"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import {
   Form,
@@ -28,8 +39,9 @@ import { useCreateSubset, useDeleteSubset, useUpdateSubset } from "@/features/st
 import { useElementMap } from "@/hooks/use-element-map"
 import { useRemovalFocus } from "@/hooks/use-removal-focus"
 import { NAME_TAKEN_FIELD_ERRORS, reportFormError } from "@/lib/form-errors"
+import { isEditingInlineText } from "@/lib/inline-text"
 import { structureNameSchema } from "@/lib/validation"
-import { InlineText } from "@/components/inline-text"
+import { sameIds } from "./selection"
 import { SubsetMembers } from "./subset-members"
 import type { ItemDto, ListDto, SubsetDto } from "./types"
 import { countOf } from "./words"
@@ -61,55 +73,143 @@ export function SubsetsSheet({
   onOpenChange,
   onCloseAutoFocus,
 }: SubsetsSheetProps) {
+  const createSubset = useCreateSubset(modelId)
+  const updateSubset = useUpdateSubset(modelId)
+  const deleteSubset = useDeleteSubset(modelId)
   // The subset whose items are on show, or else the one whose items were on show a moment ago. A
   // subset that is gone (deleted elsewhere) shows the list.
   const [view, setView] = useState<{ open?: string; left?: string }>({})
   const opened = subsets.find((subset) => subset.id === view.open)
+  // The items ticked for the subset on show: a draft until it is saved.
+  const [draft, setDraft] = useState<ReadonlySet<string>>(new Set())
+  const dirty = opened !== undefined && !sameIds(draft, opened.items)
+  // What to do once the user agrees to drop the draft, and where focus goes if they do not.
+  const [discarding, setDiscarding] = useState<{ then: () => void }>()
+  const asker = useRef<HTMLElement | null>(null)
+  const busy = createSubset.isPending || updateSubset.isPending || deleteSubset.isPending
+
+  function leave(then: () => void) {
+    if (dirty) {
+      asker.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+      setDiscarding({ then })
+    } else {
+      then()
+    }
+  }
+
+  // Not while something is being saved, which a closed sheet would hide.
+  function changeOpen(next: boolean) {
+    if (busy) {
+      return
+    }
+    if (next) {
+      onOpenChange(true)
+    } else {
+      leave(() => {
+        setView({})
+        onOpenChange(false)
+      })
+    }
+  }
 
   return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent onCloseAutoFocus={onCloseAutoFocus} className="w-full gap-0 sm:max-w-md">
-        <SheetHeader className="border-b pr-12">
-          <SheetTitle>Subsets of {list.name}</SheetTitle>
-          <SheetDescription>
-            Named selections of the items of this list. Modules can use a subset as a dimension.
-          </SheetDescription>
-        </SheetHeader>
-        {opened ? (
-          <SubsetMembers
-            key={opened.id}
-            modelId={modelId}
-            subset={opened}
-            items={items}
-            canEdit={canEdit}
-            locked={locked}
-            onBack={() => setView({ left: opened.id })}
-          />
-        ) : (
-          <SubsetList
-            modelId={modelId}
-            list={list}
-            subsets={subsets}
-            canEdit={canEdit}
-            locked={locked}
-            returnTo={view.left}
-            onOpen={(open) => setView({ open })}
-          />
-        )}
-      </SheetContent>
-    </Sheet>
+    <>
+      <Sheet open={open} onOpenChange={changeOpen}>
+        <SheetContent
+          onCloseAutoFocus={onCloseAutoFocus}
+          // The first Escape ends a rename in the list; only the next closes the sheet.
+          onEscapeKeyDown={(event) => {
+            if (isEditingInlineText(event.target)) {
+              event.preventDefault()
+            }
+          }}
+          showCloseButton={!busy}
+          className="w-full gap-0 sm:max-w-md"
+        >
+          <SheetHeader className="border-b pr-12">
+            <SheetTitle>Subsets of {list.name}</SheetTitle>
+            <SheetDescription>
+              Named selections of the items of this list. Modules can use a subset as a dimension.
+            </SheetDescription>
+          </SheetHeader>
+          {opened ? (
+            <SubsetMembers
+              key={opened.id}
+              subset={opened}
+              items={items}
+              members={draft}
+              onMembersChange={setDraft}
+              dirty={dirty}
+              update={updateSubset}
+              canEdit={canEdit}
+              locked={locked}
+              onBack={() => leave(() => setView({ left: opened.id }))}
+              onSaved={() => setView({ left: opened.id })}
+            />
+          ) : (
+            <SubsetList
+              list={list}
+              subsets={subsets}
+              create={createSubset}
+              update={updateSubset}
+              remove={deleteSubset}
+              canEdit={canEdit}
+              locked={locked}
+              returnTo={view.left}
+              onOpen={(id, itemIds) => {
+                setDraft(new Set(itemIds))
+                setView({ open: id })
+              }}
+            />
+          )}
+        </SheetContent>
+      </Sheet>
+      <AlertDialog
+        open={discarding !== undefined}
+        onOpenChange={(next) => !next && setDiscarding(undefined)}
+      >
+        <AlertDialogContent
+          onCloseAutoFocus={(event) => {
+            event.preventDefault()
+            asker.current?.focus()
+          }}
+        >
+          <AlertDialogHeader>
+            <AlertDialogTitle>Discard changes?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The items ticked in {opened?.name} are not saved yet.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep editing</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                discarding?.then()
+              }}
+            >
+              Discard changes
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   )
 }
 
 interface SubsetListProps {
-  modelId: string
   list: ListDto
   subsets: SubsetDto[]
   canEdit: boolean
   locked: boolean
   /** The subset that was open before the list came back, whose button takes focus. */
   returnTo?: string
-  onOpen: (subsetId: string) => void
+  /** The mutations, which the sheet owns so that it can tell when one is running. */
+  create: ReturnType<typeof useCreateSubset>
+  update: ReturnType<typeof useUpdateSubset>
+  remove: ReturnType<typeof useDeleteSubset>
+  /** Opens the items of a subset, which hold these ids. */
+  onOpen: (subsetId: string, itemIds: readonly string[]) => void
 }
 
 const newSubsetSchema = z.object({ name: structureNameSchema })
@@ -117,17 +217,16 @@ const newSubsetSchema = z.object({ name: structureNameSchema })
 type NewSubsetValues = z.infer<typeof newSubsetSchema>
 
 function SubsetList({
-  modelId,
   list,
   subsets,
   canEdit,
   locked,
   returnTo,
+  create,
+  update,
+  remove,
   onOpen,
 }: SubsetListProps) {
-  const createSubset = useCreateSubset(modelId)
-  const updateSubset = useUpdateSubset(modelId)
-  const deleteSubset = useDeleteSubset(modelId)
   const buttons = useElementMap<HTMLButtonElement>()
   const removal = useRemovalFocus(subsets.map((subset) => subset.id))
   const [deleting, setDeleting] = useState<SubsetDto>()
@@ -148,10 +247,10 @@ function SubsetList({
 
   async function onCreate({ name }: NewSubsetValues) {
     try {
-      const created = await createSubset.mutateAsync({ list_id: list.id, name, item_ids: [] })
+      const created = await create.mutateAsync({ list_id: list.id, name, item_ids: [] })
       toast.success("Subset created")
       form.reset()
-      onOpen(created.id)
+      onOpen(created.id, created.item_ids)
     } catch (error) {
       reportFormError(form, error, NAME_TAKEN_FIELD_ERRORS)
     }
@@ -185,8 +284,8 @@ function SubsetList({
                         />
                       </FormControl>
                       <ProductionLock locked={locked}>
-                        <Button type="submit" disabled={locked || createSubset.isPending}>
-                          {createSubset.isPending && <Loader2 className="animate-spin" />}
+                        <Button type="submit" disabled={locked || create.isPending}>
+                          {create.isPending && <Loader2 className="animate-spin" />}
                           Add subset
                         </Button>
                       </ProductionLock>
@@ -218,7 +317,7 @@ function SubsetList({
                       schema={structureNameSchema}
                       className="font-medium"
                       onSave={async (name) => {
-                        await updateSubset.mutateAsync({ subsetId: subset.id, body: { name } })
+                        await update.mutateAsync({ subsetId: subset.id, body: { name } })
                         toast.success("Subset renamed")
                       }}
                     />
@@ -232,8 +331,8 @@ function SubsetList({
                   ref={buttons.refFor(subset.id)}
                   variant="outline"
                   size="sm"
-                  aria-label={`${canEdit ? "Choose" : "View"} the items of ${subset.name}`}
-                  onClick={() => onOpen(subset.id)}
+                  aria-label={`${canEdit ? "Choose" : "View"} the items of ${subset.name}, ${countOf(subset.items.length, "item")}`}
+                  onClick={() => onOpen(subset.id, subset.items)}
                 >
                   {countOf(subset.items.length, "item")}
                 </Button>
@@ -261,7 +360,7 @@ function SubsetList({
         done="Subset deleted"
         onConfirm={async () => {
           if (deleting) {
-            await deleteSubset.mutateAsync(deleting.id)
+            await remove.mutateAsync(deleting.id)
           }
         }}
         open={deleting !== undefined}

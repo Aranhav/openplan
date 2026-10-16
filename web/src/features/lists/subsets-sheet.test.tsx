@@ -1,6 +1,6 @@
 import { screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { http } from "msw"
+import { HttpResponse, http } from "msw"
 import { toast } from "sonner"
 import { describe, expect, it, vi } from "vitest"
 import { makeModel } from "@/test/app"
@@ -37,7 +37,7 @@ describe("the subsets of a list", () => {
     const subsets = within(sheet.getByRole("list", { name: "Subsets" }))
     expect(subsets.getByRole("button", { name: "Rename Core products" })).toBeVisible()
     expect(
-      subsets.getByRole("button", { name: "Choose the items of Core products" }),
+      subsets.getByRole("button", { name: /^Choose the items of Core products/ }),
     ).toHaveTextContent("1 item")
   })
 
@@ -173,27 +173,13 @@ describe("choosing the items of a subset", () => {
     await typist.click(sheet.getByRole("button", { name: "Save members" }))
 
     expect(
-      await sheet.findByRole("button", { name: "Choose the items of Core products" }),
+      await sheet.findByRole("button", { name: /^Choose the items of Core products/ }),
     ).toHaveTextContent("2 items")
     expect(store.writes).toEqual([
       { method: "PATCH", path: `subsets/${coreProducts}`, body: { item_ids: [widgets, gadgets] } },
     ])
     expect(toast.success).toHaveBeenCalledWith("Subset saved")
-    expect(sheet.getByRole("button", { name: "Choose the items of Core products" })).toHaveFocus()
-  })
-
-  it("goes back without saving on Cancel or All subsets", async () => {
-    const typist = userEvent.setup()
-    const { sheet, store } = await openMembers(typist)
-    await typist.click(sheet.getByRole("checkbox", { name: "Gadgets" }))
-    await typist.click(sheet.getByRole("button", { name: "Cancel" }))
-
-    expect(await sheet.findByRole("list", { name: "Subsets" })).toBeVisible()
-    await typist.click(sheet.getByRole("button", { name: /^Choose the items of Core/ }))
-    await typist.click(await sheet.findByRole("button", { name: "All subsets" }))
-
-    expect(await sheet.findByRole("list", { name: "Subsets" })).toBeVisible()
-    expect(store.writes).toEqual([])
+    expect(sheet.getByRole("button", { name: /^Choose the items of Core products/ })).toHaveFocus()
   })
 
   it("searches the items, and ticks or clears just the ones shown", async () => {
@@ -268,6 +254,122 @@ describe("choosing the items of a subset", () => {
   })
 })
 
+describe("closing the sheet", () => {
+  it("lets the first Escape end a rename and the next close the sheet", async () => {
+    const typist = userEvent.setup()
+    const { sheet, store } = await openSheet(typist)
+    await typist.click(sheet.getByRole("button", { name: "Rename Core products" }))
+    await typist.type(sheet.getByRole("textbox", { name: "Name of Core products" }), "!{Escape}")
+
+    expect(sheet.getByRole("button", { name: "Rename Core products" })).toHaveFocus()
+    expect(screen.getByRole("dialog", { name: "Subsets of Products" })).toBeVisible()
+    await typist.keyboard("{Escape}")
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument())
+    expect(store.writes).toEqual([])
+  })
+
+  it("ignores Escape and hides the close button while a subset is being made", async () => {
+    const typist = userEvent.setup()
+    const { sheet } = await openSheet(typist)
+    server.use(
+      http.post("/api/v1/models/:id/subsets", async () => {
+        await new Promise((resolve) => setTimeout(resolve, 300))
+        return HttpResponse.json(
+          { id: "new", name: "Best sellers", list_id: productsList, item_ids: [] },
+          { status: 201 },
+        )
+      }),
+    )
+    await typist.type(sheet.getByRole("textbox", { name: "New subset" }), "Best sellers")
+    await typist.click(sheet.getByRole("button", { name: "Add subset" }))
+
+    expect(sheet.getByRole("button", { name: "Add subset" })).toBeDisabled()
+    expect(sheet.queryByRole("button", { name: "Close" })).not.toBeInTheDocument()
+    await typist.keyboard("{Escape}")
+    expect(screen.getByRole("dialog", { name: "Subsets of Products" })).toBeVisible()
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith("Subset created"))
+  })
+
+  it("opens on the subsets again after it was closed on the items of one", async () => {
+    const typist = userEvent.setup()
+    const { sheet } = await openSheet(typist)
+    await typist.click(sheet.getByRole("button", { name: /^Choose the items of Core/ }))
+    await sheet.findByRole("heading", { name: "Core products" })
+    await typist.keyboard("{Escape}")
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument())
+    await typist.click(screen.getByRole("button", { name: "Subsets" }))
+
+    expect(await screen.findByRole("list", { name: "Subsets" })).toBeVisible()
+  })
+})
+
+describe("ticks that are not saved", () => {
+  async function tickGadgets(typist: Typist) {
+    const opened = await openSheet(typist)
+    await typist.click(opened.sheet.getByRole("button", { name: /^Choose the items of Core/ }))
+    await typist.click(await opened.sheet.findByRole("checkbox", { name: "Gadgets" }))
+    return opened
+  }
+
+  it.each(["Cancel", "All subsets"])("are asked about before %s drops them", async (leave) => {
+    const typist = userEvent.setup()
+    const { sheet, store } = await tickGadgets(typist)
+    await typist.click(sheet.getByRole("button", { name: leave }))
+
+    const dialog = within(await screen.findByRole("alertdialog", { name: "Discard changes?" }))
+    expect(dialog.getByText("The items ticked in Core products are not saved yet.")).toBeVisible()
+    await typist.click(dialog.getByRole("button", { name: "Keep editing" }))
+
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument())
+    expect(sheet.getByRole("checkbox", { name: "Gadgets" })).toBeChecked()
+    expect(sheet.getByRole("button", { name: leave })).toHaveFocus()
+    await typist.click(sheet.getByRole("button", { name: leave }))
+    await typist.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Discard changes",
+      }),
+    )
+
+    expect(await sheet.findByRole("list", { name: "Subsets" })).toBeVisible()
+    expect(store.writes).toEqual([])
+  })
+
+  it("are asked about before closing the sheet drops them", async () => {
+    const typist = userEvent.setup()
+    const { sheet } = await tickGadgets(typist)
+    await typist.keyboard("{Escape}")
+    await typist.click(
+      within(await screen.findByRole("alertdialog", { name: "Discard changes?" })).getByRole(
+        "button",
+        { name: "Discard changes" },
+      ),
+    )
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument())
+    expect(sheet).toBeDefined()
+  })
+
+  it("are kept, with nothing asked, once they are saved", async () => {
+    const typist = userEvent.setup()
+    const { sheet } = await tickGadgets(typist)
+    await typist.click(sheet.getByRole("button", { name: "Save members" }))
+
+    expect(await sheet.findByRole("list", { name: "Subsets" })).toBeVisible()
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument()
+  })
+
+  it("are no reason to ask when nothing changed", async () => {
+    const typist = userEvent.setup()
+    const { sheet } = await openSheet(typist)
+    await typist.click(sheet.getByRole("button", { name: /^Choose the items of Core/ }))
+    await typist.click(await sheet.findByRole("button", { name: "Cancel" }))
+
+    expect(await sheet.findByRole("list", { name: "Subsets" })).toBeVisible()
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument()
+  })
+})
+
 describe("for someone who cannot change the structure", () => {
   it("shows a viewer the subsets and their items, to read", async () => {
     const typist = userEvent.setup()
@@ -277,7 +379,7 @@ describe("for someone who cannot change the structure", () => {
     expect(sheet.queryByRole("button", { name: /^Rename/ })).not.toBeInTheDocument()
     expect(sheet.queryByRole("button", { name: /^Delete/ })).not.toBeInTheDocument()
     expect(sheet.getByText("Core products")).toBeVisible()
-    await typist.click(sheet.getByRole("button", { name: "View the items of Core products" }))
+    await typist.click(sheet.getByRole("button", { name: /^View the items of Core products/ }))
 
     expect(await sheet.findByRole("checkbox", { name: "Widgets" })).toBeDisabled()
     expect(sheet.queryByRole("button", { name: "Save members" })).not.toBeInTheDocument()

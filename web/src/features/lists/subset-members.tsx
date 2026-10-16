@@ -7,9 +7,10 @@ import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { SheetFooter } from "@/components/ui/sheet"
-import { useUpdateSubset } from "@/features/structure/api"
+import type { useUpdateSubset } from "@/features/structure/api"
 import { errorDetail } from "@/lib/api/client"
 import { cn } from "@/lib/utils"
+import { withIds } from "./selection"
 import { matchesQuery } from "./tree"
 import type { ItemDto, SubsetDto } from "./types"
 import { VIRTUALIZE_ABOVE } from "./virtual"
@@ -19,27 +20,36 @@ const ROW_HEIGHT = 36
 const OVERSCAN = 10
 
 interface SubsetMembersProps {
-  modelId: string
   subset: SubsetDto
   /** The items of the subset's list, in order. */
   items: ItemDto[]
+  /** The ids ticked now, which are not saved until the subset is. */
+  members: ReadonlySet<string>
+  onMembersChange: (members: ReadonlySet<string>) => void
+  /** Whether the ticks differ from what the subset holds. */
+  dirty: boolean
+  update: ReturnType<typeof useUpdateSubset>
   /** Whether the user may change the subset: a builder (`canEdit`) outside production mode (`!locked`). */
   canEdit: boolean
   locked: boolean
   onBack: () => void
+  /** Called once the ticks are saved. */
+  onSaved: () => void
 }
 
 /** The items of a list as checkboxes, with a search, to choose which of them a subset holds. */
 export function SubsetMembers({
-  modelId,
   subset,
   items,
+  members,
+  onMembersChange,
+  dirty,
+  update,
   canEdit,
   locked,
   onBack,
+  onSaved,
 }: SubsetMembersProps) {
-  const updateSubset = useUpdateSubset(modelId)
-  const [members, setMembers] = useState(() => new Set(subset.items))
   const [query, setQuery] = useState("")
   const heading = useRef<HTMLHeadingElement>(null)
   const editable = canEdit && !locked
@@ -52,29 +62,14 @@ export function SubsetMembers({
     () => (query.trim() ? items.filter((item) => matchesQuery(item, query)) : items),
     [items, query],
   )
-  const dirty = members.size !== subset.items.length || subset.items.some((id) => !members.has(id))
-
-  function setShown(checked: boolean) {
-    setMembers((previous) => {
-      const next = new Set(previous)
-      for (const item of shown) {
-        if (checked) {
-          next.add(item.id)
-        } else {
-          next.delete(item.id)
-        }
-      }
-      return next
-    })
-  }
 
   async function save() {
     try {
       // In the order of the list, so that the saved subset reads the same whoever saves it.
       const itemIds = items.filter((item) => members.has(item.id)).map((item) => item.id)
-      await updateSubset.mutateAsync({ subsetId: subset.id, body: { item_ids: itemIds } })
+      await update.mutateAsync({ subsetId: subset.id, body: { item_ids: itemIds } })
       toast.success("Subset saved")
-      onBack()
+      onSaved()
     } catch (error) {
       toast.error(errorDetail(error))
     }
@@ -88,7 +83,7 @@ export function SubsetMembers({
             variant="ghost"
             size="sm"
             className="-ml-2"
-            disabled={updateSubset.isPending}
+            disabled={update.isPending}
             onClick={onBack}
           >
             <ArrowLeft />
@@ -110,10 +105,34 @@ export function SubsetMembers({
           />
           {editable && (
             <>
-              <Button variant="outline" size="sm" onClick={() => setShown(true)}>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  onMembersChange(
+                    withIds(
+                      members,
+                      shown.map(({ id }) => id),
+                      true,
+                    ),
+                  )
+                }
+              >
                 Select shown
               </Button>
-              <Button variant="outline" size="sm" onClick={() => setShown(false)}>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  onMembersChange(
+                    withIds(
+                      members,
+                      shown.map(({ id }) => id),
+                      false,
+                    ),
+                  )
+                }
+              >
                 Clear shown
               </Button>
             </>
@@ -128,30 +147,17 @@ export function SubsetMembers({
           members={members}
           editable={editable}
           listLabel={`Items in ${subset.name}`}
-          onToggle={(id, checked) =>
-            setMembers((previous) => {
-              const next = new Set(previous)
-              if (checked) {
-                next.add(id)
-              } else {
-                next.delete(id)
-              }
-              return next
-            })
-          }
+          onToggle={(id, checked) => onMembersChange(withIds(members, [id], checked))}
         />
       </div>
       {canEdit && (
         <SheetFooter className="flex-row justify-end border-t">
-          <Button variant="outline" disabled={updateSubset.isPending} onClick={onBack}>
+          <Button variant="outline" disabled={update.isPending} onClick={onBack}>
             Cancel
           </Button>
           <ProductionLock locked={locked}>
-            <Button
-              disabled={locked || !dirty || updateSubset.isPending}
-              onClick={() => void save()}
-            >
-              {updateSubset.isPending && <Loader2 className="animate-spin" />}
+            <Button disabled={locked || !dirty || update.isPending} onClick={() => void save()}>
+              {update.isPending && <Loader2 className="animate-spin" />}
               Save members
             </Button>
           </ProductionLock>
