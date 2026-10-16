@@ -260,11 +260,7 @@ export function VersionsHead({ canEdit, narrow }: VersionsHeadProps) {
       <TableRow>
         <TableHead className="pl-4">Name</TableHead>
         <TableHead className={cn("text-center", narrow ? "w-14 px-1" : "w-24")}>Actual</TableHead>
-        <TableHead
-          className={cn("text-center", narrow ? "w-16 px-1" : "w-24", !canEdit && narrow && "pr-4")}
-        >
-          Current
-        </TableHead>
+        <TableHead className={cn("text-center", narrow ? "w-16 px-1" : "w-24")}>Current</TableHead>
         {!narrow && <TableHead className={cn("w-40", !canEdit && "pr-4")}>Switchover</TableHead>}
         {canEdit && (
           <TableHead className={cn("pr-4", narrow ? "w-16" : "w-24")}>
@@ -308,7 +304,7 @@ function VersionChoice({ flag, row, canEdit, locked, onChoose }: VersionChoicePr
           value={row.id}
           aria-label={`${row.name}, ${kind} version`}
           // The stock border is too faint to find the unchecked radios by.
-          className="size-5 border-muted-foreground/60"
+          className="size-5 border-muted-foreground/80"
         />
       </RadioGroup>
     </ProductionLock>

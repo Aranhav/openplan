@@ -21,6 +21,8 @@ export function VersionsPage({ modelId }: { modelId: string }) {
   const narrow = useIsMobile(LG_BREAKPOINT)
   const [adding, setAdding] = useState(false)
   const { ref: addRef, onCloseAutoFocus: restoreFocus } = useRestoreFocus<HTMLButtonElement>()
+  // The table, and the Add version button with it, wait for the versions and the user's role.
+  const loaded = isLoading ? undefined : structure.data
 
   return (
     <div className="max-w-4xl">
@@ -32,7 +34,7 @@ export function VersionsPage({ modelId }: { modelId: string }) {
             : "The scenarios you plan and compare. Only workspace admins and builders can change them."
         }
         actions={
-          canEdit && (
+          canEdit && loaded && (
             <ProductionLock locked={locked}>
               <Button ref={addRef} disabled={locked} onClick={() => setAdding(true)}>
                 <Plus />
@@ -43,10 +45,10 @@ export function VersionsPage({ modelId }: { modelId: string }) {
         }
       />
       {/* A refresh that fails in the background leaves the versions already on screen alone. */}
-      {structure.data && !isLoading ? (
+      {loaded ? (
         <Versions
           modelId={modelId}
-          structure={structure.data}
+          structure={loaded}
           canEdit={canEdit}
           locked={locked}
           narrow={narrow}

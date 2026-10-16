@@ -894,6 +894,28 @@ describe("the versions page", () => {
       expect(await screen.findByRole("radio", { name: "Budget, current version" })).toBeVisible()
     })
 
+    it("does not offer to add a version until the versions are in", async () => {
+      mockSession()
+      serveModels([model])
+      let release!: () => void
+      const gate = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      server.use(
+        http.get(`${api}/structure`, async () => {
+          await gate
+          return HttpResponse.json(makeStructure({ versions: [actual, budget, forecast] }))
+        }),
+      )
+      renderApp(`/m/${model.id}/versions`)
+
+      expect(await screen.findByRole("status", { name: "Loading versions" })).toBeVisible()
+      expect(screen.queryByRole("button", { name: "Add version" })).not.toBeInTheDocument()
+      release()
+
+      expect(await screen.findByRole("button", { name: "Add version" })).toBeVisible()
+    })
+
     it("says so and offers a retry when the versions cannot be loaded", async () => {
       const typist = userEvent.setup()
       mockSession()
@@ -911,6 +933,21 @@ describe("the versions page", () => {
       await typist.click(page.getByRole("button", { name: "Retry" }))
 
       expect(await screen.findByRole("table", { name: "Versions" })).toBeVisible()
+    })
+
+    it("does not offer to add a version when the versions cannot be loaded", async () => {
+      mockSession()
+      serveModels([model])
+      server.use(
+        http.get(`${api}/structure`, () =>
+          problem(500, "internal", "The database is starting up."),
+        ),
+      )
+      renderApp(`/m/${model.id}/versions`)
+      const page = within(await screen.findByRole("main"))
+      expect(await page.findByRole("alert")).toHaveTextContent("The database is starting up.")
+
+      expect(screen.queryByRole("button", { name: "Add version" })).not.toBeInTheDocument()
     })
   })
 })
