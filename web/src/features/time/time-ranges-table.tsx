@@ -25,6 +25,7 @@ import { useDeleteTimeRange } from "@/features/structure/api"
 import type { StructureDto } from "@/features/structure/types"
 import { useRemovalFocus } from "@/hooks/use-removal-focus"
 import { useRestoreFocus } from "@/hooks/use-restore-focus"
+import { cn } from "@/lib/utils"
 import { AddTimeRangeDialog } from "./add-time-range-dialog"
 
 type TimeRange = StructureDto["time_ranges"][number]
@@ -111,14 +112,16 @@ function TimeRangesTable({ modelId, ranges, canEdit, locked }: TimeRangesTablePr
 
   return (
     <div className="rounded-lg border">
-      <Table aria-label="Time ranges">
+      <Table aria-label="Time ranges" className="table-fixed">
         <TableHeader>
           <TableRow>
             <TableHead className="pl-4">Name</TableHead>
-            <TableHead>First year</TableHead>
-            <TableHead className={canEdit ? undefined : "pr-4"}>Years</TableHead>
+            <TableHead className="w-20 text-right sm:w-28">First year</TableHead>
+            <TableHead className={cn("w-16 text-right sm:w-20", !canEdit && "pr-4")}>
+              Years
+            </TableHead>
             {canEdit && (
-              <TableHead className="w-12 pr-4">
+              <TableHead className="w-14 pr-4">
                 <span className="sr-only">Actions</span>
               </TableHead>
             )}
@@ -128,11 +131,11 @@ function TimeRangesTable({ modelId, ranges, canEdit, locked }: TimeRangesTablePr
           {ranges.map((range) => (
             <TableRow key={range.id}>
               {/* Takes the width the other columns leave, and cuts a long name short. */}
-              <TableCell className="w-full max-w-0 truncate pl-4 font-medium" title={range.name}>
+              <TableCell className="truncate pl-4 font-medium" title={range.name}>
                 {range.name}
               </TableCell>
-              <TableCell className="tabular-nums">{range.first_year}</TableCell>
-              <TableCell className={canEdit ? "tabular-nums" : "pr-4 tabular-nums"}>
+              <TableCell className="text-right tabular-nums">{range.first_year}</TableCell>
+              <TableCell className={cn("text-right tabular-nums", !canEdit && "pr-4")}>
                 {range.years}
               </TableCell>
               {canEdit && (

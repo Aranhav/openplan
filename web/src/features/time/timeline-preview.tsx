@@ -8,18 +8,27 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import type { StructureDto } from "@/features/structure/types"
-import { fiscalYears } from "./timeline"
+import { type Timeline, fiscalYears } from "./timeline"
 
-/** The fiscal years the saved calendar covers, with the months and quarters each one holds. */
-export function TimelinePreviewCard({ structure }: { structure: StructureDto }) {
+interface TimelinePreviewCardProps {
+  timeline: Timeline
+  /** Whether the timeline is what a form describes and has not been saved. */
+  unsaved: boolean
+}
+
+/** The fiscal years of a timeline, with the months and quarters each one holds. */
+export function TimelinePreviewCard({ timeline, unsaved }: TimelinePreviewCardProps) {
   return (
     <Card>
       <CardHeader>
         <CardTitle role="heading" aria-level={2}>
           Timeline preview
         </CardTitle>
-        <CardDescription>The saved timeline, one row per fiscal year.</CardDescription>
+        <CardDescription>
+          {unsaved
+            ? "One row per fiscal year. Follows the form; save to keep it."
+            : "The timeline, one row per fiscal year."}
+        </CardDescription>
       </CardHeader>
       <CardContent>
         <div className="rounded-lg border">
@@ -32,7 +41,7 @@ export function TimelinePreviewCard({ structure }: { structure: StructureDto }) 
               </TableRow>
             </TableHeader>
             <TableBody>
-              {fiscalYears(structure.calendar, structure.month_labels).map((year) => (
+              {fiscalYears(timeline).map((year) => (
                 <TableRow key={year.label}>
                   <TableCell className="pl-4 font-medium">
                     {year.label}

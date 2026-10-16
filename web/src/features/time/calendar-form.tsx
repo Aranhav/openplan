@@ -37,7 +37,8 @@ import { useRestoreFocus } from "@/hooks/use-restore-focus"
 import type { components } from "@/lib/api/schema"
 import { reportFormError } from "@/lib/form-errors"
 import { ChangeTimelineDialog } from "./change-timeline-dialog"
-import { fiscalYearLabel } from "./timeline"
+import { draftTimeline, fiscalYearLabel } from "./timeline"
+import { TimelinePreviewCard } from "./timeline-preview"
 import { wholeNumberIn, wholeNumberSchema } from "./whole-number"
 
 type CalendarDto = components["schemas"]["CalendarDto"]
@@ -107,7 +108,7 @@ function changesTimeline(values: CalendarValues, saved: CalendarValues) {
   )
 }
 
-interface CalendarCardProps {
+interface CalendarSectionProps {
   modelId: string
   structure: StructureDto
   /** Whether the signed-in user may change the calendar; if not, it is shown as text. */
@@ -116,24 +117,31 @@ interface CalendarCardProps {
   locked: boolean
 }
 
-export function CalendarCard({ modelId, structure, canEdit, locked }: CalendarCardProps) {
+/** The calendar and the preview of its timeline, which follows the form while it is edited. */
+export function CalendarSection({ modelId, structure, canEdit, locked }: CalendarSectionProps) {
+  if (!canEdit) {
+    return (
+      <>
+        <CalendarCard description="Only workspace admins and builders can change the calendar.">
+          <CalendarDetails structure={structure} />
+        </CalendarCard>
+        <TimelinePreviewCard timeline={structure.calendar} unsaved={false} />
+      </>
+    )
+  }
+  return <CalendarForm modelId={modelId} structure={structure} locked={locked} />
+}
+
+function CalendarCard({ description, children }: { description: string; children: ReactNode }) {
   return (
     <Card>
       <CardHeader>
         <CardTitle role="heading" aria-level={2}>
           Calendar
         </CardTitle>
-        <CardDescription>
-          {canEdit
-            ? "When the fiscal year starts and how many fiscal years the model covers."
-            : "Only workspace admins and builders can change the calendar."}
-        </CardDescription>
+        <CardDescription>{description}</CardDescription>
       </CardHeader>
-      {canEdit ? (
-        <CalendarForm modelId={modelId} structure={structure} locked={locked} />
-      ) : (
-        <CalendarDetails structure={structure} />
-      )}
+      {children}
     </Card>
   )
 }
@@ -157,8 +165,21 @@ function CalendarForm({ modelId, structure, locked }: CalendarFormProps) {
   // The values waiting for a yes to the change of timeline.
   const [confirming, setConfirming] = useState<CalendarValues>()
   const { ref: saveRef, onCloseAutoFocus: restoreFocus } = useRestoreFocus<HTMLButtonElement>()
-  const firstYear = wholeNumberIn(useWatch({ control: form.control, name: "first_year" }), 1, 9999)
+  const [startMonth, firstYearText, yearsText] = useWatch({
+    control: form.control,
+    name: ["fiscal_year_start_month", "first_year", "years"],
+  })
+  const firstYear = wholeNumberIn(firstYearText, 1, 9999)
   const firstYearLabel = firstYear === undefined ? undefined : fiscalYearLabel(firstYear)
+  // What the timeline will be once the form is saved, as far as the fields are valid.
+  const draft = draftTimeline(
+    { fiscal_year_start_month: startMonth, first_year: firstYearText, years: yearsText },
+    structure.calendar,
+  )
+  const unsaved =
+    draft.fiscal_year_start_month !== structure.calendar.fiscal_year_start_month ||
+    draft.first_year !== structure.calendar.first_year ||
+    draft.years !== structure.calendar.years
 
   async function save(values: CalendarValues) {
     try {
@@ -201,121 +222,126 @@ function CalendarForm({ modelId, structure, locked }: CalendarFormProps) {
 
   return (
     <Form {...form}>
-      <form onSubmit={form.handleSubmit(onSubmit)} noValidate className="flex flex-col gap-6">
-        <CardContent className="grid gap-6 sm:grid-cols-2">
-          <FormField
-            control={form.control}
-            name="fiscal_year_start_month"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>Fiscal year starts</FormLabel>
-                <Select value={field.value} onValueChange={field.onChange} disabled={locked}>
+      <CalendarCard description="When the fiscal year starts and how many fiscal years the model covers.">
+        <form onSubmit={form.handleSubmit(onSubmit)} noValidate className="flex flex-col gap-6">
+          <CardContent className="grid gap-6 sm:grid-cols-2">
+            <FormField
+              control={form.control}
+              name="fiscal_year_start_month"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Fiscal year starts</FormLabel>
+                  <Select value={field.value} onValueChange={field.onChange} disabled={locked}>
+                    <FormControl>
+                      <SelectTrigger ref={field.ref} onBlur={field.onBlur} className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      {MONTH_NAMES.map((name, index) => (
+                        <SelectItem key={name} value={String(index + 1)}>
+                          {name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <FormDescription>The month each fiscal year begins in.</FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name="first_year"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>First fiscal year</FormLabel>
                   <FormControl>
-                    <SelectTrigger ref={field.ref} onBlur={field.onBlur} className="w-full">
-                      <SelectValue />
-                    </SelectTrigger>
+                    <Input
+                      type="number"
+                      inputMode="numeric"
+                      min={1}
+                      max={9999}
+                      disabled={locked}
+                      {...field}
+                    />
                   </FormControl>
-                  <SelectContent>
-                    {MONTH_NAMES.map((name, index) => (
-                      <SelectItem key={name} value={String(index + 1)}>
-                        {name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <FormDescription>The month each fiscal year begins in.</FormDescription>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-          <FormField
-            control={form.control}
-            name="first_year"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>First fiscal year</FormLabel>
-                <FormControl>
-                  <Input
-                    type="number"
-                    inputMode="numeric"
-                    min={1}
-                    max={9999}
-                    disabled={locked}
-                    {...field}
-                  />
-                </FormControl>
-                <FormDescription>
-                  {`The year the first fiscal year ends in.${firstYearLabel ? ` Shown as ${firstYearLabel}.` : ""}`}
-                </FormDescription>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-          <FormField
-            control={form.control}
-            name="years"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>Years</FormLabel>
-                <FormControl>
-                  <Input
-                    type="number"
-                    inputMode="numeric"
-                    min={1}
-                    max={20}
-                    disabled={locked}
-                    {...field}
-                  />
-                </FormControl>
-                <FormDescription>How many fiscal years the model covers, up to 20.</FormDescription>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-          <FormField
-            control={form.control}
-            name="current_period"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>Current period</FormLabel>
-                <Select
-                  value={field.value || NO_PERIOD}
-                  onValueChange={(value) => field.onChange(value === NO_PERIOD ? "" : value)}
-                  disabled={locked}
-                >
+                  <FormDescription>
+                    {`The year the first fiscal year ends in.${firstYearLabel ? ` Shown as ${firstYearLabel}.` : ""}`}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name="years"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Years</FormLabel>
                   <FormControl>
-                    <SelectTrigger ref={field.ref} onBlur={field.onBlur} className="w-full">
-                      <SelectValue />
-                    </SelectTrigger>
+                    <Input
+                      type="number"
+                      inputMode="numeric"
+                      min={1}
+                      max={20}
+                      disabled={locked}
+                      {...field}
+                    />
                   </FormControl>
-                  <SelectContent>
-                    <SelectItem value={NO_PERIOD}>None</SelectItem>
-                    {structure.month_labels.map((label) => (
-                      <SelectItem key={label} value={label}>
-                        {label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <FormDescription>The month the model is in now. Optional.</FormDescription>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-        </CardContent>
-        <CardFooter className="justify-end">
-          <ProductionLock locked={locked}>
-            <Button
-              ref={saveRef}
-              type="submit"
-              disabled={locked || !form.formState.isDirty || updateCalendar.isPending}
-            >
-              {updateCalendar.isPending && <Loader2 className="animate-spin" />}
-              Save changes
-            </Button>
-          </ProductionLock>
-        </CardFooter>
-      </form>
+                  <FormDescription>
+                    How many fiscal years the model covers, up to 20.
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+            <FormField
+              control={form.control}
+              name="current_period"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Current period</FormLabel>
+                  <Select
+                    value={field.value || NO_PERIOD}
+                    onValueChange={(value) => field.onChange(value === NO_PERIOD ? "" : value)}
+                    disabled={locked}
+                  >
+                    <FormControl>
+                      <SelectTrigger ref={field.ref} onBlur={field.onBlur} className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      <SelectItem value={NO_PERIOD}>None</SelectItem>
+                      {structure.month_labels.map((label) => (
+                        <SelectItem key={label} value={label}>
+                          {label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <FormDescription>The month the model is in now. Optional.</FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </CardContent>
+          <CardFooter className="justify-end">
+            <ProductionLock locked={locked}>
+              <Button
+                ref={saveRef}
+                type="submit"
+                disabled={locked || !form.formState.isDirty || updateCalendar.isPending}
+              >
+                {updateCalendar.isPending && <Loader2 className="animate-spin" />}
+                Save changes
+              </Button>
+            </ProductionLock>
+          </CardFooter>
+        </form>
+      </CalendarCard>
+      <TimelinePreviewCard timeline={draft} unsaved={unsaved} />
       <ChangeTimelineDialog
         open={confirming !== undefined}
         pending={updateCalendar.isPending}

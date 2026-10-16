@@ -9,7 +9,8 @@ import { makeModel, me, mockSession, renderApp, serveModels, workspace } from "@
 import { problem } from "@/test/problem"
 import { server } from "@/test/server"
 import { makeStructure } from "@/test/structure"
-import { monthLabelsFor, serveStructureStore } from "@/test/structure-edits"
+import { monthLabelsFor } from "@/features/time/timeline"
+import { serveStructureStore } from "@/test/structure-edits"
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 
@@ -495,6 +496,119 @@ describe("the time page", () => {
     })
   })
 
+  describe("the timeline preview while the calendar is edited", () => {
+    function previewRows() {
+      return within(screen.getByRole("table", { name: "Timeline preview" }))
+        .getAllByRole("row")
+        .slice(1)
+    }
+
+    function previewDescription() {
+      const heading = screen.getByRole("heading", { level: 2, name: "Timeline preview" })
+      return (heading.closest("[data-slot=card]") as HTMLElement).querySelector(
+        "[data-slot=card-description]",
+      )
+    }
+
+    it("follows the form before it is saved", async () => {
+      const typist = userEvent.setup()
+      const store = openTime()
+      const put = serveCalendar(store)
+      const calendar = await findCard("Calendar")
+      await screen.findByRole("table", { name: "Timeline preview" })
+      expect(previewRows()).toHaveLength(3)
+      expect(previewRows()[0]).toHaveTextContent("Jan 26 – Dec 26")
+      expect(previewDescription()).toHaveTextContent("The timeline, one row per fiscal year.")
+
+      await chooseOption(
+        typist,
+        calendar.getByRole("combobox", { name: "Fiscal year starts" }),
+        "April",
+      )
+      const years = calendar.getByRole("spinbutton", { name: "Years" })
+      await typist.clear(years)
+      await typist.type(years, "2")
+      const first = calendar.getByRole("spinbutton", { name: "First fiscal year" })
+      await typist.clear(first)
+      await typist.type(first, "2027")
+
+      expect(previewRows()).toHaveLength(2)
+      expect(previewRows()[0]).toHaveTextContent("FY27")
+      expect(previewRows()[0]).toHaveTextContent("Apr 26 – Mar 27")
+      expect(previewRows()[0]).toHaveTextContent("Q1 FY27")
+      expect(previewRows()[1]).toHaveTextContent("FY28")
+      expect(previewRows()[1]).toHaveTextContent("Apr 27 – Mar 28")
+      expect(previewDescription()).toHaveTextContent(
+        "One row per fiscal year. Follows the form; save to keep it.",
+      )
+      expect(put).not.toHaveBeenCalled()
+    })
+
+    it("falls back to the saved years while the field is not a valid number", async () => {
+      const typist = userEvent.setup()
+      openTime()
+      const calendar = await findCard("Calendar")
+      const years = calendar.getByRole("spinbutton", { name: "Years" })
+      await typist.clear(years)
+      await typist.type(years, "2")
+      expect(previewRows()).toHaveLength(2)
+
+      await typist.type(years, "1")
+      expect(previewRows()).toHaveLength(3)
+
+      await typist.clear(years)
+      expect(previewRows()).toHaveLength(3)
+
+      await typist.type(years, "4")
+      expect(previewRows()).toHaveLength(4)
+    })
+
+    it("goes back to the saved timeline when the changes are undone", async () => {
+      const typist = userEvent.setup()
+      openTime()
+      const calendar = await findCard("Calendar")
+      const years = calendar.getByRole("spinbutton", { name: "Years" })
+      await typist.clear(years)
+      await typist.type(years, "5")
+      expect(previewRows()).toHaveLength(5)
+
+      await typist.clear(years)
+      await typist.type(years, "3")
+
+      expect(previewRows()).toHaveLength(3)
+      expect(previewDescription()).toHaveTextContent("The timeline, one row per fiscal year.")
+    })
+
+    it("does not move for a change of the current period alone", async () => {
+      const typist = userEvent.setup()
+      openTime()
+      const calendar = await findCard("Calendar")
+
+      await chooseOption(
+        typist,
+        calendar.getByRole("combobox", { name: "Current period" }),
+        "Jun 26",
+      )
+
+      expect(previewDescription()).toHaveTextContent("The timeline, one row per fiscal year.")
+    })
+
+    it("shows a viewer the saved timeline", async () => {
+      openTime(
+        makeStructure({
+          calendar: { first_year: 2027, fiscal_year_start_month: 4, years: 2 },
+          month_labels: monthLabelsFor({ first_year: 2027, fiscal_year_start_month: 4, years: 2 }),
+        }),
+        { role: "viewer" },
+      )
+      await screen.findByRole("table", { name: "Timeline preview" })
+
+      expect(previewRows()).toHaveLength(2)
+      expect(previewRows()[0]).toHaveTextContent("Apr 26 – Mar 27")
+      expect(previewDescription()).toHaveTextContent("The timeline, one row per fiscal year.")
+    })
+  })
+
   describe("the timeline preview", () => {
     it("shows a row for each fiscal year of a calendar that starts in January", async () => {
       openTime()
@@ -575,6 +689,18 @@ describe("the time page", () => {
         ["Forecast years", "2027", "2", ""],
         ["Long range", "2026", "10", ""],
       ])
+    })
+
+    it("sets the numbers right-aligned", async () => {
+      openTime(makeStructure({ time_ranges: [forecastYears] }))
+      const ranges = await findCard("Time ranges")
+
+      const table = within(ranges.getByRole("table", { name: "Time ranges" }))
+      expect(table.getByRole("columnheader", { name: "First year" })).toHaveClass("text-right")
+      expect(table.getByRole("columnheader", { name: "Years" })).toHaveClass("text-right")
+      const row = within(table.getByRole("row", { name: /Forecast years/ }))
+      expect(row.getByRole("cell", { name: "2027" })).toHaveClass("text-right")
+      expect(row.getByRole("cell", { name: "2" })).toHaveClass("text-right")
     })
 
     it("says there are none yet, with the one button to add a range", async () => {
@@ -857,6 +983,29 @@ describe("the time page", () => {
       expect(
         screen.queryByRole("status", { name: "Loading time settings" }),
       ).not.toBeInTheDocument()
+    })
+
+    it("waits for the user's role before it draws the calendar, rather than showing a builder text", async () => {
+      mockSession()
+      serveModels([model])
+      serveStructureStore(makeStructure())
+      let release!: () => void
+      const gate = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      server.use(
+        http.get(`/api/v1/models/${model.id}`, async () => {
+          await gate
+          return HttpResponse.json(model)
+        }),
+      )
+      renderApp(`/m/${model.id}/time`)
+
+      expect(await screen.findByRole("status", { name: "Loading time settings" })).toBeVisible()
+      expect(screen.queryByText(/Only workspace admins and builders/)).not.toBeInTheDocument()
+      release()
+
+      expect(await screen.findByRole("combobox", { name: "Fiscal year starts" })).toBeVisible()
     })
 
     it("says so and offers a retry when the structure cannot be loaded", async () => {

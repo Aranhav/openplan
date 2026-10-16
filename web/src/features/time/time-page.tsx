@@ -6,35 +6,45 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { useStructure } from "@/features/structure/api"
 import type { StructureDto } from "@/features/structure/types"
 import { useStructureAccess } from "@/hooks/use-structure-access"
-import { CalendarCard } from "./calendar-form"
-import { TimelinePreviewCard } from "./timeline-preview"
+import { CalendarSection } from "./calendar-form"
 import { TimeRangesCard } from "./time-ranges-table"
 
 export function TimePage({ modelId }: { modelId: string }) {
   const structure = useStructure(modelId)
+  const { canEdit, locked, isLoading } = useStructureAccess(modelId)
 
   return (
-    <>
+    <div className="max-w-4xl">
       <PageHeader title="Time" description="The calendar of the model and its time ranges." />
       {/* A refresh that fails in the background leaves the settings already on screen alone. */}
-      {structure.data ? (
-        <TimeSettings modelId={modelId} structure={structure.data} />
+      {structure.data && !isLoading ? (
+        <TimeSettings
+          modelId={modelId}
+          structure={structure.data}
+          canEdit={canEdit}
+          locked={locked}
+        />
       ) : structure.isError ? (
         <ErrorState error={structure.error} onRetry={() => void structure.refetch()} />
       ) : (
         <TimeSkeleton />
       )}
-    </>
+    </div>
   )
 }
 
-function TimeSettings({ modelId, structure }: { modelId: string; structure: StructureDto }) {
-  const { canEdit, locked } = useStructureAccess(modelId)
+interface TimeSettingsProps {
+  modelId: string
+  structure: StructureDto
+  canEdit: boolean
+  locked: boolean
+}
+
+function TimeSettings({ modelId, structure, canEdit, locked }: TimeSettingsProps) {
   return (
-    <div className="flex max-w-4xl flex-col gap-6">
+    <div className="flex flex-col gap-6">
       {locked && <ProductionNotice />}
-      <CalendarCard modelId={modelId} structure={structure} canEdit={canEdit} locked={locked} />
-      <TimelinePreviewCard structure={structure} />
+      <CalendarSection modelId={modelId} structure={structure} canEdit={canEdit} locked={locked} />
       <TimeRangesCard modelId={modelId} structure={structure} canEdit={canEdit} locked={locked} />
     </div>
   )
@@ -42,7 +52,7 @@ function TimeSettings({ modelId, structure }: { modelId: string; structure: Stru
 
 function TimeSkeleton() {
   return (
-    <div role="status" aria-label="Loading time settings" className="flex max-w-4xl flex-col gap-6">
+    <div role="status" aria-label="Loading time settings" className="flex flex-col gap-6">
       <Card>
         <CardHeader>
           <Skeleton className="h-5 w-24" />
