@@ -1,6 +1,6 @@
-import { Link, useMatchRoute, useMatches, useParams } from "@tanstack/react-router"
+import { createLink, useMatches, useParams } from "@tanstack/react-router"
 import { Search } from "lucide-react"
-import { Fragment, type ReactNode, useRef, useState } from "react"
+import { type ComponentProps, Fragment, type ReactNode, useRef, useState } from "react"
 import { CommandMenu } from "@/components/command-menu"
 import {
   Breadcrumb,
@@ -92,12 +92,20 @@ function Breadcrumbs() {
 
 type Workspace = { id: string; name: string }
 
+/**
+ * A link of the breadcrumb. The router marks a link to the page you are on, or to one above it, as
+ * `aria-current="page"`, which would make every crumb the current page; only the last crumb is.
+ */
+const CrumbLink = createLink(function CrumbAnchor(props: ComponentProps<"a">) {
+  return <a {...props} aria-current={undefined} data-status={undefined} />
+})
+
 /** An element, not a component: the crumb and the menu hand it their own props. */
 function workspaceLink(workspace: Workspace) {
   return (
-    <Link to="/w/$workspaceId" params={{ workspaceId: workspace.id }} title={workspace.name}>
+    <CrumbLink to="/w/$workspaceId" params={{ workspaceId: workspace.id }} title={workspace.name}>
       {workspace.name}
-    </Link>
+    </CrumbLink>
   )
 }
 
@@ -126,45 +134,52 @@ interface ModelCrumbsProps {
   workspace: Workspace | undefined
 }
 
-/** The workspace, the model and the screen of the model, or a module's own name. */
+/**
+ * The workspace, the model and the screen of the model, or a module's own name. One `TrailCrumbs`
+ * serves every screen, so choosing a crumb from its menu leaves the menu's button in place for the
+ * focus to return to.
+ */
 function ModelCrumbs({ modelId, routeId, workspace }: ModelCrumbsProps) {
   const { moduleId } = useParams({ strict: false })
-  const matchRoute = useMatchRoute()
+  const inModule = routeId === "/_app/m/$modelId/modules/$moduleId" && Boolean(moduleId)
+  const trail = useModelTrail(modelId, workspace, inModule)
 
-  if (routeId === "/_app/m/$modelId/modules/$moduleId" && moduleId) {
-    return <ModuleCrumbs modelId={modelId} moduleId={moduleId} workspace={workspace} />
-  }
-  const screen = BUILD_GROUPS.flatMap((group) => group.pages).find((candidate) =>
-    matchRoute({ to: candidate.to, params: { modelId } }),
+  // From the route id, as the module is, so that both agree in the moment of a navigation: the
+  // crumbs are never left out in between, which would unmount the menu's button.
+  const screen = BUILD_GROUPS.flatMap((group) => group.pages).find(
+    (candidate) => routeId === `/_app${candidate.to}/` || routeId === `/_app${candidate.to}`,
   )
+  if (inModule && moduleId) {
+    return (
+      <TrailCrumbs trail={trail} current={<ModuleCrumb modelId={modelId} moduleId={moduleId} />} />
+    )
+  }
   return screen ? (
-    <ScreenCrumbs modelId={modelId} workspace={workspace} label={screen.label} />
+    <TrailCrumbs trail={trail} current={<CurrentCrumb>{screen.label}</CurrentCrumb>} />
   ) : null
 }
 
-function ScreenCrumbs({
-  modelId,
-  workspace,
-  label,
-}: Omit<ModelCrumbsProps, "routeId"> & { label: string }) {
-  const trail = useModelTrail(modelId, workspace, false)
-  return <TrailCrumbs trail={trail} page={label} />
+/** The crumb of the page itself: the one that is kept in view, and is cut short last. */
+function CurrentCrumb({ title, children }: { title?: string; children: ReactNode }) {
+  return (
+    <BreadcrumbPage className="truncate" title={title}>
+      {children}
+    </BreadcrumbPage>
+  )
 }
 
 /** A module's own name, once the structure that holds it has arrived. */
-function ModuleCrumbs({
-  modelId,
-  moduleId,
-  workspace,
-}: Omit<ModelCrumbsProps, "routeId"> & { moduleId: string }) {
-  const trail = useModelTrail(modelId, workspace, true)
+function ModuleCrumb({ modelId, moduleId }: { modelId: string; moduleId: string }) {
   const structure = useStructure(modelId)
-  const name = structure.isPending
-    ? undefined
-    : (structure.data?.modules.find((module) => module.id === moduleId)?.name ?? "Module")
-  return (
-    <TrailCrumbs trail={trail} page={name ?? <Skeleton className="h-4 w-28" />} pageTitle={name} />
-  )
+  if (structure.isPending) {
+    return (
+      <CurrentCrumb>
+        <Skeleton className="h-4 w-28" />
+      </CurrentCrumb>
+    )
+  }
+  const name = structure.data?.modules.find((module) => module.id === moduleId)?.name ?? "Module"
+  return <CurrentCrumb title={name}>{name}</CurrentCrumb>
 }
 
 interface TrailCrumb {
@@ -186,9 +201,9 @@ function useModelTrail(
     {
       key: "model",
       link: model.isPending ? null : (
-        <Link to="/m/$modelId/modules" params={{ modelId }} title={name}>
+        <CrumbLink to="/m/$modelId/modules" params={{ modelId }} title={name}>
           {name}
-        </Link>
+        </CrumbLink>
       ),
     },
     ...(withModules
@@ -196,9 +211,9 @@ function useModelTrail(
           {
             key: "modules",
             link: (
-              <Link to="/m/$modelId/modules" params={{ modelId }}>
+              <CrumbLink to="/m/$modelId/modules" params={{ modelId }} title="Modules">
                 Modules
-              </Link>
+              </CrumbLink>
             ),
           },
         ]
@@ -208,9 +223,8 @@ function useModelTrail(
 
 interface TrailCrumbsProps {
   trail: TrailCrumb[]
-  page: ReactNode
-  /** The page's name in full, for where it is cut short. */
-  pageTitle?: string
+  /** The crumb of the page itself. */
+  current: ReactNode
 }
 
 /**
@@ -218,7 +232,7 @@ interface TrailCrumbsProps {
  * first, each down to a stub, and below `xl`, where the sidebar and the search take half the
  * header, they fold into a menu.
  */
-function TrailCrumbs({ trail, page, pageTitle }: TrailCrumbsProps) {
+function TrailCrumbs({ trail, current }: TrailCrumbsProps) {
   const linked = trail.filter((crumb) => crumb.link)
   return (
     <Breadcrumb className="min-w-0">
@@ -257,11 +271,7 @@ function TrailCrumbs({ trail, page, pageTitle }: TrailCrumbsProps) {
             <BreadcrumbSeparator className="hidden xl:inline-flex" />
           </Fragment>
         ))}
-        <BreadcrumbItem className="min-w-0">
-          <BreadcrumbPage className="truncate" title={pageTitle}>
-            {page}
-          </BreadcrumbPage>
-        </BreadcrumbItem>
+        <BreadcrumbItem className="min-w-0">{current}</BreadcrumbItem>
       </BreadcrumbList>
     </Breadcrumb>
   )

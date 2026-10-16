@@ -279,6 +279,63 @@ describe("the header", () => {
     await waitFor(() => expect(router.state.location.pathname).toBe(`/w/${workspace.id}`))
   })
 
+  it.each([
+    [
+      "a module",
+      (model: { id: string }) => `/m/${model.id}/modules/${revenueModule.id}`,
+      "Revenue",
+    ],
+    ["the list of modules", (model: { id: string }) => `/m/${model.id}/modules`, "Modules"],
+    ["the settings", (model: { id: string }) => `/m/${model.id}/settings`, "Model settings"],
+    ["the models of the workspace", () => `/w/${workspace.id}`, "Models"],
+  ])(
+    "marks only the crumb of the page as current on %s, in the path and in its menu",
+    async (_, path, page) => {
+      mockSession()
+      const model = makeModel({ name: "Revenue plan" })
+      serveModels([model])
+      serveStructure(structure)
+      const typist = userEvent.setup()
+      renderApp(path(model))
+
+      const crumbs = within(await screen.findByRole("navigation", { name: "breadcrumb" }))
+      await crumbs.findByText(page, { selector: "[aria-current=page]" })
+      const current = document.querySelectorAll("nav[aria-label=breadcrumb] [aria-current=page]")
+      expect([...current].map((crumb) => crumb.textContent)).toEqual([page])
+      expect(document.querySelector("nav[aria-label=breadcrumb] [data-status]")).toBeNull()
+      const menu = crumbs.queryByRole("button", { name: "Show the path to this page" })
+      if (menu) {
+        await typist.click(menu)
+        for (const item of within(await screen.findByRole("menu")).getAllByRole("menuitem")) {
+          expect(item).not.toHaveAttribute("aria-current")
+        }
+      }
+    },
+  )
+
+  it("returns focus to the menu's button after a crumb is chosen from it by keyboard", async () => {
+    mockSession()
+    const model = makeModel({ name: "Revenue plan" })
+    serveModels([model])
+    serveStructure(structure)
+    const typist = userEvent.setup()
+    const { router } = renderApp(`/m/${model.id}/modules/${revenueModule.id}`)
+
+    const crumbs = within(await screen.findByRole("navigation", { name: "breadcrumb" }))
+    await crumbs.findByRole("link", { name: "Revenue plan" })
+    const button = crumbs.getByRole("button", { name: "Show the path to this page" })
+    button.focus()
+    await typist.keyboard("{Enter}")
+    await screen.findByRole("menu")
+    await typist.keyboard("{ArrowDown}{ArrowDown}{Enter}")
+
+    await waitFor(() => expect(router.state.location.pathname).toBe(`/m/${model.id}/modules`))
+    await waitFor(() => expect(screen.queryByRole("menu")).not.toBeInTheDocument())
+    await waitFor(() =>
+      expect(crumbs.getByRole("button", { name: "Show the path to this page" })).toHaveFocus(),
+    )
+  })
+
   it("names the module in full where its crumb is cut short", async () => {
     mockSession()
     const model = makeModel({ name: "Revenue plan" })
