@@ -33,6 +33,7 @@ describe("a module's page", () => {
     expect(await screen.findByRole("heading", { level: 1, name: "Revenue" })).toBeVisible()
     const header = screen.getByRole("heading", { level: 1 }).parentElement as HTMLElement
     expect(within(header).getByText("Finance")).toBeVisible()
+    expect(header).toHaveTextContent("Functional area: Finance")
     for (const dimension of ["Regions", "Products", "Time (Month)", "Versions"]) {
       expect(within(header).getByText(dimension)).toBeVisible()
     }
@@ -111,9 +112,7 @@ describe("a module's page", () => {
     )
     renderApp(revenuePath)
 
-    expect(
-      (await screen.findAllByRole("status", { name: "Loading module" })).length,
-    ).toBeGreaterThan(0)
+    await screen.findAllByRole("status", { name: "Loading module" })
     release()
 
     expect(await screen.findByRole("heading", { level: 1, name: "Revenue" })).toBeVisible()

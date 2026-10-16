@@ -102,8 +102,7 @@ describe("the modules page", () => {
 
     const page = await screen.findByRole("heading", { level: 1, name: "Modules" })
     expect(page).toBeVisible()
-    const loading = await screen.findAllByRole("status", { name: "Loading modules" })
-    expect(loading.length).toBeGreaterThan(0)
+    await screen.findAllByRole("status", { name: "Loading modules" })
     release()
 
     expect(await screen.findByRole("link", { name: "Revenue" })).toBeVisible()

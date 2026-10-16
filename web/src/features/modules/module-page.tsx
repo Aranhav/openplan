@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router"
-import { ArrowLeft, Grid3x3, Rows3 } from "lucide-react"
+import { ArrowLeft, Folder, Grid3x3, Rows3 } from "lucide-react"
 import { EmptyState } from "@/components/empty-state"
 import { ErrorState } from "@/components/error-state"
 import { PageHeader } from "@/components/page-header"
@@ -101,7 +101,13 @@ function ModuleDetails({ module, structure, selected }: ModuleDetailsProps) {
         title={module.name}
         description={
           <div className="flex flex-wrap items-center gap-1.5">
-            {module.functional_area && <span>{module.functional_area}</span>}
+            {module.functional_area && (
+              <span className="inline-flex items-center gap-1">
+                <Folder className="size-3.5" />
+                <span className="sr-only">Functional area: </span>
+                {module.functional_area}
+              </span>
+            )}
             {module.axes.map((axis, index) => (
               <Badge key={index} variant="outline">
                 {axisLabel(axis, structure)}

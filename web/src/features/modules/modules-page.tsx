@@ -89,7 +89,7 @@ function ModulesTable({ name, modules, modelId, structure }: ModulesTableProps) 
         <TableBody>
           {modules.map((module) => (
             <TableRow key={module.id}>
-              <TableCell className="truncate pl-4 font-medium" title={module.name}>
+              <TableCell className="pl-4 font-medium break-words whitespace-normal">
                 <Link
                   to="/m/$modelId/modules/$moduleId"
                   params={{ modelId, moduleId: module.id }}
