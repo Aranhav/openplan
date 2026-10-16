@@ -11,8 +11,10 @@ import { DEFAULT_VIEW_KEY, clearDraft, readDraft, writeDraft } from "@/features/
 import {
   type ViewAction,
   isModified,
+  knownKeys,
   queryOf,
   reduceView,
+  stillFits,
 } from "@/features/grid/toolbar/view-state"
 import { useRowInfo } from "@/features/grid/toolbar/use-row-info"
 import { useSavedViews } from "@/features/grid/toolbar/views-api"
@@ -23,6 +25,7 @@ import type { ModuleDto, StructureDto } from "@/features/structure/types"
 import { useFillViewport } from "@/hooks/use-fill-viewport"
 import { defaultView } from "./default-view"
 import { FormulaBar } from "./formula-bar"
+import { type FormulaDrafts, useFormulaDrafts } from "./formula-drafts"
 import { gridReference } from "./grid-reference"
 
 /** The least the grid is tall, and the padding the page keeps below it, in pixels. */
@@ -70,6 +73,8 @@ export function ModuleGrid({
   const list = useMemo(() => views.data ?? [], [views.data])
   // Views this screen deletes, which are not views that went missing.
   const [deleting] = useState(() => new Set<string>())
+  // The formulas typed in the bar, which stay when another view remounts the grid and the bar.
+  const formulaDrafts = useFormulaDrafts()
 
   const requested = viewId === undefined ? undefined : list.find((view) => view.id === viewId)
   const saved = requested ?? list.find((view) => view.is_default)
@@ -88,14 +93,19 @@ export function ModuleGrid({
     }
   }, [missing])
 
-  // Changes that were not saved are given up when another view is chosen, however it was chosen.
+  // Changes that were not saved are given up when another view of the same module is chosen,
+  // however it was chosen. Another module's views are not this module's: going there gives up nothing.
   const key = views.isPending ? undefined : (saved?.id ?? DEFAULT_VIEW_KEY)
-  const previous = useRef(key)
+  const previous = useRef<{ moduleId: string; key: string }>(undefined)
   useEffect(() => {
-    if (key !== undefined && previous.current !== undefined && previous.current !== key) {
-      clearDraft(module.id, previous.current)
+    if (key === undefined) {
+      return
     }
-    previous.current = key
+    const before = previous.current
+    if (before !== undefined && before.moduleId === module.id && before.key !== key) {
+      clearDraft(module.id, before.key)
+    }
+    previous.current = { moduleId: module.id, key }
   }, [module.id, key])
 
   const lineItems = lineItemsOf(structure, module.id)
@@ -114,7 +124,7 @@ export function ModuleGrid({
   }
   return (
     <ViewSession
-      key={key}
+      key={`${module.id}:${key}`}
       modelId={modelId}
       module={module}
       structure={structure}
@@ -126,7 +136,8 @@ export function ModuleGrid({
       canSaveViews={canSaveViews}
       locked={locked}
       onViewChange={onViewChange}
-      onDeletingView={(id) => deleting.add(id)}
+      formulaDrafts={formulaDrafts}
+      onDeletingView={(id, on) => (on ? deleting.add(id) : deleting.delete(id))}
     />
   )
 }
@@ -147,7 +158,10 @@ interface ViewSessionProps extends Omit<ModuleGridProps, "viewId" | "onOpenBluep
   viewsFailed?: { retry: () => void }
   /** The view in use, or nothing for the module's own default pivot. */
   saved: SavedView | undefined
-  onDeletingView: (viewId: string) => void
+  /** The formulas typed in the bar and not saved, which are kept by the screen above, since this one is rebuilt for each view. */
+  formulaDrafts: FormulaDrafts
+  /** A view is being deleted (or the deletion failed): see `SavedViews`. */
+  onDeletingView: (viewId: string, deleting: boolean) => void
 }
 
 /**
@@ -165,6 +179,7 @@ function ViewSession({
   canEditFormulas,
   canSaveViews,
   locked,
+  formulaDrafts,
   onViewChange,
   onDeletingView,
 }: ViewSessionProps) {
@@ -177,16 +192,33 @@ function ViewSession({
     [saved, module],
   )
   const viewKey = saved?.id ?? DEFAULT_VIEW_KEY
+  const known = useMemo(() => knownKeys(structure, module.id), [structure, module.id])
+  // What the user changed is kept only while it is still a view of the module: a dimension or a
+  // member that went away takes the changes with it, which the server would refuse anyway.
+  const fitting = useCallback(
+    (view: ViewDefinition | undefined) =>
+      view !== undefined && stillFits(view, module, known) ? view : undefined,
+    [module, known],
+  )
   // What the user changed on screen, or nothing while the view is as saved (and so follows it).
-  const [edits, setEdits] = useState(() => readDraft(module, viewKey))
+  const [changed, setChanged] = useState(() => {
+    const draft = readDraft(module, viewKey, known)
+    return draft !== undefined && isModified(draft, savedDefinition) ? draft : undefined
+  })
+  const edits = fitting(changed)
   const current = edits ?? savedDefinition
   const modified = edits !== undefined && isModified(edits, savedDefinition)
 
   const dispatch = useCallback(
-    (action: ViewAction) => setEdits((before) => reduceView(before ?? savedDefinition, action)),
-    [savedDefinition],
+    (action: ViewAction) =>
+      setChanged((before) => {
+        const next = reduceView(fitting(before) ?? savedDefinition, action)
+        // A view that is back to what was saved follows the saved view again.
+        return isModified(next, savedDefinition) ? next : undefined
+      }),
+    [fitting, savedDefinition],
   )
-  const discard = useCallback(() => setEdits(undefined), [])
+  const discard = useCallback(() => setChanged(undefined), [])
 
   useEffect(() => {
     if (edits !== undefined && modified) {
@@ -259,7 +291,7 @@ function ViewSession({
         saved={saved}
         modified={modified}
         canSaveViews={canSaveViews}
-        onSelectView={(id) => onViewChange(id)}
+        onSelectView={onViewChange}
         onDiscard={discard}
         onDeletingView={onDeletingView}
       />
@@ -268,6 +300,7 @@ function ViewSession({
         lineItem={lineItems.find((item) => item.id === activeId)}
         canEdit={canEditFormulas}
         locked={locked}
+        drafts={formulaDrafts}
       />
       {/* The grid scrolls inside the room the page leaves below the module's title, tabs and bar. */}
       <div ref={ref} style={{ height }} className="min-h-96">

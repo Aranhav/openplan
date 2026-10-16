@@ -298,10 +298,32 @@ describe("deleting", () => {
     expect(dialog).toHaveTextContent("Quarterly review is deleted for everyone who uses this module.")
     await user.click(within(dialog).getByRole("button", { name: "Delete view" }))
 
-    await waitFor(() => expect(onSelect).toHaveBeenCalledWith(undefined))
-    expect(onDeleting).toHaveBeenCalledWith("view-quarterly")
+    // Back does not return to the address of the view that is gone.
+    await waitFor(() => expect(onSelect).toHaveBeenCalledWith(undefined, { replace: true }))
+    expect(onDeleting).toHaveBeenCalledOnce()
+    expect(onDeleting).toHaveBeenCalledWith("view-quarterly", true)
     expect(store.views.map((view) => view.id)).toEqual(["view-forecast"])
     expect(toast.success).toHaveBeenCalledWith("View deleted")
+  })
+
+  it("says the view is not being deleted after all when the server refuses", async () => {
+    const { onSelect, onDeleting } = renderViews({ views: [forecast, quarterly], saved: quarterly })
+    server.use(
+      http.delete("/api/v1/models/:id/views/:viewId", () =>
+        problem(409, "structure.in_use", "The view is in use."),
+      ),
+    )
+
+    const user = await menu("Delete view…")
+    const dialog = await screen.findByRole("alertdialog", { name: "Delete this view?" })
+    await user.click(within(dialog).getByRole("button", { name: "Delete view" }))
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("The view is in use."))
+    expect(onDeleting.mock.calls).toEqual([
+      ["view-quarterly", true],
+      ["view-quarterly", false],
+    ])
+    expect(onSelect).not.toHaveBeenCalled()
   })
 
   it("leaves the view alone when the dialog is cancelled", async () => {

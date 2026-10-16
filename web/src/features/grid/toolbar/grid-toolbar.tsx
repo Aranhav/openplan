@@ -42,9 +42,9 @@ interface GridToolbarProps {
   saved: SavedView | undefined
   modified: boolean
   canSaveViews: boolean
-  onSelectView: (viewId: string | undefined) => void
+  onSelectView: (viewId: string | undefined, options?: { replace?: boolean }) => void
   onDiscard: () => void
-  onDeletingView: (viewId: string) => void
+  onDeletingView: (viewId: string, deleting: boolean) => void
 }
 
 /**

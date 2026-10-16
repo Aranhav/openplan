@@ -64,12 +64,19 @@ interface SavedViewsProps {
   modified: boolean
   /** The user may save, make default and delete views (builders and admins). */
   canSave: boolean
-  /** Switches to a view; nothing is the module's default one. */
-  onSelect: (viewId: string | undefined) => void
+  /**
+   * Switches to a view; nothing is the module's default one. With `replace` the view that was
+   * left is not one that Back returns to, as it is after the view was deleted.
+   */
+  onSelect: (viewId: string | undefined, options?: { replace?: boolean }) => void
   /** The changes in view are saved or given up: the view in use is as it was saved. */
   onDiscard: () => void
-  /** A view is about to be deleted, which the screen that follows the address must not mistake for a view that went missing. */
-  onDeleting: (viewId: string) => void
+  /**
+   * A view is about to be deleted, which the screen that follows the address must not mistake for
+   * a view that went missing (`true`); the deletion was refused, and the view is still there
+   * (`false`).
+   */
+  onDeleting: (viewId: string, deleting: boolean) => void
 }
 
 /**
@@ -234,10 +241,16 @@ export function SavedViews({
           onOpenChange={(open) => setDialog(open ? "delete" : undefined)}
           onCloseAutoFocus={restoreFocus}
           onConfirm={async () => {
-            onDeleting(saved.id)
-            await remove.mutateAsync(saved.id)
+            onDeleting(saved.id, true)
+            try {
+              await remove.mutateAsync(saved.id)
+            } catch (error) {
+              onDeleting(saved.id, false)
+              throw error
+            }
             onDiscard()
-            onSelect(undefined)
+            // The address of the deleted view is not one to go back to.
+            onSelect(undefined, { replace: true })
           }}
         />
       )}

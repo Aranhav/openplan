@@ -14,6 +14,7 @@ import { server } from "@/test/server"
 import { spinning } from "@/test/spinning"
 import { revenueAmount, structure, unitsSold } from "@/test/structure"
 import { FormulaBar } from "./formula-bar"
+import { useFormulaDrafts } from "./formula-drafts"
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 
@@ -60,9 +61,48 @@ function renderBar(props: Parameters<typeof Screen>[0] = {}) {
   return store
 }
 
+/** A screen that keeps the drafts and can take the bar away and bring it back, as a view switch does. */
+function RemountedScreen() {
+  const drafts = useFormulaDrafts()
+  const [shown, setShown] = useState(true)
+  const { data } = useStructure(MODEL)
+  if (!data) {
+    return null
+  }
+  return (
+    <TooltipProvider>
+      <button type="button" onClick={() => setShown((now) => !now)}>
+        Switch view
+      </button>
+      {shown && (
+        <FormulaBar
+          modelId={MODEL}
+          lineItem={data.line_items.find((item) => item.id === revenueAmount.id)}
+          canEdit
+          locked={false}
+          drafts={drafts}
+        />
+      )}
+    </TooltipProvider>
+  )
+}
+
 const editor = (name = "Formula of Revenue amount") => screen.findByRole("textbox", { name })
 
 describe("the formula bar", () => {
+  it("gives back what was typed when it comes back, if the screen keeps the drafts", async () => {
+    serveModuleStore(structure)
+    renderWithProviders(<RemountedScreen />)
+    setFormula(await editor(), "Units sold * 3")
+
+    await userEvent.click(screen.getByRole("button", { name: "Switch view" }))
+    expect(screen.queryByRole("group", { name: "Formula bar" })).toBeNull()
+    await userEvent.click(screen.getByRole("button", { name: "Switch view" }))
+
+    expect(formulaText(await editor())).toBe("Units sold * 3")
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled()
+  })
+
   it("shows fx, the name of the line item and its formula", async () => {
     renderBar()
 

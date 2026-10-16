@@ -6,8 +6,10 @@ import {
   dimOfAxis,
   fitsModule,
   isModified,
+  knownKeys,
   queryOf,
   reduceView,
+  stillFits,
 } from "./view-state"
 
 const lineItems: ViewDim = { kind: "line_items" }
@@ -272,6 +274,38 @@ describe("filters, formats and widths", () => {
     })
   })
 
+  it("is the same view when the filters, formats or widths are the ones it has", () => {
+    const filters = [{ line_item: "li-1", op: "is_blank" as const }]
+    const formats = [
+      {
+        name: "Losses",
+        line_item_ids: [],
+        op: "negative" as const,
+        style: { color: "red" as const, bold: true },
+      },
+    ]
+    const set: ViewDefinition = {
+      ...base,
+      filters,
+      conditional_formats: formats,
+      column_widths: { Jan: 90 },
+    }
+
+    expect(reduceView(set, { type: "set_filters", filters: [...filters] })).toBe(set)
+    expect(reduceView(set, { type: "set_conditional_formats", formats: [...formats] })).toBe(set)
+    expect(reduceView(set, { type: "set_column_widths", widths: { Jan: 90 } })).toBe(set)
+  })
+
+  it("is the same view when nothing is set and nothing is put in", () => {
+    expect(reduceView(base, { type: "set_filters", filters: [] })).toBe(base)
+    expect(reduceView(base, { type: "set_conditional_formats", formats: [] })).toBe(base)
+    expect(reduceView(base, { type: "set_column_widths", widths: {} })).toBe(base)
+  })
+
+  it("is the same view when it is replaced by one that is no different", () => {
+    expect(reduceView(base, { type: "replace", definition: { ...base, filters: [] } })).toBe(base)
+  })
+
   it("replaces the whole view", () => {
     const other: ViewDefinition = { rows: [regions], columns: [], pages: [] }
 
@@ -420,5 +454,80 @@ describe("dimOfAxis", () => {
     expect(dimOfAxis({ kind: "subset", subset: "channels" })).toEqual(channels)
     expect(dimOfAxis({ kind: "time", level: "month" })).toEqual(time)
     expect(dimOfAxis({ kind: "versions" })).toEqual(versions)
+  })
+})
+
+describe("stillFits", () => {
+  const module = { id: "m1", axes: [{ kind: "list", list: "regions" }, { kind: "time", level: "month" }] }
+  const itemA = "0192f3a0-0000-7000-8000-00000000000a"
+  const itemB = "0192f3a0-0000-7000-8000-00000000000b"
+  const version = "0192f3a0-0000-7000-8000-0000000000c1"
+  const rev = "0192f3a0-0000-7000-8000-0000000000d1"
+  const gone = "0192f3a0-0000-7000-8000-0000000000ff"
+  const structure = {
+    lists: [{ id: "regions", items: [{ id: itemA }, { id: itemB }] }],
+    versions: [{ id: version }],
+    line_items: [
+      { id: rev, module: "m1" },
+      { id: "other-module-item", module: "m2" },
+    ],
+  }
+  const known = knownKeys(structure as never, "m1")
+  const fits: ViewDefinition = {
+    rows: [lineItems],
+    columns: [time],
+    pages: [{ dim: regions, key: null }],
+  }
+
+  it("holds for a view whose members and line items are all still there", () => {
+    const view: ViewDefinition = {
+      ...fits,
+      pages: [{ dim: regions, key: itemA }],
+      hidden: [{ dim: regions, key: itemB }],
+      collapsed: [{ dim: time, key: "Q1 FY26" }],
+      line_items: [rev],
+      filters: [{ line_item: rev, op: "is_blank" }],
+      conditional_formats: [
+        { name: "x", line_item_ids: [rev], op: "negative", style: { color: "red", bold: false } },
+      ],
+    }
+
+    expect(stillFits(view, module as never, known)).toBe(true)
+  })
+
+  it("fails when a dimension of the module is not in the view once", () => {
+    expect(stillFits({ ...fits, pages: [] }, module as never, known)).toBe(false)
+  })
+
+  it("fails when a page, hidden or collapsed member was deleted", () => {
+    expect(stillFits({ ...fits, pages: [{ dim: regions, key: gone }] }, module as never, known)).toBe(
+      false,
+    )
+    expect(
+      stillFits({ ...fits, hidden: [{ dim: regions, key: gone }] }, module as never, known),
+    ).toBe(false)
+    expect(
+      stillFits({ ...fits, collapsed: [{ dim: regions, key: gone }] }, module as never, known),
+    ).toBe(false)
+  })
+
+  it("fails when a line item the view names is not one of the module's", () => {
+    expect(stillFits({ ...fits, line_items: [gone] }, module as never, known)).toBe(false)
+    expect(
+      stillFits(
+        { ...fits, filters: [{ line_item: "other-module-item", op: "is_blank" }] },
+        module as never,
+        known,
+      ),
+    ).toBe(false)
+  })
+
+  it("does not judge a period or the top of a list, which are named by a label", () => {
+    expect(
+      stillFits({ ...fits, hidden: [{ dim: time, key: "Jan 26" }] }, module as never, known),
+    ).toBe(true)
+    expect(
+      stillFits({ ...fits, pages: [{ dim: regions, key: "top" }] }, module as never, known),
+    ).toBe(true)
   })
 })

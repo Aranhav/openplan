@@ -10,6 +10,7 @@ import { useUpdateLineItem } from "@/features/structure/api"
 import type { LineItemDto } from "@/features/structure/types"
 import { ApiError, type FormulaProblem, errorDetail } from "@/lib/api/client"
 import { ClearValuesDialog } from "./clear-values-dialog"
+import { type FormulaDrafts, useFormulaDrafts } from "./formula-drafts"
 
 interface FormulaBarProps {
   modelId: string
@@ -19,6 +20,8 @@ interface FormulaBarProps {
   canEdit: boolean
   /** Whether production mode switches changing them off. */
   locked: boolean
+  /** Where the typed formulas are kept, by a screen that remounts the bar; the bar keeps its own otherwise. */
+  drafts?: FormulaDrafts
 }
 
 /** The formula the server refused to save, and what it found wrong in it. */
@@ -40,9 +43,10 @@ function without(drafts: Record<string, string>, id: string) {
  * for each line item is kept while another is selected, until it is saved or given up. A formula
  * for an input line item is confirmed first, since it clears the values typed into the line item.
  */
-export function FormulaBar({ modelId, lineItem, canEdit, locked }: FormulaBarProps) {
+export function FormulaBar({ modelId, lineItem, canEdit, locked, drafts: kept }: FormulaBarProps) {
   const update = useUpdateLineItem(modelId)
-  const [drafts, setDrafts] = useState<Record<string, string>>({})
+  const own = useFormulaDrafts()
+  const [drafts, setDrafts] = kept ?? own
   const [refusal, setRefusal] = useState<Refusal>()
   // The formula waiting for a yes to clearing the line item's input values.
   const [confirming, setConfirming] = useState<string>()

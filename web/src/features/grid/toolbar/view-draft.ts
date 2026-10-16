@@ -1,6 +1,6 @@
 import type { ModuleDto } from "@/features/structure/types"
 import type { ViewDefinition } from "../view-types"
-import { fitsModule } from "./view-state"
+import { type KnownKeys, stillFits } from "./view-state"
 
 /** What stands for the module's own default pivot, which no saved view holds, in a draft's key. */
 export const DEFAULT_VIEW_KEY = "default"
@@ -21,14 +21,18 @@ function isDefinition(value: unknown): value is ViewDefinition {
 
 /**
  * The unsaved changes of a view, kept for the browser session so that reloading the page or going
- * to the Blueprint and back does not lose them. Anything that is not a view of this module (it
- * was changed since) or cannot be read is as if nothing was kept.
+ * to the Blueprint and back does not lose them. Anything that is not a view of this module as it
+ * is now (a dimension or a member went away since) or cannot be read is as if nothing was kept.
  */
-export function readDraft(module: ModuleDto, viewKey: string): ViewDefinition | undefined {
+export function readDraft(
+  module: ModuleDto,
+  viewKey: string,
+  known: KnownKeys,
+): ViewDefinition | undefined {
   try {
     const text = sessionStorage.getItem(storageKey(module.id, viewKey))
     const draft: unknown = text === null ? undefined : JSON.parse(text)
-    return isDefinition(draft) && fitsModule(draft, module) ? draft : undefined
+    return isDefinition(draft) && stillFits(draft, module, known) ? draft : undefined
   } catch {
     return undefined
   }

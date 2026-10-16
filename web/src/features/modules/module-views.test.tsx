@@ -5,10 +5,23 @@ import { toast } from "sonner"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { ViewDefinition, ViewDim, ViewQuery } from "@/features/grid/view-types"
 import type { components } from "@/lib/api/schema"
+import { queryKeys } from "@/lib/api/keys"
 import { makeModel, me, mockSession, renderApp, serveModels, workspace } from "@/test/app"
+import { formulaText, setFormula } from "@/test/formula"
 import { serveModuleStore } from "@/test/module-edits"
 import { server } from "@/test/server"
-import { productsId, regionsId, revenueModule, structure } from "@/test/structure"
+import {
+  costsModule,
+  makeLineItem,
+  makeStructure,
+  productsId,
+  regionsId,
+  revenueAmount,
+  revenueModule,
+  structure,
+  unitsSold,
+} from "@/test/structure"
+import type { StructureDto } from "@/features/structure/types"
 import {
   header,
   lineItem,
@@ -70,18 +83,25 @@ interface Options {
   mode?: "dev" | "prod"
   views?: ReturnType<typeof makeView>[]
   path?: string
+  structure?: StructureDto
 }
 
-function openModule({ role = "admin", mode = "dev", views = [], path = revenuePath }: Options = {}) {
+function openModule({
+  role = "admin",
+  mode = "dev",
+  views = [],
+  path = revenuePath,
+  structure: served = structure,
+}: Options = {}) {
   mockSession({ me: { ...me, workspaces: [{ ...workspace, role }] } })
   serveModels([{ ...model, mode }])
-  serveModuleStore(structure)
+  const modules = serveModuleStore(served)
   const store = serveViews(views)
   const members = serveMembers(membersOf)
   // After the module store, which answers queries with no rows, so that the grid has some to show.
-  const served = serveViewQuery()
+  const queries = serveViewQuery()
   const app = renderApp(path)
-  return { store, members, served, ...app }
+  return { store, members, served: queries, modules, ...app }
 }
 
 const lastQuery = (served: { requests: ViewQuery[] }) => served.requests.at(-1) as ViewQuery
@@ -118,6 +138,33 @@ async function swap() {
 
 const draftKey = (view = DEFAULT_VIEW_KEY) =>
   `openplan.view-draft.${revenueModule.id}.${view}`
+
+/** A second module with a line item of its own, to move to and from Revenue. */
+const costsAmount = makeLineItem({
+  id: "0192f3a0-0000-7000-8000-000000000405",
+  module: costsModule.id,
+  name: "Cost amount",
+  ordinal: 0,
+})
+const twoModules = makeStructure({
+  ...structure,
+  line_items: [...structure.line_items, costsAmount],
+})
+const costsPath = `/m/${model.id}/modules/${costsModule.id}`
+const costsDraftKey = `openplan.view-draft.${costsModule.id}.${DEFAULT_VIEW_KEY}`
+
+async function gridOf(moduleName: string) {
+  return within(await screen.findByRole("main")).findByRole("grid", { name: `${moduleName} grid` })
+}
+
+function goTo(router: ReturnType<typeof renderApp>["router"], moduleId: string) {
+  return act(() =>
+    router.navigate({
+      to: "/m/$modelId/modules/$moduleId",
+      params: { modelId: model.id, moduleId },
+    }),
+  )
+}
 
 beforeEach(() => {
   mockViewport(900, 500)
@@ -518,6 +565,104 @@ describe("saved views", () => {
   })
 })
 
+describe("a view that is deleted or changed by someone else", () => {
+  const quarterly = makeView({
+    id: "view-q",
+    module_id: revenueModule.id,
+    name: "Quarterly",
+    definition: standard,
+  })
+
+  it("is not an address that Back returns to once it is deleted", async () => {
+    const { store, router } = openModule({ views: [quarterly] })
+    await chooseView("Quarterly")
+    await waitFor(() => expect(router.state.location.search).toEqual({ view: "view-q" }))
+
+    const user = await viewAction("Delete view…")
+    await user.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Delete view" }),
+    )
+    await waitFor(() => expect(store.views).toEqual([]))
+    await waitFor(() => expect(router.state.location.search).toEqual({}))
+    await act(async () => router.history.back())
+
+    expect(router.state.location.search).toEqual({})
+    expect(router.history.location.pathname).toBe(revenuePath)
+    expect(toast.error).not.toHaveBeenCalled()
+  })
+
+  it("is followed again once the changes made to it are undone", async () => {
+    const user = userEvent.setup()
+    const { store, served, queryClient } = openModule({
+      views: [quarterly],
+      path: `${revenuePath}?view=view-q`,
+    })
+    const bar = await toolbar()
+    await user.click(bar.getByRole("button", { name: "Summaries" }))
+    await waitFor(() => expect(bar.getByText("Modified")).toBeVisible())
+    await user.click(bar.getByRole("button", { name: "Summaries" }))
+    await waitFor(() => expect(bar.queryByText("Modified")).not.toBeInTheDocument())
+    expect(sessionStorage.getItem(draftKey("view-q"))).toBeNull()
+
+    // A colleague saves the view with the months down.
+    store.views = [{ ...quarterly, definition: { ...standard, rows: [time], columns: [lineItemsDim] } }]
+    await act(() =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.views(model.id, revenueModule.id) }),
+    )
+
+    await waitFor(() =>
+      expect(lastQuery(served)).toMatchObject({ rows: [time], columns: [lineItemsDim] }),
+    )
+    expect(bar.queryByText("Modified")).not.toBeInTheDocument()
+  })
+})
+
+describe("moving to another module", () => {
+  it("does not put the changes of one module on another that was opened before", async () => {
+    const { served, router } = openModule({ structure: twoModules, path: costsPath })
+    await gridOf("Costs")
+    await goTo(router, revenueModule.id)
+    await gridOf("Revenue")
+    await swap()
+    await waitFor(() => expect(sessionStorage.getItem(draftKey())).not.toBeNull())
+
+    await goTo(router, costsModule.id)
+    await gridOf("Costs")
+
+    await waitFor(() =>
+      expect(lastQuery(served)).toMatchObject({
+        module: costsModule.id,
+        rows: [lineItemsDim],
+        columns: [time],
+      }),
+    )
+    expect(screen.queryByText("Modified")).not.toBeInTheDocument()
+    expect(sessionStorage.getItem(costsDraftKey)).toBeNull()
+    expect(sessionStorage.getItem(draftKey())).not.toBeNull()
+  })
+
+  it("keeps the changes of a module while another one is looked at, and gives them back", async () => {
+    const { served, router } = openModule({ structure: twoModules })
+    await swap()
+    await waitFor(() => expect(sessionStorage.getItem(draftKey())).not.toBeNull())
+
+    await goTo(router, costsModule.id)
+    await gridOf("Costs")
+    await goTo(router, revenueModule.id)
+    await gridOf("Revenue")
+
+    await waitFor(() =>
+      expect(lastQuery(served)).toMatchObject({
+        module: revenueModule.id,
+        rows: [time],
+        columns: [lineItemsDim],
+      }),
+    )
+    expect((await toolbar()).getByText("Modified")).toBeVisible()
+    expect(sessionStorage.getItem(draftKey())).not.toBeNull()
+  })
+})
+
 describe("changes that are not saved", () => {
   it("are kept for the browser session, and come back when the module is opened again", async () => {
     openModule()
@@ -586,6 +731,93 @@ describe("changes that are not saved", () => {
     await waitFor(() => expect(served.requests.length).toBeGreaterThan(0))
     expect(lastQuery(served)).toMatchObject({ rows: [lineItemsDim], columns: [time] })
     expect((await toolbar()).queryByText("Modified")).not.toBeInTheDocument()
+  })
+})
+
+describe("changes that no longer fit the module", () => {
+  const deletedItem = "0192f3a0-0000-7000-8000-0000000000ff"
+
+  it("are ignored when they name a member that was deleted since", async () => {
+    sessionStorage.setItem(
+      draftKey(),
+      JSON.stringify({ ...standard, hidden: [{ dim: regions, key: deletedItem }] }),
+    )
+    const { served } = openModule()
+
+    await grid()
+
+    await waitFor(() => expect(served.requests.length).toBeGreaterThan(0))
+    expect(lastQuery(served).hidden).toBeUndefined()
+    expect((await toolbar()).queryByText("Modified")).not.toBeInTheDocument()
+    await waitFor(() => expect(sessionStorage.getItem(draftKey())).toBeNull())
+  })
+
+  it("are given up when a dimension of the module is taken away under them", async () => {
+    const { served, modules, queryClient } = openModule()
+    await swap()
+    await waitFor(() => expect(lastQuery(served)).toMatchObject({ rows: [time] }))
+
+    modules.structure = {
+      ...modules.structure,
+      modules: modules.structure.modules.map((module) =>
+        module.id === revenueModule.id
+          ? { ...module, axes: module.axes.filter((axis) => axis.kind !== "versions") }
+          : module,
+      ),
+    }
+    await act(() => queryClient.invalidateQueries({ queryKey: queryKeys.structure(model.id) }))
+
+    await waitFor(() =>
+      expect(lastQuery(served)).toMatchObject({ rows: [lineItemsDim], columns: [time] }),
+    )
+    expect(lastQuery(served).pages?.map((page) => page.dim)).toEqual([regions, products])
+    expect((await toolbar()).queryByText("Modified")).not.toBeInTheDocument()
+    await waitFor(() => expect(sessionStorage.getItem(draftKey())).toBeNull())
+  })
+})
+
+describe("the formula bar across views", () => {
+  const revenueRows = salesView({
+    rowDims: [lineItemsDim],
+    columnDims: [time],
+    totalRows: 2,
+    totalColumns: 3,
+    lineItems: [unitsSold, revenueAmount].map((item) => lineItem(item.id, item.name)),
+    rowHeader: (row) => {
+      const item = [unitsSold, revenueAmount][row]
+      return header(member(item.id, item.name))
+    },
+    columnHeader: (col) => header(member(`m${col}`, `Month ${col + 1}`)),
+    cell: () => numberCell(1),
+  })
+
+  async function selectRevenueRow(user: ReturnType<typeof userEvent.setup>) {
+    const cells = await grid()
+    await screen.findByRole("textbox", { name: /^Formula of / })
+    const cell = await waitFor(() => {
+      const found = cells.querySelector<HTMLElement>("[data-row='1'][data-col='0']")
+      expect(found).not.toBeNull()
+      return found as HTMLElement
+    })
+    await user.click(cell)
+    return screen.findByRole("textbox", { name: "Formula of Revenue amount" })
+  }
+
+  it("keeps the formula that was typed when another view is chosen", async () => {
+    const quarterly = makeView({
+      id: "view-q",
+      module_id: revenueModule.id,
+      name: "Quarterly",
+      definition: standard,
+    })
+    const user = userEvent.setup()
+    const { served } = openModule({ views: [quarterly] })
+    served.fixture = revenueRows
+    setFormula(await selectRevenueRow(user), "Units sold * 2")
+
+    await chooseView("Quarterly")
+
+    expect(formulaText(await selectRevenueRow(user))).toBe("Units sold * 2")
   })
 })
 

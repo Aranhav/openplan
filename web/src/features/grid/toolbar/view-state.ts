@@ -1,4 +1,4 @@
-import type { ModuleDto } from "@/features/structure/types"
+import type { ModuleDto, StructureDto } from "@/features/structure/types"
 import type {
   ConditionalFormat,
   GridQuery,
@@ -96,7 +96,7 @@ function move(view: ViewDefinition, dim: ViewDim, to: Zone, index: number | unde
     columns: to === "columns" ? insert(columns, dim) : columns,
     pages: to === "pages" ? insert(pages, kept ?? { dim, key: null }) : pages,
   }
-  return canonical(next) === canonical(view) ? view : next
+  return unlessSame(view, next)
 }
 
 function swap(view: ViewDefinition): ViewDefinition {
@@ -122,7 +122,11 @@ function toggle(members: MemberRef[] | undefined, member: MemberRef): MemberRef[
     : [...list, member]
 }
 
-/** The view after an action. It is the same object when the action changes nothing. */
+/**
+ * The view after an action. It is the same object when the action changes nothing: a move that
+ * ends where it began, a member hidden twice, a list of filters, formats or widths that is the one
+ * the view has, a view put in that is no different.
+ */
 export function reduceView(view: ViewDefinition, action: ViewAction): ViewDefinition {
   switch (action.type) {
     case "move":
@@ -150,14 +154,19 @@ export function reduceView(view: ViewDefinition, action: ViewAction): ViewDefini
       return remaining.length === hidden.length ? view : { ...view, hidden: remaining }
     }
     case "set_filters":
-      return { ...view, filters: action.filters }
+      return unlessSame(view, { ...view, filters: action.filters })
     case "set_conditional_formats":
-      return { ...view, conditional_formats: action.formats }
+      return unlessSame(view, { ...view, conditional_formats: action.formats })
     case "set_column_widths":
-      return { ...view, column_widths: action.widths }
+      return unlessSame(view, { ...view, column_widths: action.widths })
     case "replace":
-      return action.definition
+      return unlessSame(view, action.definition)
   }
+}
+
+/** The view as it was when the one that would replace it is no different. */
+function unlessSame(view: ViewDefinition, next: ViewDefinition) {
+  return canonical(next) === canonical(view) ? view : next
 }
 
 /** The part of a view that decides which cells there are: a query of the module, less the window. */
@@ -184,6 +193,57 @@ export function fitsModule(view: ViewDefinition, module: Pick<ModuleDto, "axes">
   const wanted = ["line_items", ...module.axes.map((axis) => dimKey(dimOfAxis(axis)))]
   const keys = placed.map(dimKey)
   return keys.length === wanted.length && wanted.every((key) => keys.filter((k) => k === key).length === 1)
+}
+
+/** The ids a view can name: the members that are ids (list items, versions), and the line items of the module. */
+export interface KnownKeys {
+  members: ReadonlySet<string>
+  lineItems: ReadonlySet<string>
+}
+
+export function knownKeys(structure: StructureDto, moduleId: string): KnownKeys {
+  return {
+    members: new Set([
+      ...structure.lists.flatMap((list) => list.items.map((item) => item.id)),
+      ...structure.versions.map((version) => version.id),
+    ]),
+    lineItems: new Set(
+      structure.line_items.filter((item) => item.module === moduleId).map((item) => item.id),
+    ),
+  }
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * Whether a view that was changed or kept earlier is still a view of the module as it is now: it
+ * has each dimension once (`fitsModule`), and no member that is an id, nor a line item, that was
+ * deleted since. A period or the top of a list is named by a label and is not judged. A view that
+ * does not fit would be refused by the server, so it is given up.
+ */
+export function stillFits(
+  view: ViewDefinition,
+  module: Pick<ModuleDto, "axes">,
+  known: KnownKeys,
+): boolean {
+  if (!fitsModule(view, module)) {
+    return false
+  }
+  const deleted = (key: string) => UUID.test(key) && !known.members.has(key)
+  const members = [
+    ...(view.hidden ?? []),
+    ...(view.collapsed ?? []),
+    ...(view.pages ?? []).flatMap((page) => (page.key == null ? [] : [{ key: page.key }])),
+  ]
+  const lineItems = [
+    ...(view.line_items ?? []),
+    ...(view.filters ?? []).map((filter) => filter.line_item),
+    ...(view.conditional_formats ?? []).flatMap((format) => format.line_item_ids),
+  ]
+  return (
+    !members.some(({ key }) => deleted(key) && !known.lineItems.has(key)) &&
+    lineItems.every((id) => known.lineItems.has(id))
+  )
 }
 
 // What two views are compared by: the same view whether a field is absent, null or empty, and
