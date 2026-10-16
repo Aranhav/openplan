@@ -76,7 +76,13 @@ error_lines() {
 
 failure_lines() {
   case $1 in
-    cargo-test | cargo-build | clippy) grep -E '^---- .* stdout ----$|panicked at|^error(\[|:)' <<<"$cleaned" ;;
+    cargo-test | cargo-build | clippy)
+      # A panic line also prints the up to 3 lines after it, which hold the assertion text.
+      awk '
+        /panicked at/ { print; left = 3; next }
+        left > 0 { if (NF == 0) left = 0; else { print; left-- }; next }
+        /^---- .* stdout ----$|^error(\[|:)/ { print }
+      ' <<<"$cleaned" ;;
     vitest) grep -E '(^|[[:space:]])FAIL([[:space:]]|$)|AssertionError|Error:' <<<"$cleaned" ;;
     playwright) grep -E '✘|Error:' <<<"$cleaned" ;;
     tsc | eslint) error_lines "$1" ;;
