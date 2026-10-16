@@ -205,9 +205,14 @@ describe("a list without properties", () => {
     const { store } = openProperties({ structure: without() })
     const content = await page()
     await typist.click(await content.findByRole("button", { name: "Add property" }))
-    const dialog = within(await screen.findByRole("dialog", { name: "Add line item" }))
+    const dialog = within(await screen.findByRole("dialog", { name: "Add property" }))
+    expect(
+      dialog.getByText(
+        "Name it and choose what it holds. Each item of Regions gets a value for it.",
+      ),
+    ).toBeVisible()
     await typist.type(dialog.getByRole("textbox", { name: "Name" }), "Currency")
-    await typist.click(dialog.getByRole("button", { name: "Add line item" }))
+    await typist.click(dialog.getByRole("button", { name: "Add property" }))
 
     expect(await content.findByRole("grid", { name: "Regions properties grid" })).toBeVisible()
     expect(store.writes).toHaveLength(1)
@@ -216,7 +221,7 @@ describe("a list without properties", () => {
       path: `modules/${regionsList}/line-items`,
       body: { name: "Currency" },
     })
-    expect(toast.success).toHaveBeenCalledWith("Line item added")
+    expect(toast.success).toHaveBeenCalledWith("Property added")
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
   })
 

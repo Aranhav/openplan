@@ -101,6 +101,12 @@ export function PropertiesTab({ modelId, list, structure, canEdit, locked }: Pro
           open={adding}
           onOpenChange={setAdding}
           onCloseAutoFocus={restoreFocus}
+          copy={{
+            title: "Add property",
+            description: `Name it and choose what it holds. Each item of ${list.name} gets a value for it.`,
+            submit: "Add property",
+            added: "Property added",
+          }}
         />
       )}
     </div>

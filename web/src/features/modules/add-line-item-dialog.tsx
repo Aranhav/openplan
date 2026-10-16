@@ -74,6 +74,21 @@ interface AddLineItemDialogProps {
   onAdded?: (lineItem: LineItemDto) => void
   /** Called as the dialog closes; preventing the event stops focus returning to where it was. */
   onCloseAutoFocus?: (event: Event) => void
+  /**
+   * The words of the dialog, which say "line item" unless the caller calls the thing another name,
+   * such as a property of a list.
+   */
+  copy?: Partial<AddLineItemCopy>
+}
+
+export interface AddLineItemCopy {
+  title: string
+  /** Under the title; without it, where the line item goes. */
+  description: string
+  /** The button that adds it. */
+  submit: string
+  /** The toast that follows. */
+  added: string
 }
 
 export function AddLineItemDialog({
@@ -86,6 +101,7 @@ export function AddLineItemDialog({
   onOpenChange,
   onAdded,
   onCloseAutoFocus,
+  copy,
 }: AddLineItemDialogProps) {
   const createLineItem = useCreateLineItem(modelId)
   const reorder = useReorderLineItems(modelId)
@@ -96,16 +112,18 @@ export function AddLineItemDialog({
     <Dialog open={open} onOpenChange={closeUnlessBusy(pending, onOpenChange)}>
       <DialogContent onCloseAutoFocus={onCloseAutoFocus} showCloseButton={!pending}>
         <DialogHeader>
-          <DialogTitle>Add line item</DialogTitle>
+          <DialogTitle>{copy?.title ?? "Add line item"}</DialogTitle>
           <DialogDescription>
-            {below
-              ? `Name it and choose what it holds. It goes below ${below.name}.`
-              : "Name it and choose what it holds. It goes at the end."}
+            {copy?.description ??
+              (below
+                ? `Name it and choose what it holds. It goes below ${below.name}.`
+                : "Name it and choose what it holds. It goes at the end.")}
           </DialogDescription>
         </DialogHeader>
         <AddLineItemForm
           structure={structure}
           pending={pending}
+          submit={copy?.submit ?? "Add line item"}
           onAdd={async (values) => {
             const created = await createLineItem.mutateAsync({
               moduleId,
@@ -131,7 +149,7 @@ export function AddLineItemDialog({
             return created
           }}
           onAdded={(lineItem) => {
-            toast.success("Line item added")
+            toast.success(copy?.added ?? "Line item added")
             onOpenChange(false)
             onAdded?.(lineItem)
           }}
@@ -145,13 +163,22 @@ export function AddLineItemDialog({
 interface AddLineItemFormProps {
   structure: StructureDto
   pending: boolean
+  /** The words of the button that adds. */
+  submit: string
   onAdd: (values: AddLineItemValues) => Promise<LineItemDto>
   onAdded: (lineItem: LineItemDto) => void
   onCancel: () => void
 }
 
 // A separate component, so the form starts empty each time the dialog opens.
-function AddLineItemForm({ structure, pending, onAdd, onAdded, onCancel }: AddLineItemFormProps) {
+function AddLineItemForm({
+  structure,
+  pending,
+  submit,
+  onAdd,
+  onAdded,
+  onCancel,
+}: AddLineItemFormProps) {
   const form = useForm<AddLineItemValues>({
     resolver: zodResolver(schema),
     defaultValues: { name: "", format_type: "number", list: "", period_level: "month" },
@@ -275,7 +302,7 @@ function AddLineItemForm({ structure, pending, onAdd, onAdded, onCancel }: AddLi
           </Button>
           <Button type="submit" disabled={pending}>
             {pending && <Loader2 className="animate-spin" />}
-            Add line item
+            {submit}
           </Button>
         </DialogFooter>
       </form>

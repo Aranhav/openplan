@@ -118,7 +118,7 @@ describe("the properties of a list", () => {
 
     expect(await violations()).toEqual([])
     await typist.click(screen.getByRole("button", { name: "Add property" }))
-    await screen.findByRole("dialog", { name: "Add line item" })
+    await screen.findByRole("dialog", { name: "Add property" })
 
     expect(await violations()).toEqual([])
   })

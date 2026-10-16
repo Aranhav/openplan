@@ -299,11 +299,11 @@ test("the properties of a list are values for its items in a grid", async ({ pag
   })
 
   await page.getByRole("button", { name: "Add property" }).click()
-  const dialog = page.getByRole("dialog", { name: "Add line item" })
+  const dialog = page.getByRole("dialog", { name: "Add property" })
   await dialog.getByLabel("Name").fill("Currency")
   await dialog.getByRole("combobox", { name: "Format type" }).click()
   await page.getByRole("option", { name: "Text" }).click()
-  await dialog.getByRole("button", { name: "Add line item" }).click()
+  await dialog.getByRole("button", { name: "Add property" }).click()
   const grid = page.getByRole("grid", { name: "Regions properties grid" })
   await expect(grid).toBeVisible()
   await expect(grid.getByRole("columnheader", { name: "Currency" })).toBeVisible()
