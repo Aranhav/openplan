@@ -41,12 +41,13 @@ import {
   dimsLabel,
   formatLabel,
   summaryLabel,
+  timeLevelLabel,
   timeScaleLabel,
   versionsLabel,
 } from "@/features/structure/labels"
-import type { LineItemDto, StructureDto } from "@/features/structure/types"
+import type { LineItemDto, ModuleDto, StructureDto } from "@/features/structure/types"
 import { cn } from "@/lib/utils"
-import { FormulaCell, Inherited } from "./line-item-cells"
+import { FormulaCell, Inherited, Truncated } from "./line-item-cells"
 
 /** The dragged row follows the pointer up and down, not sideways. */
 const verticalOnly: Modifier = ({ transform }) => ({ ...transform, x: 0 })
@@ -56,6 +57,7 @@ const SORT_INSTRUCTIONS =
 
 interface BlueprintTableProps {
   lineItems: LineItemDto[]
+  module: ModuleDto
   structure: StructureDto
   /** What is wrong with the formulas, by line item. */
   errors: ReadonlyMap<string, FormulaError[]>
@@ -83,6 +85,7 @@ interface BlueprintTableProps {
  */
 export function BlueprintTable({
   lineItems,
+  module,
   structure,
   errors,
   selectedId,
@@ -97,6 +100,7 @@ export function BlueprintTable({
   tableRef,
 }: BlueprintTableProps) {
   const gridId = useId()
+  const inherited = inheritedValues(module, structure)
   const rowId = (id: string) => `${gridId}-${id}`
   const ids = lineItems.map((item) => item.id)
   const selectedIndex = selectedId === undefined ? -1 : ids.indexOf(selectedId)
@@ -198,34 +202,35 @@ export function BlueprintTable({
             role="grid"
             aria-label="Line items"
             aria-describedby={hintId}
+            aria-busy={busy || undefined}
             aria-activedescendant={selectedIndex < 0 ? undefined : rowId(ids[selectedIndex])}
             tabIndex={0}
             onKeyDown={onKeyDown}
-            className="min-w-max outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring"
+            className="min-w-[960px] table-fixed outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring"
           >
             <TableHeader>
-              <TableRow className="hover:bg-background">
+              <TableRow className="hover:bg-background [&>th]:h-9">
                 {canEdit && (
-                  <TableHead className="sticky left-0 z-[2] w-9 bg-background px-0">
+                  <TableHead className="sticky left-0 z-[2] w-8 bg-background px-0">
                     <span className="sr-only">Reorder</span>
                   </TableHead>
                 )}
                 <TableHead
                   className={cn(
-                    "sticky z-[2] min-w-44 bg-background",
-                    canEdit ? "left-9" : "left-0 pl-4",
+                    "sticky z-[2] w-36 bg-background",
+                    canEdit ? "left-8" : "left-0 w-40 pl-4",
                   )}
                 >
                   Name
                 </TableHead>
-                <TableHead className="min-w-32">Format</TableHead>
-                <TableHead className="min-w-60">Formula</TableHead>
-                <TableHead className="min-w-36">Applies to</TableHead>
-                <TableHead className="min-w-28">Time scale</TableHead>
-                <TableHead className="min-w-28">Versions</TableHead>
-                <TableHead className="min-w-24">Summary</TableHead>
-                <TableHead className="min-w-40">Notes</TableHead>
-                <TableHead className="sticky right-0 z-[2] w-12 bg-background px-1 shadow-[inset_1px_0_0_0_var(--border)]">
+                <TableHead className="w-32">Format</TableHead>
+                <TableHead>Formula</TableHead>
+                <TableHead className="w-24">Applies to</TableHead>
+                <TableHead className="w-20">Time scale</TableHead>
+                <TableHead className="w-26">Versions</TableHead>
+                <TableHead className="w-20">Summary</TableHead>
+                <TableHead className="w-20">Notes</TableHead>
+                <TableHead className="sticky right-0 z-[2] w-10 bg-background px-1 shadow-[inset_1px_0_0_0_var(--border)]">
                   <span className="sr-only">Actions</span>
                 </TableHead>
               </TableRow>
@@ -237,6 +242,7 @@ export function BlueprintTable({
                   id={rowId(item.id)}
                   item={item}
                   structure={structure}
+                  inherited={inherited}
                   errors={errors.get(item.id) ?? NO_ERRORS}
                   first={index === 0}
                   last={index === lineItems.length - 1}
@@ -263,20 +269,43 @@ export function BlueprintTable({
 
 const NO_ERRORS: FormulaError[] = []
 
-/** What assistive technology reads out as the arrow keys reach a row, in place of every cell of it. */
+/**
+ * What assistive technology reads out as the arrow keys reach a row, in place of every cell of it.
+ * A formula with errors says what is wrong, since the icon's tooltip is for the pointer.
+ */
 function rowLabel(item: LineItemDto, structure: StructureDto, errors: FormulaError[]) {
   return [
     item.name,
     formatLabel(item.format, structure),
     item.formula ? "calculated" : "input",
-    ...(errors.length > 0 ? ["formula has errors"] : []),
+    ...(errors.length > 0 ? [`formula has errors: ${errors[0].message}`] : []),
   ].join(", ")
+}
+
+/** What a line item that sets nothing of its own has, from its module. */
+interface Inheritance {
+  appliesTo: string
+  timeScale: string
+  versions: string
+}
+
+function inheritedValues(module: ModuleDto, structure: StructureDto): Inheritance {
+  const time = module.axes.find((axis) => axis.kind === "time")
+  return {
+    appliesTo: dimsLabel(
+      module.axes.filter((axis) => axis.kind === "list" || axis.kind === "subset"),
+      structure,
+    ),
+    timeScale: time ? timeLevelLabel(time.level) : "None",
+    versions: module.axes.some((axis) => axis.kind === "versions") ? "All versions" : "None",
+  }
 }
 
 interface BlueprintRowProps {
   id: string
   item: LineItemDto
   structure: StructureDto
+  inherited: Inheritance
   errors: FormulaError[]
   first: boolean
   last: boolean
@@ -294,6 +323,7 @@ function BlueprintRow({
   id,
   item,
   structure,
+  inherited,
   errors,
   first,
   last,
@@ -328,14 +358,14 @@ function BlueprintRow({
       data-state={selected ? "selected" : undefined}
       style={{ transform: CSS.Translate.toString(transform), transition }}
       className={cn(
-        "scroll-mt-20 bg-background hover:bg-[color-mix(in_oklab,var(--muted)_50%,var(--background))] data-[state=selected]:bg-muted data-[state=selected]:[&>td:first-child]:shadow-[inset_2px_0_0_0_var(--primary)]",
+        "scroll-mt-20 bg-background [&>td]:py-1 hover:bg-[color-mix(in_oklab,var(--muted)_50%,var(--background))] data-[state=selected]:bg-muted data-[state=selected]:[&>td:first-child]:shadow-[inset_2px_0_0_0_var(--primary)]",
         isDragging && "relative z-10 bg-muted shadow-md",
       )}
       onClick={() => onSelect(item.id)}
       onDoubleClick={() => onOpenSettings(item.id)}
     >
       {canEdit && (
-        <TableCell className="sticky left-0 z-[1] w-9 bg-inherit px-0 text-center">
+        <TableCell className="sticky left-0 z-[1] bg-inherit px-0 text-center">
           <ProductionLock locked={locked}>
             <Button
               ref={setActivatorNodeRef}
@@ -347,50 +377,58 @@ function BlueprintRow({
               tabIndex={tabIndex}
               aria-label={`Reorder ${item.name}`}
               disabled={frozen}
-              className="cursor-grab touch-none text-muted-foreground active:cursor-grabbing"
+              className="cursor-grab touch-none text-muted-foreground hover:text-foreground active:cursor-grabbing"
             >
-              <GripVertical />
+              <GripVertical className="size-4" />
             </Button>
           </ProductionLock>
         </TableCell>
       )}
       <TableCell
-        className={cn("sticky z-[1] bg-inherit font-medium", canEdit ? "left-9" : "left-0 pl-4")}
+        className={cn(
+          "sticky z-[1] truncate bg-inherit font-medium",
+          canEdit ? "left-8" : "left-0 pl-4",
+        )}
       >
-        <span className="block max-w-56 truncate" title={item.name}>
-          {item.name}
-        </span>
+        <Truncated>{item.name}</Truncated>
       </TableCell>
-      <TableCell>{formatLabel(item.format, structure)}</TableCell>
-      <TableCell className="max-w-96">
-        <FormulaCell formula={item.formula} errors={errors} />
+      <TableCell className="truncate">
+        <Truncated>{formatLabel(item.format, structure)}</Truncated>
       </TableCell>
-      <TableCell>
+      <TableCell className="truncate">
+        <FormulaCell
+          formula={item.formula}
+          errors={errors}
+          tabIndex={tabIndex}
+          onOpen={() => onOpenSettings(item.id)}
+        />
+      </TableCell>
+      <TableCell className="truncate">
         {item.applies_to ? (
-          dimsLabel(item.applies_to, structure)
+          <Truncated>{dimsLabel(item.applies_to, structure)}</Truncated>
         ) : (
-          <Inherited>Module default</Inherited>
+          <Inherited>{inherited.appliesTo}</Inherited>
         )}
       </TableCell>
-      <TableCell>
+      <TableCell className="truncate">
         {item.time_scale === "module" ? (
-          <Inherited>Module default</Inherited>
+          <Inherited>{inherited.timeScale}</Inherited>
         ) : (
-          timeScaleLabel(item.time_scale)
+          <Truncated>{timeScaleLabel(item.time_scale)}</Truncated>
         )}
       </TableCell>
-      <TableCell>
+      <TableCell className="truncate">
         {item.versions === "module" ? (
-          <Inherited>Module default</Inherited>
+          <Inherited>{inherited.versions}</Inherited>
         ) : (
-          versionsLabel(item.versions, structure)
+          <Truncated>{versionsLabel(item.versions, structure)}</Truncated>
         )}
       </TableCell>
-      <TableCell>{summaryLabel(item.summary)}</TableCell>
-      <TableCell className="max-w-64">
-        <span className="block truncate text-muted-foreground" title={item.notes || undefined}>
-          {item.notes}
-        </span>
+      <TableCell className="truncate">
+        <Truncated>{summaryLabel(item.summary)}</Truncated>
+      </TableCell>
+      <TableCell className="truncate text-muted-foreground">
+        <Truncated>{item.notes}</Truncated>
       </TableCell>
       <TableCell className="sticky right-0 z-[1] bg-inherit px-1 text-right shadow-[inset_1px_0_0_0_var(--border)]">
         <DropdownMenu>
@@ -399,6 +437,7 @@ function BlueprintRow({
               type="button"
               variant="ghost"
               size="icon-sm"
+              className="size-7"
               tabIndex={tabIndex}
               aria-label={`Actions for ${item.name}`}
             >

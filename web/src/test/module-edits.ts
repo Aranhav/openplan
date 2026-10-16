@@ -15,6 +15,8 @@ export interface ModuleStore {
   formulaErrors: Record<string, FormulaError[]>
   /** The problems the server finds in a formula it is asked to save; none accepts it. */
   checkFormula: (formula: string) => FormulaError[]
+  /** Makes every change wait, for a test to look at the page while one is being saved; call the result to let them through. */
+  hold: () => () => void
 }
 
 let counter = 0
@@ -38,7 +40,18 @@ export function serveModuleStore(structure: StructureDto): ModuleStore {
     requests: [],
     formulaErrors: {},
     checkFormula: () => [],
+    hold: () => {
+      let release!: () => void
+      gate = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      return () => {
+        gate = undefined
+        release()
+      }
+    },
   }
+  let gate: Promise<void> | undefined
   const lineItem = (id: unknown) => store.structure.line_items.find((item) => item.id === id)
   const change = (patch: Partial<StructureDto>) => {
     store.structure = { ...store.structure, ...patch }
@@ -49,6 +62,7 @@ export function serveModuleStore(structure: StructureDto): ModuleStore {
   server.use(
     http.get("/api/v1/models/:id/structure", () => HttpResponse.json(store.structure)),
     http.post("/api/v1/models/:id/modules", async ({ request }) => {
+      await gate
       const body = (await request.json()) as Schemas["CreateModuleRequest"]
       store.requests.push({ action: "create module", body })
       if (store.structure.modules.some((module) => module.name === body.name)) {
@@ -64,6 +78,7 @@ export function serveModuleStore(structure: StructureDto): ModuleStore {
       return HttpResponse.json(module, { status: 201 })
     }),
     http.patch("/api/v1/models/:id/modules/:moduleId", async ({ params, request }) => {
+      await gate
       const body = (await request.json()) as Schemas["UpdateModuleRequest"]
       store.requests.push({ action: "update module", id: String(params.moduleId), body })
       const module = store.structure.modules.find((candidate) => candidate.id === params.moduleId)
@@ -89,7 +104,8 @@ export function serveModuleStore(structure: StructureDto): ModuleStore {
       })
       return HttpResponse.json(updated)
     }),
-    http.delete("/api/v1/models/:id/modules/:moduleId", ({ params }) => {
+    http.delete("/api/v1/models/:id/modules/:moduleId", async ({ params }) => {
+      await gate
       store.requests.push({ action: "delete module", id: String(params.moduleId) })
       change({
         modules: store.structure.modules.filter((module) => module.id !== params.moduleId),
@@ -98,6 +114,7 @@ export function serveModuleStore(structure: StructureDto): ModuleStore {
       return new HttpResponse(null, { status: 204 })
     }),
     http.post("/api/v1/models/:id/modules/:moduleId/line-items", async ({ params, request }) => {
+      await gate
       const body = (await request.json()) as Schemas["CreateLineItemRequest"]
       store.requests.push({ action: "create line item", id: String(params.moduleId), body })
       const siblings = lineItemsOf(String(params.moduleId))
@@ -125,6 +142,7 @@ export function serveModuleStore(structure: StructureDto): ModuleStore {
       return HttpResponse.json(created, { status: 201 })
     }),
     http.patch("/api/v1/models/:id/line-items/:lineItemId", async ({ params, request }) => {
+      await gate
       const body = (await request.json()) as Schemas["UpdateLineItemRequest"]
       store.requests.push({ action: "update line item", id: String(params.lineItemId), body })
       const current = lineItem(params.lineItemId)
@@ -178,7 +196,8 @@ export function serveModuleStore(structure: StructureDto): ModuleStore {
       })
       return HttpResponse.json(updated)
     }),
-    http.delete("/api/v1/models/:id/line-items/:lineItemId", ({ params }) => {
+    http.delete("/api/v1/models/:id/line-items/:lineItemId", async ({ params }) => {
+      await gate
       store.requests.push({ action: "delete line item", id: String(params.lineItemId) })
       change({
         line_items: store.structure.line_items.filter((item) => item.id !== params.lineItemId),
@@ -186,6 +205,7 @@ export function serveModuleStore(structure: StructureDto): ModuleStore {
       return new HttpResponse(null, { status: 204 })
     }),
     http.post("/api/v1/models/:id/line-items/reorder", async ({ request }) => {
+      await gate
       const body = (await request.json()) as Schemas["ReorderLineItemsRequest"]
       store.requests.push({ action: "reorder", id: body.module_id, body })
       change({

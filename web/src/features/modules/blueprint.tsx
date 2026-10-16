@@ -5,6 +5,7 @@ import { DeleteDialog } from "@/components/delete-dialog"
 import { EmptyState } from "@/components/empty-state"
 import { ProductionLock } from "@/components/production-lock"
 import { Button } from "@/components/ui/button"
+import type { FormulaError } from "@/features/grid/view-types"
 import { useDeleteLineItem, useReorderLineItems } from "@/features/structure/api"
 import { lineItemsOf } from "@/features/structure/modules"
 import type { LineItemDto, ModuleDto, StructureDto } from "@/features/structure/types"
@@ -14,6 +15,8 @@ import { AddLineItemDialog } from "./add-line-item-dialog"
 import { BlueprintTable } from "./blueprint-table"
 import { LineItemSheet } from "./line-item-sheet"
 import { useLineItemErrors } from "./use-line-item-errors"
+
+const NO_ERRORS: FormulaError[] = []
 
 interface BlueprintProps {
   modelId: string
@@ -41,7 +44,7 @@ export function Blueprint({
 }: BlueprintProps) {
   const hintId = useId()
   const saved = lineItemsOf(structure, module.id)
-  const errors = useLineItemErrors(modelId, module)
+  const errors = useLineItemErrors(modelId, module, saved.length > 0)
   const reorder = useReorderLineItems(modelId)
   const deleteLineItem = useDeleteLineItem(modelId)
   // The order being saved, shown at once so that a dropped row does not jump back meanwhile.
@@ -129,6 +132,7 @@ export function Blueprint({
           </div>
           <BlueprintTable
             lineItems={lineItems}
+            module={module}
             structure={structure}
             errors={errors}
             selectedId={selected?.id}
@@ -163,6 +167,7 @@ export function Blueprint({
           structure={structure}
           module={module}
           lineItem={settingsItem}
+          errors={errors.get(settingsItem.id) ?? NO_ERRORS}
           open={settingsOpen}
           onOpenChange={setSettingsOpen}
           canEdit={canEdit}

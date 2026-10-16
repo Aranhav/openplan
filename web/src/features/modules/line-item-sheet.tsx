@@ -1,6 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { Loader2 } from "lucide-react"
-import { type ReactNode, useRef, useState } from "react"
+import { type ReactNode, type RefObject, useRef, useState } from "react"
 import { useForm } from "react-hook-form"
 import { toast } from "sonner"
 import { ProductionLock, ProductionNotice } from "@/components/production-lock"
@@ -28,11 +28,12 @@ import { Textarea } from "@/components/ui/textarea"
 import { useUpdateLineItem } from "@/features/structure/api"
 import { lineItemsOf } from "@/features/structure/modules"
 import type { LineItemDto, ModuleDto, StructureDto } from "@/features/structure/types"
-import { useRestoreFocus } from "@/hooks/use-restore-focus"
-import { ApiError, type FormulaProblem } from "@/lib/api/client"
+import type { FormulaError } from "@/features/grid/view-types"
+import { ApiError } from "@/lib/api/client"
 import { closeUnlessBusy } from "@/lib/close-unless-busy"
 import { NAME_TAKEN_FIELD_ERRORS, reportFormError } from "@/lib/form-errors"
 import { ClearValuesDialog } from "./clear-values-dialog"
+import { DiscardChangesDialog } from "./discard-changes-dialog"
 import { FormulaField } from "./formula-field"
 import { formulaIndex } from "./formula-text"
 import {
@@ -45,12 +46,16 @@ import {
 import { LineItemFormatFields } from "./line-item-format-fields"
 import { LineItemScopeFields } from "./line-item-scope-fields"
 import { LineItemSummaryFields } from "./line-item-summary-fields"
+import { focusFirstField } from "./sheet-focus"
+import { useSheetForm } from "./use-sheet-form"
 
 interface LineItemSheetProps {
   modelId: string
   structure: StructureDto
   module: ModuleDto
   lineItem: LineItemDto
+  /** What is wrong with its formula as the model last read it, listed when the sheet opens. */
+  errors: FormulaError[]
   open: boolean
   onOpenChange: (open: boolean) => void
   /** Whether the user may change the line item; if not, the settings are shown as they are. */
@@ -67,6 +72,7 @@ export function LineItemSheet({
   structure,
   module,
   lineItem,
+  errors,
   open,
   onOpenChange,
   canEdit,
@@ -74,32 +80,59 @@ export function LineItemSheet({
   onCloseAutoFocus,
 }: LineItemSheetProps) {
   const update = useUpdateLineItem(modelId)
+  // Whether the form has edits that dismissing the sheet would lose; the form says.
+  const dirty = useRef(false)
+  const [discarding, setDiscarding] = useState(false)
+
+  // Escape, a click outside and the close button end up here; the Cancel button does not ask.
+  function dismiss(next: boolean) {
+    if (!next && dirty.current) {
+      setDiscarding(true)
+    } else {
+      onOpenChange(next)
+    }
+  }
+
   return (
-    <Sheet open={open} onOpenChange={closeUnlessBusy(update.isPending, onOpenChange)}>
-      <SheetContent
-        onCloseAutoFocus={onCloseAutoFocus}
-        showCloseButton={!update.isPending}
-        className="w-full gap-0 sm:max-w-xl"
-      >
-        <SheetHeader className="border-b pr-12">
-          <SheetTitle>Line item settings</SheetTitle>
-          <SheetDescription>
-            <span className="font-medium text-foreground">{lineItem.name}</span> in {module.name}.
-            {!canEdit && " Only workspace builders and admins can change it."}
-          </SheetDescription>
-        </SheetHeader>
-        <LineItemForm
-          key={lineItem.id}
-          update={update}
-          structure={structure}
-          module={module}
-          lineItem={lineItem}
-          canEdit={canEdit}
-          locked={locked}
-          onClose={() => onOpenChange(false)}
-        />
-      </SheetContent>
-    </Sheet>
+    <>
+      <Sheet open={open} onOpenChange={(next) => closeUnlessBusy(update.isPending, dismiss)(next)}>
+        <SheetContent
+          onOpenAutoFocus={focusFirstField}
+          onCloseAutoFocus={onCloseAutoFocus}
+          showCloseButton={!update.isPending}
+          className="w-full gap-0 sm:max-w-xl"
+        >
+          <SheetHeader className="border-b pr-12">
+            <SheetTitle>Line item settings</SheetTitle>
+            <SheetDescription>
+              <span className="font-medium text-foreground">{lineItem.name}</span> in {module.name}.
+              {!canEdit && " Only workspace builders and admins can change it."}
+            </SheetDescription>
+          </SheetHeader>
+          <LineItemForm
+            key={lineItem.id}
+            update={update}
+            structure={structure}
+            module={module}
+            lineItem={lineItem}
+            errors={errors}
+            canEdit={canEdit}
+            locked={locked}
+            dirty={dirty}
+            onClose={() => onOpenChange(false)}
+          />
+        </SheetContent>
+      </Sheet>
+      <DiscardChangesDialog
+        open={discarding}
+        description="Your changes to this line item have not been saved."
+        onOpenChange={setDiscarding}
+        onDiscard={() => {
+          setDiscarding(false)
+          onOpenChange(false)
+        }}
+      />
+    </>
   )
 }
 
@@ -108,8 +141,10 @@ interface LineItemFormProps {
   structure: StructureDto
   module: ModuleDto
   lineItem: LineItemDto
+  errors: FormulaError[]
   canEdit: boolean
   locked: boolean
+  dirty: RefObject<boolean>
   onClose: () => void
 }
 
@@ -118,8 +153,10 @@ function LineItemForm({
   structure,
   module,
   lineItem,
+  errors,
   canEdit,
   locked,
+  dirty,
   onClose,
 }: LineItemFormProps) {
   // The form follows the structure: a field nobody has touched takes the latest saved value (a
@@ -129,13 +166,14 @@ function LineItemForm({
     values: lineItemValues(lineItem, module),
     resetOptions: { keepDirtyValues: true },
   })
-  const [problems, setProblems] = useState<FormulaProblem[]>([])
+  // What the server refused the formula for when it was last saved; until then, and when the
+  // formula is edited, what the model says of the saved one.
+  const [refused, setRefused] = useState<FormulaError[]>()
+  const problems = refused ?? errors
   // The values waiting for a yes to clearing the line item's input values.
   const [confirming, setConfirming] = useState<LineItemValues>()
-  const { ref: saveRef, onCloseAutoFocus: restoreFocus } = useRestoreFocus<HTMLButtonElement>()
+  const { saveRef, markSaved, afterConfirmation } = useSheetForm(form, dirty)
   const formula = useRef<HTMLTextAreaElement | null>(null)
-  // Set once the line item is saved, when the sheet closing takes focus where it belongs.
-  const saved = useRef(false)
   const disabled = !canEdit || locked
 
   const ratioParts = lineItemsOf(structure, module.id).filter(
@@ -149,7 +187,7 @@ function LineItemForm({
         await update.mutateAsync({ lineItemId: lineItem.id, body: patch })
         toast.success("Line item saved")
       }
-      saved.current = true
+      markSaved()
       onClose()
     } catch (error) {
       if (error instanceof ApiError && error.formulaErrors.length > 0) {
@@ -164,7 +202,7 @@ function LineItemForm({
 
   // Lists everything the server found, and selects the first problem in the formula.
   function showProblems(error: ApiError, text: string) {
-    setProblems(error.formulaErrors)
+    setRefused(error.formulaErrors)
     form.setError("formula", { type: "server", message: error.detail })
     const [first] = error.formulaErrors
     formula.current?.focus()
@@ -179,22 +217,6 @@ function LineItemForm({
       setConfirming(values)
     } else {
       await save(values)
-    }
-  }
-
-  // Back to the save button, or if the server refused a field to that field, which is on screen
-  // again once the dialog is gone.
-  function afterDialog(event: Event) {
-    if (saved.current) {
-      event.preventDefault()
-      return
-    }
-    const refused = Object.keys(form.formState.errors)[0] as keyof LineItemValues | undefined
-    if (refused) {
-      event.preventDefault()
-      form.setFocus(refused)
-    } else {
-      restoreFocus(event)
     }
   }
 
@@ -245,7 +267,8 @@ function LineItemForm({
             <FormulaField
               form={form}
               problems={problems}
-              onEdit={() => setProblems([])}
+              refused={refused !== undefined}
+              onEdit={() => setRefused([])}
               readOnly={disabled}
               textareaRef={formula}
             />
@@ -311,7 +334,7 @@ function LineItemForm({
         pending={update.isPending}
         onConfirm={() => confirming && void save(confirming)}
         onOpenChange={(next) => !next && setConfirming(undefined)}
-        onCloseAutoFocus={afterDialog}
+        onCloseAutoFocus={afterConfirmation}
       />
     </Form>
   )

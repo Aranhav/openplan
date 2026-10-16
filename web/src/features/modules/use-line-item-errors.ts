@@ -18,10 +18,12 @@ function errorsByLineItem(result: QueryResult) {
 /**
  * What is wrong with the formula of each line item of a module, by line item. The structure holds
  * the formulas as they were written; it takes the model to say which of them it can still read,
- * and a query lists that for every line item of the module whatever window it asks for.
+ * and a query lists that for every line item of the module whatever window it asks for. A module
+ * with no line items has nothing to ask about (`enabled`).
  */
-export function useLineItemErrors(modelId: string, module: ModuleDto) {
+export function useLineItemErrors(modelId: string, module: ModuleDto, enabled: boolean) {
   const { data } = useQuery({
+    enabled,
     // Under the key of every query of the model, so that a change to the structure reads it again.
     queryKey: queryKeys.query(modelId, "line-item-errors", module.id),
     queryFn: ({ signal }) =>

@@ -10,14 +10,13 @@ import { serveModuleStore } from "@/test/module-edits"
 import { problem } from "@/test/problem"
 import { server } from "@/test/server"
 import {
-  actualId,
-  forecastId,
   makeLineItem,
   makeStructure,
   productsId,
-  regionsId,
   revenueAmount,
+  revenueMargin,
   revenueModule,
+  revenuePlan,
   structure,
   unitsSold,
 } from "@/test/structure"
@@ -31,33 +30,9 @@ const model = makeModel({ name: "Revenue plan" })
 const PRODUCTION_MESSAGE =
   "This model is in production mode. Structural changes arrive through ALM sync."
 
-const margin = makeLineItem({
-  id: "0192f3a0-0000-7000-8000-000000000404",
-  module: revenueModule.id,
-  name: "Margin",
-  ordinal: 2,
-  notes: "Before tax",
-  format: {
-    type: "number",
-    decimals: 1,
-    thousands_sep: true,
-    unit: { type: "percent" },
-    negative: "minus",
-  },
-  summary: { method: "average" },
-  time_scale: { level: "year" },
-  versions: { only: [forecastId] },
-  applies_to: [{ kind: "list", list: regionsId }],
-})
-const lineItems = [unitsSold, revenueAmount, margin]
-const withLineItems = makeStructure({
-  ...structure,
-  versions: [
-    { id: actualId, name: "Actual", is_actual: true, is_current: false },
-    { id: forecastId, name: "Forecast", is_actual: false, is_current: true },
-  ],
-  line_items: lineItems,
-})
+const margin = revenueMargin
+const withLineItems = revenuePlan
+
 const blueprintPath = `/m/${model.id}/modules/${revenueModule.id}?tab=blueprint`
 
 type Typist = ReturnType<typeof userEvent.setup>
@@ -96,6 +71,11 @@ function names(table: HTMLElement) {
     .getAllByRole("row")
     .slice(1)
     .map((row) => row.querySelector("[title]")?.getAttribute("title"))
+}
+
+/** Whether a button shows the spinner that says its request is running. */
+function spinning(button: HTMLElement) {
+  return button.querySelector("svg.animate-spin") !== null
 }
 
 async function openRowMenu(typist: Typist, table: HTMLElement, name: string) {
@@ -148,9 +128,9 @@ describe("the line items", () => {
       "Units sold",
       "Number",
       "Input",
-      "Module default",
-      "Module default",
-      "Module default",
+      "Regions, Products (from the module)",
+      "Month (from the module)",
+      "All versions (from the module)",
       "Sum",
       "",
     ])
@@ -158,9 +138,9 @@ describe("the line items", () => {
       "Revenue amount",
       "Currency (USD)",
       "Units sold * Pricing.Unit price",
-      "Module default",
-      "Module default",
-      "Module default",
+      "Regions, Products (from the module)",
+      "Month (from the module)",
+      "All versions (from the module)",
       "Sum",
       "",
     ])
@@ -176,10 +156,44 @@ describe("the line items", () => {
     ])
   })
 
-  it("marks a formula that has errors with an icon that says what is wrong", async () => {
+  it("shows what a line item gets from its module in muted text, and says where it is from", async () => {
     const typist = userEvent.setup()
-    const { store } = openBlueprint()
-    store.formulaErrors[revenueAmount.id] = [
+    openBlueprint()
+    const table = await findTable()
+
+    const inherited = within(rowNamed(table, "Units sold")).getByText(/^Month/)
+    expect(inherited).toHaveClass("text-muted-foreground")
+    await typist.hover(inherited)
+
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("From the module")
+    // What the line item sets itself is not muted.
+    expect(within(rowNamed(table, "Margin")).getByText("Year")).not.toHaveClass(
+      "text-muted-foreground",
+    )
+  })
+
+  it("has nothing from the module where the module has no such dimension", async () => {
+    openBlueprint(
+      makeStructure({
+        ...structure,
+        modules: [{ ...revenueModule, axes: [] }],
+        line_items: [unitsSold],
+      }),
+    )
+    const table = await findTable()
+
+    const cells = Array.from(rowNamed(table, "Units sold").querySelectorAll("td")).map(
+      (cell) => cell.textContent,
+    )
+    expect(cells.slice(4, 7)).toEqual([
+      "None (from the module)",
+      "None (from the module)",
+      "None (from the module)",
+    ])
+  })
+
+  describe("a formula that has errors", () => {
+    const errors = [
       {
         code: "formula.unknown_name",
         message: "Unknown name 'Pricing.Unit price'",
@@ -187,16 +201,78 @@ describe("the line items", () => {
         end: 31,
       },
     ]
-    const table = await findTable()
 
-    const icon = await within(rowNamed(table, "Revenue amount")).findByRole("img", {
-      name: "Formula error: Unknown name 'Pricing.Unit price'",
+    it("is marked with an icon that says what is wrong, to a pointer", async () => {
+      const typist = userEvent.setup()
+      const { store } = openBlueprint()
+      store.formulaErrors[revenueAmount.id] = errors
+      const table = await findTable()
+
+      const icon = await within(rowNamed(table, "Revenue amount")).findByRole("button", {
+        name: "Formula error: Unknown name 'Pricing.Unit price'",
+      })
+      expect(
+        within(rowNamed(table, "Units sold")).queryByRole("button", { name: /error/ }),
+      ).toBeNull()
+      await typist.hover(icon)
+      expect(await screen.findByRole("tooltip")).toHaveTextContent(
+        "Unknown name 'Pricing.Unit price'",
+      )
     })
-    expect(within(rowNamed(table, "Units sold")).queryByRole("img")).toBeNull()
-    await typist.hover(icon)
-    expect(await screen.findByRole("tooltip")).toHaveTextContent(
-      "Unknown name 'Pricing.Unit price'",
-    )
+
+    it("says what is wrong in the name of its row, which the arrow keys read out", async () => {
+      const { store } = openBlueprint()
+      store.formulaErrors[revenueAmount.id] = errors
+      const table = await findTable()
+
+      await within(rowNamed(table, "Revenue amount")).findByRole("button", {
+        name: /Formula error/,
+      })
+
+      expect(rowNamed(table, "Revenue amount")).toHaveAccessibleName(
+        "Revenue amount, Currency (USD), calculated, formula has errors: Unknown name 'Pricing.Unit price'",
+      )
+      expect(rowNamed(table, "Units sold")).toHaveAccessibleName("Units sold, Number, input")
+    })
+
+    it("is reached with the Tab key on the selected row, and shows its message there", async () => {
+      const typist = userEvent.setup()
+      const { store } = openBlueprint(withLineItems, {
+        path: `${blueprintPath}&li=${revenueAmount.id}`,
+      })
+      store.formulaErrors[revenueAmount.id] = errors
+      const table = await findTable()
+      const icon = await within(rowNamed(table, "Revenue amount")).findByRole("button", {
+        name: /Formula error/,
+      })
+
+      table.focus()
+      await typist.tab()
+      expect(within(table).getByRole("button", { name: "Reorder Revenue amount" })).toHaveFocus()
+      await typist.tab()
+
+      expect(icon).toHaveFocus()
+      expect(await screen.findByRole("tooltip")).toHaveTextContent(
+        "Unknown name 'Pricing.Unit price'",
+      )
+    })
+
+    it("opens the settings of the line item, where the problems are listed", async () => {
+      const typist = userEvent.setup()
+      const { store } = openBlueprint()
+      store.formulaErrors[revenueAmount.id] = errors
+      const table = await findTable()
+
+      await typist.click(
+        await within(rowNamed(table, "Revenue amount")).findByRole("button", {
+          name: /Formula error/,
+        }),
+      )
+
+      const sheet = within(await screen.findByRole("dialog", { name: "Line item settings" }))
+      expect(sheet.getByLabelText("Name")).toHaveValue("Revenue amount")
+      expect(sheet.getByText("The formula has a problem.")).toBeVisible()
+    })
   })
 
   it("shows the whole formula in a tooltip", async () => {
@@ -525,6 +601,25 @@ describe("adding a line item", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
   })
 
+  it("holds the dialog open and the button busy while the line item is added", async () => {
+    const typist = userEvent.setup()
+    const { store, dialog } = await openDialog(typist)
+    const release = store.hold()
+
+    await typist.type(dialog.getByLabelText("Name"), "Discount")
+    await typist.click(dialog.getByRole("button", { name: "Add line item" }))
+
+    await waitFor(() =>
+      expect(dialog.getByRole("button", { name: "Add line item" })).toBeDisabled(),
+    )
+    expect(spinning(dialog.getByRole("button", { name: "Add line item" }))).toBe(true)
+    expect(dialog.getByRole("button", { name: "Cancel" })).toBeDisabled()
+    await typist.keyboard("{Escape}")
+    expect(screen.getByRole("dialog", { name: "Add line item" })).toBeVisible()
+    release()
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+  })
+
   it("brings focus back to the button that opened the dialog", async () => {
     const typist = userEvent.setup()
     await openDialog(typist)
@@ -596,10 +691,12 @@ describe("reordering", () => {
 
     expect(names(table)).toEqual(["Revenue amount", "Units sold", "Margin"])
     expect(within(table).getByRole("button", { name: "Reorder Margin" })).toBeDisabled()
+    expect(table).toHaveAttribute("aria-busy", "true")
     release()
     await waitFor(() =>
       expect(within(table).getByRole("button", { name: "Reorder Margin" })).toBeEnabled(),
     )
+    expect(table).not.toHaveAttribute("aria-busy")
   })
 
   it("goes back to the saved order when the move is refused", async () => {
@@ -715,6 +812,28 @@ describe("deleting a line item", () => {
     await waitFor(() =>
       expect(router.state.location.search).toMatchObject({ li: revenueAmount.id }),
     )
+  })
+
+  it("holds the confirmation open and the button busy while the line item is deleted", async () => {
+    const typist = userEvent.setup()
+    const { store } = openBlueprint()
+    const table = await findTable()
+    const release = store.hold()
+
+    const menu = await openRowMenu(typist, table, "Units sold")
+    await typist.click(menu.getByRole("menuitem", { name: "Delete line item" }))
+    const confirm = within(await screen.findByRole("alertdialog", { name: "Delete Units sold?" }))
+    await typist.click(confirm.getByRole("button", { name: "Delete line item" }))
+
+    await waitFor(() =>
+      expect(confirm.getByRole("button", { name: "Delete line item" })).toBeDisabled(),
+    )
+    expect(spinning(confirm.getByRole("button", { name: "Delete line item" }))).toBe(true)
+    expect(confirm.getByRole("button", { name: "Cancel" })).toBeDisabled()
+    await typist.keyboard("{Escape}")
+    expect(screen.getByRole("alertdialog")).toBeVisible()
+    release()
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull())
   })
 
   it("keeps the line item and says why when the server refuses", async () => {

@@ -1,5 +1,5 @@
 import { CircleAlert } from "lucide-react"
-import type { Ref } from "react"
+import type { ComponentProps, Ref } from "react"
 import type { UseFormReturn } from "react-hook-form"
 import {
   FormControl,
@@ -16,8 +16,10 @@ import type { LineItemValues } from "./line-item-form"
 
 interface FormulaFieldProps {
   form: UseFormReturn<LineItemValues>
-  /** What the server found wrong with the formula the last time it was saved. */
+  /** What is wrong with the formula: what the model says of the saved one, or the server's refusal. */
   problems: FormulaProblem[]
+  /** The problems are the server's answer to a save just now, which is announced as it comes. */
+  refused: boolean
   /** The formula was edited, which makes what the server said about it out of date. */
   onEdit: () => void
   /** The formula can be read and copied but not changed. */
@@ -25,8 +27,15 @@ interface FormulaFieldProps {
   textareaRef: Ref<HTMLTextAreaElement>
 }
 
-/** The formula of a line item, typed in a monospace field, with every problem the server finds in it listed below. */
-export function FormulaField({ form, problems, onEdit, readOnly, textareaRef }: FormulaFieldProps) {
+/** The formula of a line item, typed in a monospace field, with every problem found in it listed below. */
+export function FormulaField({
+  form,
+  problems,
+  refused,
+  onEdit,
+  readOnly,
+  textareaRef,
+}: FormulaFieldProps) {
   return (
     <FormField
       control={form.control}
@@ -35,7 +44,8 @@ export function FormulaField({ form, problems, onEdit, readOnly, textareaRef }: 
         <FormItem>
           <FormLabel>Formula</FormLabel>
           <FormControl>
-            <Textarea
+            <FormulaTextarea
+              invalid={problems.length > 0}
               {...field}
               ref={(element) => {
                 field.ref(element)
@@ -62,14 +72,37 @@ export function FormulaField({ form, problems, onEdit, readOnly, textareaRef }: 
           <FormDescription>
             Leave it empty to type the values in yourself. A line item with a formula is calculated.
           </FormDescription>
-          <FormulaMessage problems={problems} formula={field.value} />
+          <FormulaMessage problems={problems} refused={refused} formula={field.value} />
         </FormItem>
       )}
     />
   )
 }
 
-function FormulaMessage({ problems, formula }: { problems: FormulaProblem[]; formula: string }) {
+/** The field, marked invalid and described by the list of problems even when the form has no error of its own. */
+function FormulaTextarea({
+  invalid,
+  ...props
+}: ComponentProps<typeof Textarea> & { invalid: boolean }) {
+  const { formDescriptionId, formMessageId } = useFormField()
+  return (
+    <Textarea
+      {...props}
+      aria-invalid={invalid || props["aria-invalid"]}
+      aria-describedby={
+        invalid ? `${formDescriptionId} ${formMessageId}` : props["aria-describedby"]
+      }
+    />
+  )
+}
+
+interface FormulaMessageProps {
+  problems: FormulaProblem[]
+  refused: boolean
+  formula: string
+}
+
+function FormulaMessage({ problems, refused, formula }: FormulaMessageProps) {
   const { error, formMessageId } = useFormField()
   if (problems.length === 0) {
     return error ? (
@@ -79,7 +112,11 @@ function FormulaMessage({ problems, formula }: { problems: FormulaProblem[]; for
     ) : null
   }
   return (
-    <div id={formMessageId} role="alert" className="flex flex-col gap-2 text-sm text-destructive">
+    <div
+      id={formMessageId}
+      role={refused ? "alert" : undefined}
+      className="flex flex-col gap-2 text-sm text-destructive"
+    >
       <p className="font-medium">
         {problems.length === 1
           ? "The formula has a problem."

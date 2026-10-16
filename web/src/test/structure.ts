@@ -164,3 +164,29 @@ export const structure = makeStructure({
   modules: [revenueModule, pricingModule, hiringModule, costsModule, headcountModule],
   line_items: [unitPrice, unitsSold, revenueAmount],
 })
+
+/** A percentage of Revenue with every setting of its own: a summary, a time scale, versions, lists and notes. */
+export const revenueMargin = makeLineItem({
+  id: "0192f3a0-0000-7000-8000-000000000404",
+  module: revenueModule.id,
+  name: "Margin",
+  ordinal: 2,
+  notes: "Before tax",
+  format: {
+    type: "number",
+    decimals: 1,
+    thousands_sep: true,
+    unit: { type: "percent" },
+    negative: "minus",
+  },
+  summary: { method: "average" },
+  time_scale: { level: "year" },
+  versions: { only: [forecastId] },
+  applies_to: [{ kind: "list", list: regionsId }],
+})
+
+/** `structure` with the three line items of Revenue in it. */
+export const revenuePlan = makeStructure({
+  ...structure,
+  line_items: [unitsSold, revenueAmount, revenueMargin],
+})

@@ -5,9 +5,8 @@ import { describe, expect, it, vi } from "vitest"
 import type { StructureDto } from "@/features/structure/types"
 import type { components } from "@/lib/api/schema"
 import { makeModel, me, mockSession, renderApp, serveModels, workspace } from "@/test/app"
-import { serveModuleStore } from "@/test/module-edits"
+import { type ModuleStore, serveModuleStore } from "@/test/module-edits"
 import {
-  actualId,
   forecastId,
   makeLineItem,
   makeModule,
@@ -15,8 +14,9 @@ import {
   productsId,
   regionsId,
   revenueAmount,
+  revenueMargin,
   revenueModule,
-  structure,
+  revenuePlan,
   unitsSold,
 } from "@/test/structure"
 
@@ -29,27 +29,8 @@ const model = makeModel({ name: "Revenue plan" })
 const PRODUCTION_MESSAGE =
   "This model is in production mode. Structural changes arrive through ALM sync."
 
-const margin = makeLineItem({
-  id: "0192f3a0-0000-7000-8000-000000000404",
-  module: revenueModule.id,
-  name: "Margin",
-  ordinal: 2,
-  format: {
-    type: "number",
-    decimals: 1,
-    thousands_sep: true,
-    unit: { type: "percent" },
-    negative: "minus",
-  },
-})
-const withLineItems = makeStructure({
-  ...structure,
-  versions: [
-    { id: actualId, name: "Actual", is_actual: true, is_current: false },
-    { id: forecastId, name: "Forecast", is_actual: false, is_current: true },
-  ],
-  line_items: [unitsSold, revenueAmount, margin],
-})
+const margin = revenueMargin
+const withLineItems = revenuePlan
 const blueprint = `/m/${model.id}/modules/${revenueModule.id}?tab=blueprint`
 
 type Typist = ReturnType<typeof userEvent.setup>
@@ -61,15 +42,19 @@ async function openSheet(
     modelStructure = withLineItems,
     role = "admin",
     mode = "dev",
+    prepare,
   }: {
     modelStructure?: StructureDto
     role?: components["schemas"]["WorkspaceRole"]
     mode?: "dev" | "prod"
+    /** Sets the store up before the page is drawn. */
+    prepare?: (store: ModuleStore) => void
   } = {},
 ) {
   mockSession({ me: { ...me, workspaces: [{ ...workspace, role }] } })
   serveModels([{ ...model, mode }])
   const store = serveModuleStore(modelStructure)
+  prepare?.(store)
   const app = renderApp(`${blueprint}&li=${lineItem}`)
   const table = await within(await screen.findByRole("main")).findByRole("grid", {
     name: "Line items",
@@ -83,6 +68,11 @@ async function openSheet(
 async function choose(typist: Typist, combobox: HTMLElement, option: string) {
   await typist.click(combobox)
   await typist.click(await screen.findByRole("option", { name: option }))
+}
+
+/** Whether a button shows the spinner that says its request is running. */
+function spinning(button: HTMLElement) {
+  return button.querySelector("svg.animate-spin") !== null
 }
 
 async function save(typist: Typist, sheet: ReturnType<typeof within>) {
@@ -181,14 +171,133 @@ describe("the settings of a line item", () => {
     expect(store.requests).toEqual([])
   })
 
-  it("leaves the sheet open and the button busy while it saves", async () => {
+  it("leaves the sheet open and the button busy while it saves, and cannot be dismissed", async () => {
     const typist = userEvent.setup()
-    const { sheet } = await openSheet(typist)
+    const { store, sheet } = await openSheet(typist)
+    const release = store.hold()
 
     await typist.type(sheet.getByLabelText("Notes"), "x")
     await save(typist, sheet)
 
+    await waitFor(() => expect(sheet.getByRole("button", { name: "Save changes" })).toBeDisabled())
+    expect(spinning(sheet.getByRole("button", { name: "Save changes" }))).toBe(true)
+    expect(sheet.getByRole("button", { name: "Cancel" })).toBeDisabled()
+    expect(sheet.queryByRole("button", { name: "Close" })).toBeNull()
+    await typist.keyboard("{Escape}")
+    expect(screen.getByRole("dialog", { name: "Line item settings" })).toBeVisible()
+    expect(screen.queryByRole("alertdialog")).toBeNull()
+    release()
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+  })
+
+  it("puts the focus in the name without selecting it, so that typing adds to it", async () => {
+    const typist = userEvent.setup()
+    const { sheet } = await openSheet(typist)
+    const name = sheet.getByLabelText<HTMLInputElement>("Name")
+
+    expect(name).toHaveFocus()
+    expect(name.selectionStart).toBe(name.selectionEnd)
+    await typist.keyboard("s")
+
+    expect(name).toHaveValue("Units solds")
+  })
+})
+
+describe("closing the sheet with edits", () => {
+  it("asks before it drops them, and keeps them when the answer is to keep editing", async () => {
+    const typist = userEvent.setup()
+    const { store, sheet } = await openSheet(typist)
+    await typist.type(sheet.getByLabelText("Notes"), "Per month")
+
+    await typist.keyboard("{Escape}")
+
+    const ask = within(await screen.findByRole("alertdialog", { name: "Discard changes?" }))
+    expect(ask.getByText("Your changes to this line item have not been saved.")).toBeVisible()
+    await typist.click(ask.getByRole("button", { name: "Keep editing" }))
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull())
+    expect(screen.getByRole("dialog", { name: "Line item settings" })).toBeVisible()
+    expect(sheet.getByLabelText("Notes")).toHaveValue("Per month")
+    expect(store.requests).toEqual([])
+  })
+
+  it("closes without saving when the answer is to discard", async () => {
+    const typist = userEvent.setup()
+    const { store, sheet } = await openSheet(typist)
+    await typist.type(sheet.getByLabelText("Notes"), "Per month")
+
+    await typist.click(sheet.getByRole("button", { name: "Close" }))
+    await typist.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Discard changes",
+      }),
+    )
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+    expect(store.requests).toEqual([])
+    expect(toast.success).not.toHaveBeenCalled()
+  })
+
+  it("starts from the saved line item when it is opened again after a discard", async () => {
+    const typist = userEvent.setup()
+    const { table, sheet } = await openSheet(typist)
+    await typist.type(sheet.getByLabelText("Notes"), "Per month")
+    await typist.keyboard("{Escape}")
+    await typist.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Discard changes",
+      }),
+    )
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+
+    table.focus()
+    await typist.keyboard("{Enter}")
+
+    expect(
+      within(await screen.findByRole("dialog", { name: "Line item settings" })).getByLabelText(
+        "Notes",
+      ),
+    ).toHaveValue("")
+  })
+
+  it("does not ask when nothing was changed", async () => {
+    const typist = userEvent.setup()
+    await openSheet(typist)
+
+    await typist.keyboard("{Escape}")
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+  })
+
+  it("does not ask when a change is typed back to what it was", async () => {
+    const typist = userEvent.setup()
+    const { sheet } = await openSheet(typist)
+
+    await typist.type(sheet.getByLabelText("Notes"), "x")
+    await typist.type(sheet.getByLabelText("Notes"), "{Backspace}")
+    await typist.keyboard("{Escape}")
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+  })
+
+  it("does not ask when the Cancel button is pressed, which says what it means", async () => {
+    const typist = userEvent.setup()
+    const { sheet } = await openSheet(typist)
+    await typist.type(sheet.getByLabelText("Notes"), "Per month")
+
+    await typist.click(sheet.getByRole("button", { name: "Cancel" }))
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+  })
+
+  it("does not ask after the line item is saved", async () => {
+    const typist = userEvent.setup()
+    const { sheet } = await openSheet(typist)
+    await typist.type(sheet.getByLabelText("Notes"), "Per month")
+
+    await save(typist, sheet)
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+    expect(screen.queryByRole("alertdialog")).toBeNull()
   })
 })
 
@@ -336,7 +445,11 @@ describe("the summary", () => {
 
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
     expect(store.requests[0].body).toEqual({
-      summary: { method: "ratio", numerator: revenueAmount.id, denominator: unitsSold.id },
+      summary: {
+        method: "ratio",
+        numerator: revenueAmount.id,
+        denominator: unitsSold.id,
+      },
     })
   })
 
@@ -356,7 +469,11 @@ describe("the summary", () => {
     const typist = userEvent.setup()
     const ratio = makeLineItem({
       ...margin,
-      summary: { method: "ratio", numerator: unitsSold.id, denominator: revenueAmount.id },
+      summary: {
+        method: "ratio",
+        numerator: unitsSold.id,
+        denominator: revenueAmount.id,
+      },
     })
     const { sheet } = await openSheet(typist, margin.id, {
       modelStructure: makeStructure({
@@ -370,7 +487,7 @@ describe("the summary", () => {
     expect(sheet.getByRole("combobox", { name: "Denominator" })).toHaveTextContent("Revenue amount")
   })
 
-  it("sets a time summary, and goes back to the same as the summary", async () => {
+  it("sets a time summary", async () => {
     const typist = userEvent.setup()
     const { store, sheet } = await openSheet(typist)
 
@@ -378,12 +495,40 @@ describe("the summary", () => {
     await save(typist, sheet)
     await waitFor(() => expect(store.requests).toHaveLength(1))
 
-    expect(store.requests[0].body).toEqual({ time_summary: { method: "closing" } })
+    expect(store.requests[0].body).toEqual({
+      time_summary: { method: "closing" },
+    })
+  })
+
+  it("goes back to the same as the summary with a null time summary", async () => {
+    const typist = userEvent.setup()
+    const withTimeSummary = makeLineItem({
+      ...unitsSold,
+      time_summary: { method: "closing" },
+    })
+    const { store, sheet } = await openSheet(typist, unitsSold.id, {
+      modelStructure: makeStructure({
+        ...withLineItems,
+        line_items: [withTimeSummary],
+      }),
+    })
+
+    expect(sheet.getByRole("combobox", { name: "Time summary" })).toHaveTextContent(
+      "Closing balance",
+    )
+    await choose(typist, sheet.getByRole("combobox", { name: "Time summary" }), "Same as summary")
+    await save(typist, sheet)
+
+    await waitFor(() => expect(store.requests).toHaveLength(1))
+    expect(store.requests[0].body).toEqual({ time_summary: null })
   })
 
   it("has no time summary to choose for a module without Time", async () => {
     const typist = userEvent.setup()
-    const noTime = makeModule({ ...revenueModule, axes: [{ kind: "list", list: regionsId }] })
+    const noTime = makeModule({
+      ...revenueModule,
+      axes: [{ kind: "list", list: regionsId }],
+    })
     const { sheet } = await openSheet(typist, unitsSold.id, {
       modelStructure: makeStructure({
         ...withLineItems,
@@ -421,7 +566,9 @@ describe("the dimensions", () => {
     )
 
     await waitFor(() =>
-      expect(store.requests[0].body).toEqual({ applies_to: [{ kind: "list", list: productsId }] }),
+      expect(store.requests[0].body).toEqual({
+        applies_to: [{ kind: "list", list: productsId }],
+      }),
     )
   })
 
@@ -466,7 +613,9 @@ describe("the dimensions", () => {
     )
 
     await waitFor(() =>
-      expect(store.requests[0].body).toEqual({ versions: { only: [forecastId] } }),
+      expect(store.requests[0].body).toEqual({
+        versions: { only: [forecastId] },
+      }),
     )
   })
 })
@@ -496,6 +645,28 @@ describe("clearing input values", () => {
     )
     await waitFor(() => expect(store.requests).toHaveLength(1))
     expect(store.requests[0].body).toMatchObject({ format: { type: "text" } })
+  })
+
+  it("keeps the question open and its buttons busy while the change is saved", async () => {
+    const typist = userEvent.setup()
+    const { store, sheet } = await openSheet(typist)
+    const release = store.hold()
+
+    await choose(typist, sheet.getByRole("combobox", { name: "Format type" }), "Text")
+    await save(typist, sheet)
+    const confirm = within(await screen.findByRole("alertdialog", { name: "Clear input values?" }))
+    await typist.click(confirm.getByRole("button", { name: "Save and clear values" }))
+
+    await waitFor(() =>
+      expect(confirm.getByRole("button", { name: "Save and clear values" })).toBeDisabled(),
+    )
+    expect(spinning(confirm.getByRole("button", { name: "Save and clear values" }))).toBe(true)
+    expect(confirm.getByRole("button", { name: "Cancel" })).toBeDisabled()
+    await typist.keyboard("{Escape}")
+    expect(screen.getByRole("alertdialog", { name: "Clear input values?" })).toBeVisible()
+    release()
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull())
   })
 
   it("asks before an input line item is given a formula", async () => {
@@ -540,7 +711,12 @@ describe("the formula", () => {
       end: 10,
       suggestion: "Revenue",
     },
-    { code: "formula.arity", message: "SUM takes 1 argument", start: 13, end: 20 },
+    {
+      code: "formula.arity",
+      message: "SUM takes 1 argument",
+      start: 13,
+      end: 20,
+    },
   ]
 
   it("is typed in a monospace field", async () => {
@@ -576,7 +752,12 @@ describe("the formula", () => {
     const { store, sheet } = await openSheet(typist, revenueAmount.id)
     // "Umsätze" is 8 bytes and 7 characters; the problem is the name after it.
     store.checkFormula = () => [
-      { code: "formula.unknown_name", message: "Unknown name", start: 11, end: 15 },
+      {
+        code: "formula.unknown_name",
+        message: "Unknown name",
+        start: 11,
+        end: 15,
+      },
     ]
 
     const formula = sheet.getByLabelText<HTMLTextAreaElement>("Formula")
@@ -586,6 +767,50 @@ describe("the formula", () => {
 
     await sheet.findByRole("alert")
     expect([formula.selectionStart, formula.selectionEnd]).toEqual([10, 14])
+  })
+
+  it("lists the problems of the saved formula as soon as the sheet opens, without announcing them", async () => {
+    const typist = userEvent.setup()
+    const { sheet } = await openSheet(typist, revenueAmount.id, {
+      prepare: (store) => {
+        store.formulaErrors[revenueAmount.id] = problems
+      },
+    })
+
+    const formula = sheet.getByLabelText<HTMLTextAreaElement>("Formula")
+    expect(await sheet.findByText("The formula has 2 problems.")).toBeVisible()
+    expect(sheet.getByText(/Unknown name 'Revnue'/)).toBeVisible()
+    expect(sheet.getByText(/SUM takes 1 argument/)).toBeVisible()
+    expect(formula).toHaveAttribute("aria-invalid", "true")
+    expect(formula).toHaveAccessibleDescription(/The formula has 2 problems\./)
+    expect(sheet.queryByRole("alert")).toBeNull()
+  })
+
+  it("shows no problem on open for a formula that works", async () => {
+    const typist = userEvent.setup()
+    const { sheet } = await openSheet(typist, revenueAmount.id)
+
+    expect(sheet.getByLabelText("Formula")).not.toHaveAttribute("aria-invalid", "true")
+    expect(sheet.queryByText(/The formula has/)).toBeNull()
+  })
+
+  it("replaces the problems of the saved formula with the server's refusal of a new one", async () => {
+    const typist = userEvent.setup()
+    const { store, sheet } = await openSheet(typist, revenueAmount.id, {
+      prepare: (prepared) => {
+        prepared.formulaErrors[revenueAmount.id] = [problems[0]]
+      },
+    })
+    store.checkFormula = () => [problems[1]]
+    await sheet.findByText("The formula has a problem.")
+
+    await typist.type(sheet.getByLabelText("Formula"), " + 1")
+    expect(sheet.queryByText("The formula has a problem.")).toBeNull()
+    await save(typist, sheet)
+
+    const alert = within(await sheet.findByRole("alert"))
+    expect(alert.getByText(/SUM takes 1 argument/)).toBeVisible()
+    expect(alert.queryByText(/Unknown name 'Revnue'/)).toBeNull()
   })
 
   it("takes the problems away once the formula is edited", async () => {
@@ -628,7 +853,9 @@ describe("the formula", () => {
 describe("who may change the settings", () => {
   it("shows a viewer the settings, none of them to change", async () => {
     const typist = userEvent.setup()
-    const { sheet } = await openSheet(typist, revenueAmount.id, { role: "viewer" })
+    const { sheet } = await openSheet(typist, revenueAmount.id, {
+      role: "viewer",
+    })
 
     expect(sheet.getByLabelText("Name")).toBeDisabled()
     expect(sheet.getByRole("combobox", { name: "Format type" })).toBeDisabled()
