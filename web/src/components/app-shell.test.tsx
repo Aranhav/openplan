@@ -235,6 +235,107 @@ describe("the header", () => {
     expect(within(crumbs).getByRole("link", { name: "Revenue plan" })).toBeInTheDocument()
   })
 
+  it("folds the crumbs above a model's screen into a menu on a narrow header and truncates them on a wide one", async () => {
+    mockSession()
+    const model = makeModel({ name: "Revenue plan" })
+    serveModels([model])
+    serveStructure(structure)
+    renderApp(`/m/${model.id}/modules/${revenueModule.id}`)
+
+    const crumbs = within(await screen.findByRole("navigation", { name: "breadcrumb" }))
+    await crumbs.findByRole("link", { name: "Revenue plan" })
+    const menu = crumbs.getByRole("button", { name: "Show the path to this page" })
+    expect(menu.closest("li")?.className).toMatch(/\blg:hidden\b/)
+    for (const name of ["Acme Corp", "Revenue plan", "Modules"]) {
+      const crumb = crumbs.getByRole("link", { name })
+      expect(crumb.closest("li")?.className).toMatch(/\bhidden\b.*\blg:inline-flex\b/)
+      expect(crumb.className).toMatch(/\btruncate\b/)
+    }
+    expect(crumbs.getByText("Revenue", { selector: "[aria-current=page]" }).className).toMatch(
+      /\btruncate\b/,
+    )
+    const separators = document.querySelectorAll("[data-slot=breadcrumb-separator]")
+    expect([...separators].map((separator) => separator.className)).toEqual([
+      expect.stringMatching(/\blg:hidden\b/),
+      ...Array(3).fill(expect.stringMatching(/\bhidden\b.*\blg:inline-flex\b/)),
+    ])
+  })
+
+  it("lists the folded crumbs in the menu and goes to the one chosen", async () => {
+    mockSession()
+    const model = makeModel({ name: "Revenue plan" })
+    serveModels([model])
+    serveStructure(structure)
+    const typist = userEvent.setup()
+    const { router } = renderApp(`/m/${model.id}/modules/${revenueModule.id}`)
+
+    const crumbs = within(await screen.findByRole("navigation", { name: "breadcrumb" }))
+    await typist.click(await crumbs.findByRole("button", { name: "Show the path to this page" }))
+    const items = within(await screen.findByRole("menu")).getAllByRole("menuitem")
+    expect(items.map((item) => item.textContent)).toEqual(["Acme Corp", "Revenue plan", "Modules"])
+    expect(items[1]).toHaveAttribute("href", `/m/${model.id}/modules`)
+    await typist.click(items[0])
+
+    await waitFor(() => expect(router.state.location.pathname).toBe(`/w/${workspace.id}`))
+  })
+
+  it("names the module in full where its crumb is cut short", async () => {
+    mockSession()
+    const model = makeModel({ name: "Revenue plan" })
+    serveModels([model])
+    serveStructure(structure)
+    renderApp(`/m/${model.id}/modules/${revenueModule.id}`)
+
+    const crumbs = within(await screen.findByRole("navigation", { name: "breadcrumb" }))
+    expect(await crumbs.findByText("Revenue", { selector: "[aria-current=page]" })).toHaveAttribute(
+      "title",
+      "Revenue",
+    )
+    expect(crumbs.getByRole("link", { name: "Revenue plan" })).toHaveAttribute(
+      "title",
+      "Revenue plan",
+    )
+  })
+
+  it("leaves the model out of the menu until it has loaded, and no stray crumb in its place", async () => {
+    mockSession()
+    const model = makeModel({ name: "Revenue plan" })
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    server.use(
+      http.get(`/api/v1/models/${model.id}`, async () => {
+        await gate
+        return HttpResponse.json(model)
+      }),
+    )
+    const typist = userEvent.setup()
+    renderApp(`/m/${model.id}/settings`)
+
+    const crumbs = within(await screen.findByRole("navigation", { name: "breadcrumb" }))
+    expect(await crumbs.findByText("Model settings")).toBeVisible()
+    expect(crumbs.queryByRole("link", { name: "Model" })).not.toBeInTheDocument()
+    release()
+    await crumbs.findByRole("link", { name: "Revenue plan" })
+    await typist.click(crumbs.getByRole("button", { name: "Show the path to this page" }))
+
+    expect(
+      within(await screen.findByRole("menu"))
+        .getAllByRole("menuitem")
+        .map((item) => item.textContent),
+    ).toEqual(["Acme Corp", "Revenue plan"])
+  })
+
+  it("has no menu on a page of the workspace", async () => {
+    mockSession()
+    renderApp(`/w/${workspace.id}/members`)
+
+    const crumbs = within(await screen.findByRole("navigation", { name: "breadcrumb" }))
+    expect(await crumbs.findByText("Members")).toBeVisible()
+    expect(crumbs.queryByRole("button")).not.toBeInTheDocument()
+  })
+
   it.each([
     ["Win32", "Ctrl K", "Control+K"],
     ["MacIntel", "⌘K", "Meta+K"],
