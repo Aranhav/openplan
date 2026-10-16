@@ -1,12 +1,13 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { Loader2 } from "lucide-react"
-import { useEffect, useRef, useState } from "react"
+import { type ReactNode, useEffect, useRef, useState } from "react"
 import { useForm } from "react-hook-form"
 import { z } from "zod"
 import { Button } from "@/components/ui/button"
 import { Form, FormControl, FormField, FormItem, FormMessage } from "@/components/ui/form"
 import { Input } from "@/components/ui/input"
 import { reportFormError } from "@/lib/form-errors"
+import { INLINE_TEXT_ATTRIBUTE } from "@/lib/inline-text"
 import { cn } from "@/lib/utils"
 
 type TextValues = { text: string }
@@ -26,6 +27,8 @@ interface InlineTextProps {
   onSave: (text: string) => Promise<void>
   /** Stands in for an empty value. */
   placeholder?: string
+  /** Shown after the text, such as a pencil that says it can be edited. */
+  icon?: ReactNode
   className?: string
 }
 
@@ -41,6 +44,7 @@ export function InlineText({
   schema,
   onSave,
   placeholder,
+  icon,
   className,
 }: InlineTextProps) {
   const [editing, setEditing] = useState(false)
@@ -83,6 +87,7 @@ export function InlineText({
       >
         {value || placeholder}
       </span>
+      {icon}
     </Button>
   )
 }
@@ -148,6 +153,7 @@ function TextInput({ value, inputLabel, schema, onSave, onDone }: TextInputProps
                       field.ref(element)
                       input.current = element
                     }}
+                    {...{ [INLINE_TEXT_ATTRIBUTE]: "" }}
                     aria-label={inputLabel}
                     autoComplete="off"
                     readOnly={saving}
