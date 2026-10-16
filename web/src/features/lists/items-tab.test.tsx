@@ -193,6 +193,21 @@ describe("loading the items", () => {
     expect(await screen.findByRole("heading", { name: "No items yet" })).toBeVisible()
   })
 
+  it("keeps the table on screen when a refresh fails, and says so", async () => {
+    const { queryClient } = openList()
+    const table = await findTable()
+    server.use(
+      http.get("/api/v1/models/:id/lists/:listId/items", () =>
+        problem(500, "internal", "The server is busy."),
+      ),
+    )
+    await queryClient.invalidateQueries({ queryKey: ["models", model.id, "structure"] })
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("The server is busy."))
+    expect(table.getByRole("button", { name: "Rename France" })).toBeVisible()
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument()
+  })
+
   it("shows a placeholder for the table while the items arrive", async () => {
     openList()
     server.use(
@@ -203,6 +218,25 @@ describe("loading the items", () => {
     )
 
     expect(await screen.findByRole("status", { name: "Loading items" })).toBeVisible()
+  })
+})
+
+describe("going from one list to another", () => {
+  it("does not take what was typed on the first along", async () => {
+    const typist = userEvent.setup()
+    const { router } = openList()
+    const table = await findTable()
+    await typist.type(screen.getByRole("searchbox", { name: "Filter items" }), "ger")
+    await typist.click(table.getByRole("checkbox", { name: "Select all items" }))
+    await typist.click(screen.getByRole("link", { name: "Parent list: Regions" }))
+
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe(`/m/${model.id}/lists/${regionsList}`),
+    )
+    const regions = await findTable("Regions")
+    expect(regions.getByRole("button", { name: "Rename EMEA" })).toBeVisible()
+    expect(screen.getByRole("searchbox", { name: "Filter items" })).toHaveValue("")
+    expect(screen.queryByText(/items selected/)).not.toBeInTheDocument()
   })
 })
 

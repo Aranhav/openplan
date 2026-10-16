@@ -33,7 +33,16 @@ export function ListPage({ modelId, listId, ...rest }: ListPageProps) {
   const list = structure.data?.lists.find((candidate) => candidate.id === listId)
 
   if (list && structure.data) {
-    return <ListScreen modelId={modelId} list={list} structure={structure.data} {...rest} />
+    // Keyed by the list, so that what was typed or chosen on another list does not follow here.
+    return (
+      <ListScreen
+        key={list.id}
+        modelId={modelId}
+        list={list}
+        structure={structure.data}
+        {...rest}
+      />
+    )
   }
   if (structure.data && !structure.isFetching) {
     return <ListNotFound modelId={modelId} />

@@ -1,5 +1,6 @@
 import { Layers, ListPlus, Plus, Trash2, X } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
+import { toast } from "sonner"
 import { DeleteDialog } from "@/components/delete-dialog"
 import { EmptyState } from "@/components/empty-state"
 import { ErrorState } from "@/components/error-state"
@@ -10,6 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import type { StructureDto } from "@/features/structure/types"
 import { useDeleteItems } from "@/features/structure/api"
 import { useRestoreFocus } from "@/hooks/use-restore-focus"
+import { errorDetail } from "@/lib/api/client"
 import { BulkAddDialog } from "./bulk-add-dialog"
 import { useListItems } from "./api"
 import { blockedByChildren, blockedMessage } from "./hierarchy"
@@ -27,6 +29,20 @@ interface ItemsTabProps {
   locked: boolean
 }
 
+/** Tells the user a read of items that are on screen already has failed, which the screen otherwise would not show. */
+function useRefetchFailureToast(query: {
+  isRefetchError: boolean
+  error: Error | null
+  errorUpdatedAt: number
+}) {
+  const { isRefetchError, error, errorUpdatedAt } = query
+  useEffect(() => {
+    if (isRefetchError) {
+      toast.error(errorDetail(error))
+    }
+  }, [isRefetchError, error, errorUpdatedAt])
+}
+
 /** The items of a list, and what can be done to them. */
 export function ItemsTab({ modelId, list, structure, canEdit, locked }: ItemsTabProps) {
   const items = useListItems(modelId, list.id)
@@ -35,7 +51,12 @@ export function ItemsTab({ modelId, list, structure, canEdit, locked }: ItemsTab
     : undefined
   const parentItems = useListItems(modelId, parentList?.id)
 
-  const failed = [items, parentItems].filter((query) => query.isError)
+  useRefetchFailureToast(items)
+  useRefetchFailureToast(parentItems)
+
+  // The error takes the place of the table only when there is no table to keep: a refresh that
+  // fails behind items already on screen leaves them alone, and a toast says so.
+  const failed = [items, parentItems].filter((query) => query.isError && query.data === undefined)
   if (failed.length > 0) {
     return (
       <ErrorState
