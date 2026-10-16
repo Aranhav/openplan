@@ -1,30 +1,18 @@
 import { screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it } from "vitest"
-import type { components } from "@/lib/api/schema"
-import { makeModel, me, mockSession, renderApp, serveModels, workspace } from "@/test/app"
 import { violations } from "@/test/axe"
-import { countriesList, listsStructure, productsList, regionsList, serveLists } from "@/test/lists"
+import {
+  countriesList,
+  listsStructure,
+  openListsApp,
+  productsList,
+  regionsList,
+} from "@/test/lists"
 import { makeStructure } from "@/test/structure"
 
-const model = makeModel()
-
-function open(
-  path: string,
-  {
-    role = "admin",
-    mode = "dev",
-    structure = listsStructure(),
-  }: {
-    role?: components["schemas"]["WorkspaceRole"]
-    mode?: "dev" | "prod"
-    structure?: ReturnType<typeof listsStructure>
-  } = {},
-) {
-  mockSession({ me: { ...me, workspaces: [{ ...workspace, role }] } })
-  serveModels([{ ...model, mode }])
-  serveLists(structure)
-  renderApp(`/m/${model.id}/lists${path}`)
+function open(path: string, options?: Parameters<typeof openListsApp>[1]) {
+  openListsApp(`/lists${path}`, options)
 }
 
 describe("the lists page", () => {

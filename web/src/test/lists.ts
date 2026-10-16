@@ -1,6 +1,9 @@
+import { screen } from "@testing-library/react"
+import type userEvent from "@testing-library/user-event"
 import { HttpResponse, http } from "msw"
 import type { StructureDto } from "@/features/structure/types"
 import type { components } from "@/lib/api/schema"
+import { makeModel, me, mockSession, renderApp, serveModels, workspace } from "./app"
 import { problem } from "./problem"
 import { server } from "./server"
 import { makeLineItem, makeStructure } from "./structure"
@@ -376,4 +379,37 @@ export function serveLists(structure: StructureDto = listsStructure()): ListsSto
     }),
   )
   return store
+}
+
+interface ListsAppOptions {
+  role?: components["schemas"]["WorkspaceRole"]
+  mode?: "dev" | "prod"
+  structure?: StructureDto
+}
+
+/**
+ * Signs in as a member of the workspace with this role, serves a model in this mode and the lists
+ * endpoints from `structure`, and renders the app at `path` inside the model (`/lists`,
+ * `/lists/<id>?tab=properties`). Mock whatever else the page asks for, such as the view query,
+ * before calling it.
+ */
+export function openListsApp(
+  path: string,
+  { role = "admin", mode = "dev", structure = listsStructure() }: ListsAppOptions = {},
+) {
+  const model = makeModel()
+  mockSession({ me: { ...me, workspaces: [{ ...workspace, role }] } })
+  serveModels([{ ...model, mode }])
+  const store = serveLists(structure)
+  return { store, ...renderApp(`/m/${model.id}${path}`) }
+}
+
+/** Opens a combobox and chooses the option whose name starts with `option`. */
+export async function chooseOption(
+  typist: ReturnType<typeof userEvent.setup>,
+  combobox: HTMLElement,
+  option: string,
+) {
+  await typist.click(combobox)
+  await typist.click(await screen.findByRole("option", { name: new RegExp(`^${option}`) }))
 }

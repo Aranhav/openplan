@@ -3,9 +3,14 @@ import userEvent from "@testing-library/user-event"
 import { HttpResponse, http } from "msw"
 import { toast } from "sonner"
 import { describe, expect, it, vi } from "vitest"
-import type { components } from "@/lib/api/schema"
-import { makeModel, me, mockSession, renderApp, serveModels, workspace } from "@/test/app"
-import { countriesList, listsStructure, regionsList, serveLists } from "@/test/lists"
+import { makeModel, mockSession, renderApp, serveModels } from "@/test/app"
+import {
+  chooseOption,
+  countriesList,
+  listsStructure,
+  openListsApp,
+  regionsList,
+} from "@/test/lists"
 import { problem } from "@/test/problem"
 import { server } from "@/test/server"
 import { makeStructure } from "@/test/structure"
@@ -17,21 +22,8 @@ const listsUrl = `/m/${model.id}/lists`
 const PRODUCTION_MESSAGE =
   "This model is in production mode. Structural changes arrive through ALM sync."
 
-function openLists({
-  role = "admin",
-  mode = "dev",
-  path = listsUrl,
-  structure = listsStructure(),
-}: {
-  role?: components["schemas"]["WorkspaceRole"]
-  mode?: "dev" | "prod"
-  path?: string
-  structure?: ReturnType<typeof listsStructure>
-} = {}) {
-  mockSession({ me: { ...me, workspaces: [{ ...workspace, role }] } })
-  serveModels([{ ...model, mode }])
-  const store = serveLists(structure)
-  return { store, ...renderApp(path) }
+function openLists(options: Parameters<typeof openListsApp>[1] & { path?: string } = {}) {
+  return openListsApp(options.path ?? "/lists", options)
 }
 
 async function findTable() {
@@ -169,15 +161,6 @@ describe("the New list dialog", () => {
     return { typist, dialog: within(dialog), ...opened }
   }
 
-  async function choose(
-    typist: ReturnType<typeof userEvent.setup>,
-    combobox: HTMLElement,
-    option: string,
-  ) {
-    await typist.click(combobox)
-    await typist.click(await screen.findByRole("option", { name: option }))
-  }
-
   it("asks for a name, a parent list, a top level name, numbering and production data", async () => {
     const { dialog } = await openDialog()
 
@@ -192,7 +175,7 @@ describe("the New list dialog", () => {
   it("creates a list with a parent and opens it", async () => {
     const { typist, dialog, store, router } = await openDialog()
     await typist.type(dialog.getByRole("textbox", { name: "Name" }), "Cities")
-    await choose(typist, dialog.getByRole("combobox", { name: "Parent list" }), "Countries")
+    await chooseOption(typist, dialog.getByRole("combobox", { name: "Parent list" }), "Countries")
     await typist.type(dialog.getByRole("textbox", { name: "Top level name" }), "All cities")
     await typist.click(dialog.getByRole("switch", { name: "Numbered" }))
     await typist.click(dialog.getByRole("button", { name: "Create list" }))

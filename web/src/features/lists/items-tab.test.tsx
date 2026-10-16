@@ -3,18 +3,18 @@ import userEvent from "@testing-library/user-event"
 import { HttpResponse, http } from "msw"
 import { toast } from "sonner"
 import { describe, expect, it, vi } from "vitest"
-import type { components } from "@/lib/api/schema"
-import { makeModel, me, mockSession, renderApp, serveModels, workspace } from "@/test/app"
+import { makeModel } from "@/test/app"
 import {
   apac,
+  chooseOption,
   countriesList,
   emea,
   france,
   japan,
   listsStructure,
+  openListsApp,
   productsList,
   regionsList,
-  serveLists,
 } from "@/test/lists"
 import { problem } from "@/test/problem"
 import { server } from "@/test/server"
@@ -28,22 +28,8 @@ const PRODUCTION_MESSAGE =
 
 type Typist = ReturnType<typeof userEvent.setup>
 
-function openList(
-  listId = countriesList,
-  {
-    role = "admin",
-    mode = "dev",
-    structure = listsStructure(),
-  }: {
-    role?: components["schemas"]["WorkspaceRole"]
-    mode?: "dev" | "prod"
-    structure?: ReturnType<typeof listsStructure>
-  } = {},
-) {
-  mockSession({ me: { ...me, workspaces: [{ ...workspace, role }] } })
-  serveModels([{ ...model, mode }])
-  const store = serveLists(structure)
-  return { store, ...renderApp(`/m/${model.id}/lists/${listId}`) }
+function openList(listId = countriesList, options: Parameters<typeof openListsApp>[1] = {}) {
+  return openListsApp(`/lists/${listId}`, options)
 }
 
 async function findTable(list = "Countries") {
@@ -63,11 +49,6 @@ function outline(table: BoundFunctions<typeof queries>) {
         within(row).getByRole("button", { name: /^Rename/ }).textContent
       )
     })
-}
-
-async function choose(typist: Typist, combobox: HTMLElement, option: string) {
-  await typist.click(combobox)
-  await typist.click(await screen.findByRole("option", { name: new RegExp(`^${option}`) }))
 }
 
 describe("the items of a list with a parent list", () => {
@@ -384,7 +365,11 @@ describe("adding items one after another", () => {
     const table = await findTable()
     const name = await startAdding(typist)
     expect(name).toHaveFocus()
-    await choose(typist, table.getByRole("combobox", { name: /^Parent of the new item/ }), "EMEA")
+    await chooseOption(
+      typist,
+      table.getByRole("combobox", { name: /^Parent of the new item/ }),
+      "EMEA",
+    )
     await typist.type(name, "Italy")
     await typist.type(table.getByRole("textbox", { name: "New item code" }), "IT")
     await typist.type(name, "{Enter}")
@@ -435,7 +420,11 @@ describe("adding items one after another", () => {
     const { store } = openList()
     const table = await findTable()
     const name = await startAdding(typist)
-    await choose(typist, table.getByRole("combobox", { name: /^Parent of the new item/ }), "APAC")
+    await chooseOption(
+      typist,
+      table.getByRole("combobox", { name: /^Parent of the new item/ }),
+      "APAC",
+    )
     await typist.type(name, "China")
     await typist.click(table.getByRole("button", { name: "Add" }))
 
@@ -464,7 +453,11 @@ describe("adding items one after another", () => {
     openList()
     const table = await findTable()
     const name = await startAdding(typist)
-    await choose(typist, table.getByRole("combobox", { name: /^Parent of the new item/ }), "EMEA")
+    await chooseOption(
+      typist,
+      table.getByRole("combobox", { name: /^Parent of the new item/ }),
+      "EMEA",
+    )
     await typist.type(name, "France{Enter}")
 
     expect(await table.findByText("The name France is taken.")).toBeVisible()
@@ -781,10 +774,7 @@ describe("a list that is not there", () => {
   })
 
   it("is what a deleted list leaves behind", async () => {
-    mockSession()
-    serveModels([model])
-    serveLists(makeStructure())
-    renderApp(`/m/${model.id}/lists/${countriesList}`)
+    openListsApp(`/lists/${countriesList}`, { structure: makeStructure() })
 
     expect(await screen.findByRole("heading", { name: "List not found" })).toBeVisible()
   })
@@ -795,7 +785,11 @@ describe("the items under their parents", () => {
     const typist = userEvent.setup()
     openList()
     const table = await findTable()
-    await choose(typist, table.getByRole("combobox", { name: "Parent of Germany: EMEA" }), "APAC")
+    await chooseOption(
+      typist,
+      table.getByRole("combobox", { name: "Parent of Germany: EMEA" }),
+      "APAC",
+    )
 
     expect(await table.findByRole("button", { name: "APAC, 2 items" })).toBeVisible()
     expect(outline(table)).toEqual(["EMEA, 1 item", "France", "APAC, 2 items", "Germany", "Japan"])

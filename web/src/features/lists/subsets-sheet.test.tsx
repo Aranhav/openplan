@@ -3,9 +3,8 @@ import userEvent from "@testing-library/user-event"
 import { http } from "msw"
 import { toast } from "sonner"
 import { describe, expect, it, vi } from "vitest"
-import type { components } from "@/lib/api/schema"
-import { makeModel, me, mockSession, renderApp, serveModels, workspace } from "@/test/app"
-import { listsStructure, productsList, serveLists } from "@/test/lists"
+import { makeModel } from "@/test/app"
+import { listsStructure, openListsApp, productsList } from "@/test/lists"
 import { problem } from "@/test/problem"
 import { server } from "@/test/server"
 import { mockViewport } from "@/test/viewport"
@@ -19,19 +18,8 @@ const coreProducts = "0192f3a0-0000-7000-8000-000000000701"
 
 type Typist = ReturnType<typeof userEvent.setup>
 
-function openProducts({
-  role = "admin",
-  mode = "dev",
-  structure = listsStructure(),
-}: {
-  role?: components["schemas"]["WorkspaceRole"]
-  mode?: "dev" | "prod"
-  structure?: ReturnType<typeof listsStructure>
-} = {}) {
-  mockSession({ me: { ...me, workspaces: [{ ...workspace, role }] } })
-  serveModels([{ ...model, mode }])
-  const store = serveLists(structure)
-  return { store, ...renderApp(`/m/${model.id}/lists/${productsList}`) }
+function openProducts(options?: Parameters<typeof openListsApp>[1]) {
+  return openListsApp(`/lists/${productsList}`, options)
 }
 
 async function openSheet(typist: Typist, options?: Parameters<typeof openProducts>[0]) {

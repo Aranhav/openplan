@@ -1,10 +1,13 @@
 import { fireEvent, screen, within } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { makeModel, mockSession, renderApp, serveModels } from "@/test/app"
-import { countriesList, listsStructure, productsList, regionsList, serveLists } from "@/test/lists"
+import {
+  countriesList,
+  listsStructure,
+  openListsApp,
+  productsList,
+  regionsList,
+} from "@/test/lists"
 import { mockViewport } from "@/test/viewport"
-
-const model = makeModel()
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -13,8 +16,6 @@ afterEach(() => {
 /** Products with `count` items named "Product 1" to "Product <count>". */
 function openProducts(count: number) {
   mockViewport(900, 400)
-  mockSession()
-  serveModels([model])
   const structure = listsStructure()
   structure.lists[2] = {
     ...structure.lists[2],
@@ -24,8 +25,7 @@ function openProducts(count: number) {
     })),
   }
   structure.subsets = []
-  serveLists(structure)
-  renderApp(`/m/${model.id}/lists/${productsList}`)
+  openListsApp(`/lists/${productsList}`, { structure })
 }
 
 async function findTable() {
@@ -86,8 +86,6 @@ describe("a long list of items", () => {
 describe("the groups of a list with a parent list", () => {
   it("count as rows towards the point where drawing is windowed", async () => {
     mockViewport(900, 400)
-    mockSession()
-    serveModels([model])
     const structure = listsStructure()
     // 250 parents with one child each is 500 rows; one more child makes 501.
     const parents = Array.from({ length: 250 }, (_, index) => ({
@@ -103,8 +101,7 @@ describe("the groups of a list with a parent list", () => {
         parent: parent.id,
       })),
     }
-    serveLists(structure)
-    renderApp(`/m/${model.id}/lists/${countriesList}`)
+    openListsApp(`/lists/${countriesList}`, { structure })
 
     const table = await screen.findByRole("table", { name: "Items of Countries" })
     expect(table).toHaveAttribute("aria-rowcount", "502")
@@ -115,10 +112,7 @@ describe("the groups of a list with a parent list", () => {
 
   it("leave a short list alone", async () => {
     mockViewport(900, 400)
-    mockSession()
-    serveModels([model])
-    serveLists()
-    renderApp(`/m/${model.id}/lists/${regionsList}`)
+    openListsApp(`/lists/${regionsList}`)
 
     expect(await screen.findByRole("table", { name: "Items of Regions" })).not.toHaveAttribute(
       "aria-rowcount",

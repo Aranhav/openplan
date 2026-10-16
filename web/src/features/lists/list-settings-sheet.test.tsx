@@ -3,9 +3,14 @@ import userEvent from "@testing-library/user-event"
 import { http } from "msw"
 import { toast } from "sonner"
 import { describe, expect, it, vi } from "vitest"
-import type { components } from "@/lib/api/schema"
-import { makeModel, me, mockSession, renderApp, serveModels, workspace } from "@/test/app"
-import { countriesList, listsStructure, productsList, regionsList, serveLists } from "@/test/lists"
+import { makeModel } from "@/test/app"
+import {
+  countriesList,
+  listsStructure,
+  openListsApp,
+  productsList,
+  regionsList,
+} from "@/test/lists"
 import { problem } from "@/test/problem"
 import { server } from "@/test/server"
 
@@ -20,18 +25,10 @@ async function openSettings(
   listId = regionsList,
   { mode = "dev" }: { mode?: "dev" | "prod" } = {},
 ) {
-  mockSession({
-    me: {
-      ...me,
-      workspaces: [{ ...workspace, role: "admin" as components["schemas"]["WorkspaceRole"] }],
-    },
-  })
-  serveModels([{ ...model, mode }])
-  const store = serveLists(listsStructure())
-  const app = renderApp(`/m/${model.id}/lists/${listId}`)
+  const app = openListsApp(`/lists/${listId}`, { mode })
   await typist.click(await screen.findByRole("button", { name: "List settings" }))
   const sheet = within(await screen.findByRole("dialog", { name: "List settings" }))
-  return { sheet, store, ...app }
+  return { sheet, ...app }
 }
 
 describe("the settings of a list", () => {
@@ -50,12 +47,9 @@ describe("the settings of a list", () => {
 
   it("say a numbered list repeats its names", async () => {
     const typist = userEvent.setup()
-    mockSession()
-    serveModels([model])
     const structure = listsStructure()
     structure.lists[2] = { ...structure.lists[2], numbered: true }
-    serveLists(structure)
-    renderApp(`/m/${model.id}/lists/${productsList}`)
+    openListsApp(`/lists/${productsList}`, { structure })
     await typist.click(await screen.findByRole("button", { name: "List settings" }))
 
     const sheet = within(await screen.findByRole("dialog", { name: "List settings" }))

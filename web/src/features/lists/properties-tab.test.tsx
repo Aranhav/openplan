@@ -2,9 +2,8 @@ import { screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { toast } from "sonner"
 import { describe, expect, it, vi } from "vitest"
-import type { components } from "@/lib/api/schema"
-import { makeModel, me, mockSession, renderApp, serveModels, workspace } from "@/test/app"
-import { apac, emea, listsStructure, regionsList, serveLists } from "@/test/lists"
+import { makeModel } from "@/test/app"
+import { apac, emea, listsStructure, openListsApp, regionsList } from "@/test/lists"
 import { makeLineItem } from "@/test/structure"
 import { header, lineItem, member, salesView, serveViewQuery } from "@/test/view-query"
 import { mockViewport } from "@/test/viewport"
@@ -49,21 +48,12 @@ function withProperty() {
 }
 
 function openProperties({
-  role = "admin",
-  mode = "dev",
+  path = `/lists/${regionsList}?tab=properties`,
   structure = withProperty(),
-  path = `/m/${model.id}/lists/${regionsList}?tab=properties`,
-}: {
-  role?: components["schemas"]["WorkspaceRole"]
-  mode?: "dev" | "prod"
-  structure?: ReturnType<typeof listsStructure>
-  path?: string
-} = {}) {
+  ...options
+}: Parameters<typeof openListsApp>[1] & { path?: string } = {}) {
   mockViewport(1000, 600)
-  mockSession({ me: { ...me, workspaces: [{ ...workspace, role }] } })
-  serveModels([{ ...model, mode }])
-  const store = serveLists(structure)
-  // After the store, which has no view to answer with.
+  // Before the app is drawn, which asks for it at once.
   const served = serveViewQuery(
     salesView({
       rowDims: [{ kind: "list", list: regionsList }],
@@ -81,7 +71,7 @@ function openProperties({
       cell: (row) => ({ value: { t: "text", v: row === 0 ? "EUR" : "JPY" }, flags: ["input"] }),
     }),
   )
-  return { store, served, ...renderApp(path) }
+  return { served, ...openListsApp(path, { structure, ...options }) }
 }
 
 async function page() {
@@ -91,7 +81,7 @@ async function page() {
 describe("the tabs of a list", () => {
   it("open on the items, with the properties one click away and in the address", async () => {
     const typist = userEvent.setup()
-    const { router } = openProperties({ path: `/m/${model.id}/lists/${regionsList}` })
+    const { router } = openProperties({ path: `/lists/${regionsList}` })
     const content = await page()
 
     expect(await content.findByRole("tab", { name: "Items" })).toHaveAttribute(
@@ -120,7 +110,7 @@ describe("the tabs of a list", () => {
   })
 
   it("take any other tab in the address for the items", async () => {
-    openProperties({ path: `/m/${model.id}/lists/${regionsList}?tab=nonsense` })
+    openProperties({ path: `/lists/${regionsList}?tab=nonsense` })
 
     expect(await (await page()).findByRole("tab", { name: "Items" })).toHaveAttribute(
       "aria-selected",
