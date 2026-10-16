@@ -603,10 +603,18 @@ describe("list cells", () => {
     const { grid, bodies } = await setup()
     await select(grid, 2, REGION)
 
-    await userEvent.keyboard("{Enter}{ArrowDown}{Shift>}{Enter}{/Shift}")
+    await userEvent.keyboard("{Enter}{ArrowDown}{Enter}")
 
     await waitFor(() => expect(bodies).toHaveLength(1))
-    expectActive(grid, 1, REGION)
+    expect(bodies[0].edits).toEqual([written("li-region", 2, { t: "item", v: "r-apac" })])
+    expectActive(grid, 3, REGION)
+
+    await select(grid, 4, REGION)
+    await userEvent.keyboard("{Enter}{ArrowDown}{Shift>}{Enter}{/Shift}")
+
+    await waitFor(() => expect(bodies).toHaveLength(2))
+    expect(bodies[1].edits).toEqual([written("li-region", 4, { t: "item", v: "r-apac" })])
+    expectActive(grid, 3, REGION)
   })
 
   it("open with the typed text as the search", async () => {
