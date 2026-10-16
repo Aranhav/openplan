@@ -61,16 +61,32 @@ test("a builder sets the calendar, confirming a change of timeline, and the time
   await expect(build.getByRole("link", { name: "Time" })).toHaveAttribute("aria-current", "page")
 
   const calendar = card(page, "Calendar")
-  await calendar.getByRole("combobox", { name: "Fiscal year starts" }).click()
-  await page.getByRole("option", { name: "April" }).click()
-  await calendar.getByLabel("First fiscal year").fill("2027")
+  const preview = page.getByRole("table", { name: "Timeline preview" })
+  async function editCalendar() {
+    await calendar.getByRole("combobox", { name: "Fiscal year starts" }).click()
+    await page.getByRole("option", { name: "April" }).click()
+    await calendar.getByLabel("First fiscal year").fill("2027")
+    await calendar.getByLabel("Years", { exact: true }).fill("2")
+  }
+
+  // The preview follows the form before anything is saved.
+  await editCalendar()
+  await expect(calendar.getByText(/Shown as FY27\./)).toBeVisible()
+  await expect(preview.getByRole("row")).toHaveCount(3)
+  await expect(preview.getByRole("row", { name: /^FY27/ })).toContainText("Apr 26 – Mar 27")
+  await expect(preview.getByRole("row", { name: /^FY28/ })).toContainText("Apr 27 – Mar 28")
+  await expect(card(page, "Timeline preview")).toContainText("Follows the form; save to keep it.")
+  await screenshot(page, "w2-time-preview-edit", {
+    ready: preview.getByRole("row", { name: /^FY28/ }),
+    reopen: editCalendar,
+  })
+
   await calendar.getByLabel("Years", { exact: true }).fill("21")
   await calendar.getByRole("button", { name: "Save changes" }).click()
   await expect(calendar.getByText("Years must be between 1 and 20.")).toBeVisible()
   await expect(page.getByRole("alertdialog")).toHaveCount(0)
 
   await calendar.getByLabel("Years", { exact: true }).fill("2")
-  await expect(calendar.getByText(/Shown as FY27\./)).toBeVisible()
   await calendar.getByRole("button", { name: "Save changes" }).click()
   const confirm = page.getByRole("alertdialog", { name: "Change the timeline?" })
   await expect(confirm).toContainText(
@@ -80,7 +96,10 @@ test("a builder sets the calendar, confirming a change of timeline, and the time
   await expect(toastWith(page, "Calendar saved").last()).toBeVisible()
   await expect(confirm).toBeHidden()
 
-  const preview = page.getByRole("table", { name: "Timeline preview" })
+  // Saved, the preview is what the server says, which is what the form showed before.
+  await expect(card(page, "Timeline preview")).toContainText(
+    "The timeline, one row per fiscal year.",
+  )
   await expect(preview.getByRole("row", { name: /^FY27/ })).toContainText("Apr 26 – Mar 27")
   await expect(preview.getByRole("row", { name: /^FY28/ })).toContainText("Apr 27 – Mar 28")
   await expect(preview.getByRole("row", { name: /^FY28/ })).toContainText("Q4 FY28")
@@ -158,6 +177,7 @@ test("a builder adds, renames and changes versions, and the choices survive a re
   await expect(table.getByRole("row")).toHaveCount(4)
   await expect(table.getByRole("radio", { name: "Actual, actual version" })).toBeChecked()
   await expect(table.getByRole("radio", { name: "Budget, current version" })).toBeChecked()
+  await expect(page.getByText("The actual and current versions can't be deleted.")).toBeVisible()
 
   await page.getByRole("button", { name: "Add version" }).click()
   const add = page.getByRole("dialog", { name: "Add version" })
@@ -169,13 +189,25 @@ test("a builder adds, renames and changes versions, and the choices survive a re
   await expect(toastWith(page, "Version added")).toBeVisible()
   await expect(page.getByRole("button", { name: "Add version" })).toBeFocused()
 
+  // Turning a name into an input moves none of the columns.
+  const columns = async () => {
+    const xs: Record<string, number> = {}
+    for (const name of ["Actual", "Current", "Switchover"]) {
+      const box = await table.locator("th", { hasText: new RegExp(`^${name}$`) }).boundingBox()
+      xs[name] = Math.round(box?.x ?? -1)
+    }
+    return xs
+  }
+  const columnsBefore = await columns()
   await table.getByRole("button", { name: "Rename Downside" }).click()
   const rename = table.getByRole("textbox", { name: "Name of Downside" })
   await expect(rename).toBeFocused()
+  expect(await columns()).toEqual(columnsBefore)
   await rename.fill("Downside case")
   await rename.press("Enter")
   await expect(toastWith(page, "Version renamed")).toBeVisible()
   await expect(table.getByRole("button", { name: "Rename Downside case" })).toBeFocused()
+  expect(await columns()).toEqual(columnsBefore)
 
   await table.getByRole("button", { name: "Rename Forecast" }).click()
   await table.getByRole("textbox", { name: "Name of Forecast" }).fill("Nope")
@@ -240,6 +272,7 @@ test("a viewer sees the calendar and the versions as text", async ({ page }) => 
 
   await page.goto(`/m/${modelId}/versions`)
   const table = page.getByRole("table", { name: "Versions" })
+  await expect(page.getByText(/Only workspace admins and builders can change them\./)).toBeVisible()
   await expect(table.getByRole("row", { name: /^Forecast/ })).toContainText("Oct 26")
   await expect(page.getByRole("radio")).toHaveCount(0)
   await expect(page.getByRole("combobox")).toHaveCount(0)
