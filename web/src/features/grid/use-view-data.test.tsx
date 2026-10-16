@@ -1,8 +1,8 @@
-import { QueryClientProvider, hashKey } from "@tanstack/react-query"
+import { QueryClientProvider, hashKey, notifyManager } from "@tanstack/react-query"
 import { act, renderHook, waitFor } from "@testing-library/react"
 import type { ReactNode } from "react"
 import { HttpResponse, delay, http } from "msw"
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { queryKeys } from "@/lib/api/keys"
 import { QUERY_STALE_TIME } from "@/lib/query-client"
 import { createTestQueryClient } from "@/test/render"
@@ -38,6 +38,48 @@ const topLeft: CellRange = { rowStart: 0, rowEnd: 20, colStart: 0, colEnd: 5 }
 
 function windows(requests: { window: { row_offset: number; col_offset: number } }[]) {
   return requests.map((r) => `${r.window.row_offset / 100},${r.window.col_offset / 40}`).sort()
+}
+
+// The neighbours of the visible blocks wait 80 ms before they are asked for, to see whether the
+// view moves on. A test that is about that puts the clock in its own hands: only `setTimeout` is
+// stopped, and React Query tells React without it, so the one thing that waits is the settling,
+// and it waits for as long as the test says. Responses are real, and `until` lets them arrive.
+
+function freezeClock() {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+  notifyManager.setScheduler(queueMicrotask)
+}
+
+afterEach(() => {
+  vi.useRealTimers()
+  notifyManager.setScheduler((callback) => setTimeout(callback, 0))
+})
+
+/** Lets what is under way finish, responses and renders, while the clock stands still. */
+async function until(check: () => boolean) {
+  // A message is a turn of the event loop that no fake timer stands in the way of.
+  const { port1, port2 } = new MessageChannel()
+  const turn = () =>
+    new Promise<void>((resolve) => {
+      port1.onmessage = () => resolve()
+      port2.postMessage(null)
+    })
+  await act(async () => {
+    for (let turns = 0; turns < 2_000 && !check(); turns++) {
+      await turn()
+    }
+  })
+  port1.close()
+  port2.close()
+  expect(check()).toBe(true)
+}
+
+/** Moves the clock on, and lets what that sets going finish. */
+async function pass(ms: number, settled: () => boolean) {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(ms)
+  })
+  await until(settled)
 }
 
 describe("useViewData", () => {
@@ -92,6 +134,7 @@ describe("useViewData", () => {
   })
 
   it("asks for the first block alone until it knows how big the view is", async () => {
+    freezeClock()
     const requests: ViewQuery[] = []
     let release = () => {}
     const gate = new Promise<void>((resolve) => {
@@ -109,11 +152,16 @@ describe("useViewData", () => {
 
     renderHook(() => useViewData(MODEL_ID, salesQuery, topLeft), { wrapper: Wrapper })
 
-    await waitFor(() => expect(requests).toHaveLength(1))
-    await new Promise((resolve) => setTimeout(resolve, 50))
+    await until(() => requests.length === 1)
+    // Longer than the neighbours would wait: they are not asked for before the size is known.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250)
+    })
     expect(windows(requests)).toEqual(["0,0"])
     release()
-    await waitFor(() => expect(requests).toHaveLength(4))
+    await until(() => requests.length === 1)
+    await pass(250, () => requests.length === 4)
+    expect(windows(requests)).toEqual(["0,0", "0,1", "1,0", "1,1"])
   })
 
   it("follows the visible range down the grid, keeping the first block for the totals", async () => {
@@ -325,7 +373,6 @@ describe("useViewData", () => {
 
 describe("useViewData settling and caching", () => {
   const far: CellRange = { rowStart: 500, rowEnd: 520, colStart: 0, colEnd: 5 }
-  const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
   /** Answers every block after `ms`, and records whether the browser gave up on it. */
   function serveSlowly(ms: number) {
@@ -346,20 +393,39 @@ describe("useViewData settling and caching", () => {
   }
 
   it("does not ask for the blocks next to the view when it moves on before they settle", async () => {
+    freezeClock()
     const served = serveViewQuery()
     const { Wrapper } = wrapper()
     const { result, rerender } = renderHook(
       ({ visible }: { visible: CellRange }) => useViewData(MODEL_ID, salesQuery, visible),
       { wrapper: Wrapper, initialProps: { visible: topLeft } },
     )
-    await waitFor(() => expect(result.current.hasShape).toBe(true), { interval: 2 })
+    await until(() => result.current.hasShape)
 
+    // The clock has not moved, so the blocks next to the top left are still settling.
     rerender({ visible: far })
-    await waitFor(() => expect(result.current.cell(500, 0)).toBeDefined())
-    await wait(250)
+    await until(() => result.current.cell(500, 0) !== undefined)
+    await pass(250, () => !result.current.isFetching)
 
-    // The blocks that were next to the top left never left the settling, so they cost nothing.
+    // They never left the settling, so they cost nothing.
     expect(windows(served.requests)).toEqual(["0,0", "4,0", "4,1", "5,0", "5,1", "6,0", "6,1"])
+  })
+
+  it("asks for the blocks next to the view once it has stayed for the time they settle in", async () => {
+    freezeClock()
+    const served = serveViewQuery()
+    const { Wrapper } = wrapper()
+    const { result } = renderHook(() => useViewData(MODEL_ID, salesQuery, topLeft), {
+      wrapper: Wrapper,
+    })
+    await until(() => result.current.hasShape)
+    await until(() => served.requests.length === 1)
+
+    await pass(79, () => served.requests.length === 1)
+    expect(windows(served.requests)).toEqual(["0,0"])
+    await pass(1, () => served.requests.length === 4)
+
+    expect(windows(served.requests)).toEqual(["0,0", "0,1", "1,0", "1,1"])
   })
 
   it("asks at once for the blocks that hold what is visible", async () => {
@@ -398,21 +464,22 @@ describe("useViewData settling and caching", () => {
   })
 
   it("loads nothing again when the view goes away and comes back", async () => {
+    freezeClock()
     const served = serveViewQuery()
     const { Wrapper } = wrapper()
     const { result, rerender } = renderHook(
       ({ visible }: { visible: CellRange }) => useViewData(MODEL_ID, salesQuery, visible),
       { wrapper: Wrapper, initialProps: { visible: topLeft } },
     )
-    await waitFor(() => expect(result.current.isFetching).toBe(false))
-    await waitFor(() => expect(served.requests).toHaveLength(4))
+    await until(() => result.current.hasShape)
+    await pass(250, () => served.requests.length === 4 && !result.current.isFetching)
     rerender({ visible: far })
-    await waitFor(() => expect(result.current.cell(500, 0)).toBeDefined())
-    await waitFor(() => expect(result.current.isFetching).toBe(false))
+    await until(() => result.current.cell(500, 0) !== undefined)
+    await pass(250, () => !result.current.isFetching)
     const after = served.requests.length
 
     rerender({ visible: topLeft })
-    await wait(250)
+    await pass(250, () => !result.current.isFetching)
 
     expect(result.current.cell(0, 0)).toBeDefined()
     expect(result.current.cell(150, 0)).toBeDefined()
@@ -420,6 +487,7 @@ describe("useViewData settling and caching", () => {
   })
 
   it("never asks for the same block twice, however many views want it", async () => {
+    freezeClock()
     const served = serveViewQuery()
     const { Wrapper } = wrapper()
 
@@ -430,10 +498,10 @@ describe("useViewData settling and caching", () => {
       ],
       { wrapper: Wrapper, initialProps: { visible: topLeft } },
     )
-    await waitFor(() => expect(result.current[0].isFetching).toBe(false))
-    await waitFor(() => expect(served.requests).toHaveLength(4))
+    await until(() => result.current[0].hasShape)
+    await pass(250, () => served.requests.length === 4 && !result.current[0].isFetching)
     rerender({ visible: { ...topLeft, rowEnd: 30, colEnd: 8 } })
-    await wait(250)
+    await pass(250, () => !result.current[0].isFetching)
 
     const asked = windows(served.requests)
     expect(new Set(asked).size).toBe(asked.length)
