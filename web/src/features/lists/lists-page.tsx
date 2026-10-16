@@ -103,7 +103,7 @@ function Lists({ modelId, structure, action }: ListsProps) {
           <TableRow>
             <TableHead className="pl-4">Name</TableHead>
             <TableHead className={WIDE_CELL}>Parent list</TableHead>
-            <TableHead className="w-20 text-right lg:w-auto">Items</TableHead>
+            <TableHead className="w-24 pr-6 text-right lg:w-auto">Items</TableHead>
             <TableHead className={WIDE_CELL}>Top level</TableHead>
             <TableHead className={`${WIDE_CELL} pr-4`}>Settings</TableHead>
           </TableRow>
@@ -165,7 +165,7 @@ function ListRow({ modelId, list, parent }: { modelId: string; list: ListDto; pa
           <span className="text-muted-foreground">None</span>
         )}
       </TableCell>
-      <TableCell className="text-right tabular-nums">
+      <TableCell className="pr-6 text-right tabular-nums">
         {list.items.length.toLocaleString("en")}
       </TableCell>
       <TableCell className={WIDE_CELL}>

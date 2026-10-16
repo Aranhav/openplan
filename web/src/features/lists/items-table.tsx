@@ -31,6 +31,10 @@ import { countOf } from "./words"
 const ROW_HEIGHT = 41
 const OVERSCAN = 12
 
+/** The shadcn checkbox draws a tick for the mixed state too; this draws the dash it should. */
+const MIXED =
+  "data-[state=indeterminate]:flex data-[state=indeterminate]:items-center data-[state=indeterminate]:justify-center data-[state=indeterminate]:border-primary data-[state=indeterminate]:bg-primary data-[state=indeterminate]:*:hidden data-[state=indeterminate]:after:block data-[state=indeterminate]:after:h-0.5 data-[state=indeterminate]:after:w-2 data-[state=indeterminate]:after:bg-primary-foreground"
+
 const codeSchema = z.string().trim()
 
 type UpdateItemRequest = components["schemas"]["UpdateItemRequest"]
@@ -115,7 +119,7 @@ export function ItemsTable({
       <Table
         aria-label={`Items of ${list.name}`}
         aria-rowcount={windowed ? rows.length + 1 : undefined}
-        className="min-w-[44rem]"
+        className="min-w-[34rem]"
       >
         <TableHeader className="sticky top-0 z-10 bg-background shadow-[0_1px_0_0_var(--border)]">
           <TableRow>
@@ -124,6 +128,7 @@ export function ItemsTable({
                 <Checkbox
                   ref={selectAllRef}
                   aria-label="Select all items"
+                  className={MIXED}
                   checked={allSelected}
                   onCheckedChange={(checked) => onToggleAll(checked === true)}
                 />
@@ -132,8 +137,8 @@ export function ItemsTable({
             <TableHead className={cn("w-full", hasParent ? "pl-8" : !editable && "pl-4")}>
               Name
             </TableHead>
-            <TableHead className={hasParent ? "w-44" : "w-72 pr-4"}>Code</TableHead>
-            {hasParent && <TableHead className="w-80 pr-4">Parent</TableHead>}
+            <TableHead className={hasParent ? "min-w-40" : "min-w-72 pr-4"}>Code</TableHead>
+            {hasParent && <TableHead className="min-w-56 pr-4">Parent</TableHead>}
           </TableRow>
         </TableHeader>
         <TableBody>
