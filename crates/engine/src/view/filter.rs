@@ -151,6 +151,8 @@ impl<'a> Cx<'a> {
                 passing.push(at);
             }
         }
+        // The rows are kept for a while, and a list grown by pushing has up to twice the room.
+        passing.shrink_to_fit();
         Ok(Some(Arc::new(passing)))
     }
 

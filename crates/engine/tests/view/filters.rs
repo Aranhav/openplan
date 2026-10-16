@@ -681,3 +681,31 @@ fn rows_that_do_not_fit_the_view_are_worked_out_again() {
     assert_eq!(result, run(&w.model, &q));
     assert!(!Arc::ptr_eq(&passing.unwrap(), &wrong));
 }
+
+#[test]
+fn the_rows_that_pass_take_no_more_room_than_they_need() {
+    // 20,000 rows that all pass: pushed one at a time they would be in a room for 32,768.
+    let mut model = Model::new(calendar());
+    let (list, _) = model_with_list(&mut model, "Item", 20_000);
+    let module = new_module(&mut model, "Counts", vec![AxisSpec::List { list }]);
+    let count = single_cell_item(&mut model, module);
+    set(&mut model, count, Vec::new(), num(1.0));
+    let mut q = query_of(
+        module,
+        vec![ViewDim::List { list }],
+        vec![ViewDim::LineItems],
+        Vec::new(),
+    );
+    q.filters = vec![RowFilter {
+        line_item: count,
+        op: FilterOp::Gt,
+        value: Some(num(0.0)),
+    }];
+
+    let (result, passing) = query_with(&model, &q, None).unwrap();
+
+    let passing = passing.unwrap();
+    assert_eq!(result.total_rows, 20_000);
+    assert_eq!(passing.len(), 20_000);
+    assert_eq!(passing.capacity(), passing.len());
+}
