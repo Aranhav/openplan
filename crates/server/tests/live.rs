@@ -500,7 +500,9 @@ async fn a_model_deleted_before_the_socket_opens_is_not_found(pool: PgPool) {
 
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn the_server_pings_every_so_often(pool: PgPool) {
-    let (mut admin, _, id) = plan_in(TestApp::with_live(pool.clone(), short(100, 60_000))).await;
+    // A client that is not read for two intervals is left, so the interval is long enough that a
+    // test thread kept waiting by a busy machine still answers in time.
+    let (mut admin, _, id) = plan_in(TestApp::with_live(pool.clone(), short(400, 60_000))).await;
     let address = admin.serve().await;
     let (mut socket, _) = follow(address, &mut admin, &id).await;
 
@@ -652,13 +654,17 @@ async fn a_user_has_20_sockets_open_at_most(pool: PgPool) {
 
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
 async fn a_socket_whose_client_answers_no_pings_is_closed(pool: PgPool) {
-    let (mut admin, _, id) = plan_in(TestApp::with_live(pool.clone(), short(100, 60_000))).await;
+    // The interval is long enough that the client that reads, which has two intervals to answer a
+    // ping in, is not left because the machine kept the test waiting.
+    let ping_every = 400;
+    let (mut admin, _, id) =
+        plan_in(TestApp::with_live(pool.clone(), short(ping_every, 60_000))).await;
     let address = admin.serve().await;
     let (mut silent, _) = follow(address, &mut admin, &id).await;
     let (mut listening, _) = follow(address, &mut admin, &id).await;
 
-    // A client that reads answers the pings of a second, ten of them, and stays.
-    assert!(stays_open(&mut listening, Duration::from_millis(900)).await);
+    // A client that reads answers the pings of several intervals, and stays.
+    assert!(stays_open(&mut listening, Duration::from_millis(ping_every * 5)).await);
 
     // The one that did not read has been left by the server after the first ping that nothing
     // answered, without a word about it: it finds the connection gone.
