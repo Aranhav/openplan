@@ -188,8 +188,12 @@ async function audit(page: Page) {
   await check("Conditional formatting sheet")
   await rules.getByRole("button", { name: "Apply rules" }).click()
   await expect(grid(page).locator("[data-row='0'][data-col='1']")).toHaveClass(/bg-green-500/)
-  // The focus is back on the button that opened the sheet, which has a tooltip of its name.
-  await page.keyboard.press("Escape")
+  // The focus goes back to the button that opened the sheet, which shows a tooltip with its name
+  // while it has the focus. A tooltip is outside every landmark, so the page is checked without it.
+  await expect(rules).toBeHidden()
+  const formatting = bar.getByRole("button", { name: "Conditional formatting" })
+  await expect(formatting).toBeFocused()
+  await formatting.blur()
   await expect(page.getByRole("tooltip")).toHaveCount(0)
   await check("Grid with a conditional format")
 
