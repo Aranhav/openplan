@@ -68,19 +68,19 @@ impl From<ViewDim> for ViewDimDto {
 }
 
 /// The member that a dimension on a page shows.
-#[derive(Deserialize, ToSchema)]
+#[derive(Serialize, Deserialize, ToSchema)]
 pub struct PageSelectionDto {
-    dim: ViewDimDto,
+    pub(crate) dim: ViewDimDto,
     /// The key of the member; the default member of the dimension when it is absent.
-    key: Option<String>,
+    pub(crate) key: Option<String>,
 }
 
 /// One member of a dimension, named by its key. A list item (at any level), a version and a line
 /// item are keyed by their id, the total of a list by `"top"` and a period by its label.
-#[derive(Deserialize, ToSchema)]
+#[derive(Serialize, Deserialize, ToSchema)]
 pub struct MemberRefDto {
-    dim: ViewDimDto,
-    key: String,
+    pub(crate) dim: ViewDimDto,
+    pub(crate) key: String,
 }
 
 /// The slice of a view to return.
@@ -95,7 +95,7 @@ pub struct WindowDto {
 }
 
 /// How a filter compares the value of a row with its own.
-#[derive(Clone, Copy, Deserialize, ToSchema)]
+#[derive(Clone, Copy, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FilterOpDto {
     Eq,
@@ -133,9 +133,9 @@ impl From<FilterOpDto> for FilterOp {
 
 /// A condition on the rows of a view: the value of a line item for the row, compared with
 /// `value`, which the blank, true and false operations leave out.
-#[derive(Deserialize, ToSchema)]
+#[derive(Serialize, Deserialize, ToSchema)]
 pub struct RowFilterDto {
-    line_item: Uuid,
+    pub(crate) line_item: Uuid,
     op: FilterOpDto,
     #[serde(default)]
     value: Option<ValueDto>,

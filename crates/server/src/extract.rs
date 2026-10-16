@@ -10,7 +10,7 @@ use axum::{
     http::{HeaderMap, StatusCode, header::CONTENT_TYPE, request::Parts},
 };
 use serde::{
-    Deserialize, Deserializer,
+    Deserialize, Deserializer, Serialize, Serializer,
     de::{DeserializeOwned, IgnoredAny, SeqAccess, Visitor},
 };
 
@@ -173,6 +173,21 @@ impl<T, const N: usize> Default for Capped<T, N> {
             items: Vec::new(),
             total: 0,
         }
+    }
+}
+
+/// A list of `items`, all of them counted, so that one longer than `N` is over.
+impl<T, const N: usize> From<Vec<T>> for Capped<T, N> {
+    fn from(items: Vec<T>) -> Self {
+        let total = items.len();
+        Capped { items, total }
+    }
+}
+
+/// The elements that were kept, as a list.
+impl<T: Serialize, const N: usize> Serialize for Capped<T, N> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.items.serialize(serializer)
     }
 }
 

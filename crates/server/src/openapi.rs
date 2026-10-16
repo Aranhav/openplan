@@ -48,6 +48,10 @@ use crate::{
         MembersRequest, MembersResponse, PageMemberDto, PageSelectionDto, RowFilterDto, ViewDimDto,
         ViewMemberDto, ViewQueryDto, ViewResultDto, WindowDto,
     },
+    views_api::{
+        ConditionalFormat, CreateViewRequest, FormatColor, FormatOp, FormatStyle,
+        UpdateViewRequest, ViewDefinition, ViewDto,
+    },
     workspaces::{
         AddMemberRequest, ChangeRoleRequest, MemberDto, WorkspaceNameRequest, WorkspaceSummary,
     },
@@ -135,6 +139,10 @@ const CSRF_EXEMPT_PATHS: [&str; 3] = ["/api/v1/setup", "/api/v1/auth/login", "/a
         crate::cells_api::cell_history,
         crate::query_api::query,
         crate::query_api::members,
+        crate::views_api::list_views,
+        crate::views_api::create_view,
+        crate::views_api::update_view,
+        crate::views_api::delete_view,
         crate::live::create_ticket,
         crate::live::connect,
     ),
@@ -234,6 +242,14 @@ const CSRF_EXEMPT_PATHS: [&str; 3] = ["/api/v1/setup", "/api/v1/auth/login", "/a
         CellDto,
         LineItemInfoDto,
         ViewResultDto,
+        ViewDefinition,
+        ConditionalFormat,
+        FormatOp,
+        FormatColor,
+        FormatStyle,
+        CreateViewRequest,
+        UpdateViewRequest,
+        ViewDto,
         LiveTicketResponse,
     ))
 )]

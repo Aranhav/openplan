@@ -24,5 +24,6 @@ pub mod users;
 pub mod validate;
 pub mod view_cache;
 pub mod view_dto;
+pub mod views_api;
 pub mod work;
 pub mod workspaces;

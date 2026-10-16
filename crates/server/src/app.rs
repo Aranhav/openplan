@@ -29,7 +29,7 @@ use crate::{
     live::{self, Live, LiveSettings},
     models, modules_api,
     openapi::ApiDoc,
-    query_api, static_files, structure_api, users,
+    query_api, static_files, structure_api, users, views_api,
     work::Work,
     workspaces,
 };
@@ -143,6 +143,7 @@ pub fn build_router(state: AppState) -> Router {
         .merge(modules_api::router())
         .merge(cells_api::router())
         .merge(query_api::router())
+        .merge(views_api::router())
         .merge(live::router())
         .layer(middleware::from_fn(csrf::require_csrf));
     let api_v1: Router<AppState> = csrf_protected
