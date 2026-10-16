@@ -307,6 +307,18 @@ describe("the formula bar in the grid tab", () => {
 })
 
 describe("renaming a module in its title", () => {
+  /**
+   * The title once the rename is over. While the input is open a hidden heading says the name too,
+   * and it shows the new one before the title does: a heading found by `findByRole` can be that one,
+   * which the title then replaces, so the test waits for the input to be gone.
+   */
+  async function renamedTo(content: ReturnType<typeof within>, name: string) {
+    await waitFor(() => {
+      expect(content.queryByRole("textbox", { name: "Module name" })).toBeNull()
+      expect(content.getByRole("heading", { level: 1, name })).toBeVisible()
+    })
+  }
+
   async function startRename(typist: Typist, path = revenuePath) {
     const app = openApp(path)
     const content = await page()
@@ -327,7 +339,7 @@ describe("renaming a module in its title", () => {
     await typist.clear(input)
     await typist.type(input, "Sales{Enter}")
 
-    expect(await content.findByRole("heading", { level: 1, name: "Sales" })).toBeVisible()
+    await renamedTo(content, "Sales")
     expect(store.requests).toEqual([
       {
         action: "update module",
@@ -353,9 +365,8 @@ describe("renaming a module in its title", () => {
     expect(input).toHaveAttribute("readonly")
     expect(spinning(input.parentElement as HTMLElement)).toBe(true)
     release()
-    expect(await content.findByRole("heading", { level: 1, name: "Sales" })).toBeVisible()
+    await renamedTo(content, "Sales")
     await waitFor(() => expect(content.queryByText("Saving the name")).toBeNull())
-    expect(content.queryByRole("textbox", { name: "Module name" })).toBeNull()
   })
 
   it("gives up on Escape and changes nothing", async () => {
@@ -377,10 +388,7 @@ describe("renaming a module in its title", () => {
     await typist.type(input, "Turnover")
     await typist.tab()
 
-    // The title is the same name for a moment in the input's hidden heading and then in its own.
-    await waitFor(() =>
-      expect(content.getByRole("heading", { level: 1, name: "Turnover" })).toBeVisible(),
-    )
+    await renamedTo(content, "Turnover")
     expect(store.requests).toHaveLength(1)
   })
 
