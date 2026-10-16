@@ -122,6 +122,20 @@ describe("the list page", () => {
   })
 })
 
+describe("the properties of a list", () => {
+  it("have no accessibility violations when there are none, nor with the dialog that adds one", async () => {
+    const typist = userEvent.setup()
+    open(`/${regionsList}?tab=properties`)
+    await screen.findByRole("heading", { name: "No properties yet" })
+
+    expect(await violations()).toEqual([])
+    await typist.click(screen.getByRole("button", { name: "Add property" }))
+    await screen.findByRole("dialog", { name: "Add line item" })
+
+    expect(await violations()).toEqual([])
+  })
+})
+
 describe("the dialogs and sheets of the list page", () => {
   it("have none with the bulk add dialog open and a problem listed", async () => {
     const typist = userEvent.setup()

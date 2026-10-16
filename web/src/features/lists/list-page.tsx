@@ -8,6 +8,7 @@ import { ProductionLock, ProductionNotice } from "@/components/production-lock"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useStructure } from "@/features/structure/api"
 import type { StructureDto } from "@/features/structure/types"
 import { useDocumentTitle } from "@/hooks/use-document-title"
@@ -15,19 +16,24 @@ import { useRestoreFocus } from "@/hooks/use-restore-focus"
 import { useStructureAccess } from "@/hooks/use-structure-access"
 import { ItemsTab } from "./items-tab"
 import { ListSettingsSheet } from "./list-settings-sheet"
+import { PropertiesTab } from "./properties-tab"
 import type { ListDto } from "./types"
+
+export type ListTab = "items" | "properties"
 
 interface ListPageProps {
   modelId: string
   listId: string
+  tab: ListTab
+  onTabChange: (tab: ListTab) => void
 }
 
-export function ListPage({ modelId, listId }: ListPageProps) {
+export function ListPage({ modelId, listId, ...rest }: ListPageProps) {
   const structure = useStructure(modelId)
   const list = structure.data?.lists.find((candidate) => candidate.id === listId)
 
   if (list && structure.data) {
-    return <ListScreen modelId={modelId} list={list} structure={structure.data} />
+    return <ListScreen modelId={modelId} list={list} structure={structure.data} {...rest} />
   }
   if (structure.data && !structure.isFetching) {
     return <ListNotFound modelId={modelId} />
@@ -79,13 +85,12 @@ function ListNotFound({ modelId }: { modelId: string }) {
   )
 }
 
-interface ListScreenProps {
-  modelId: string
+interface ListScreenProps extends Omit<ListPageProps, "listId"> {
   list: ListDto
   structure: StructureDto
 }
 
-function ListScreen({ modelId, list, structure }: ListScreenProps) {
+function ListScreen({ modelId, list, structure, tab, onTabChange }: ListScreenProps) {
   const navigate = useNavigate()
   const { canEdit, locked } = useStructureAccess(modelId)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -99,20 +104,19 @@ function ListScreen({ modelId, list, structure }: ListScreenProps) {
       <PageHeader
         title={list.name}
         description={
-          <div className="flex flex-wrap items-center gap-1.5">
-            {parentList && (
-              <Badge variant="outline" asChild>
-                <Link to="/m/$modelId/lists/$listId" params={{ modelId, listId: parentList.id }}>
-                  Parent list: {parentList.name}
-                </Link>
-              </Badge>
-            )}
-            {list.numbered && <Badge variant="secondary">Numbered</Badge>}
-            {list.production_data && <Badge variant="outline">Production data</Badge>}
-            {!parentList && !list.numbered && !list.production_data && (
-              <span>Items you plan over.</span>
-            )}
-          </div>
+          (parentList || list.numbered || list.production_data) && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              {parentList && (
+                <Badge variant="outline" asChild>
+                  <Link to="/m/$modelId/lists/$listId" params={{ modelId, listId: parentList.id }}>
+                    Parent list: {parentList.name}
+                  </Link>
+                </Badge>
+              )}
+              {list.numbered && <Badge variant="secondary">Numbered</Badge>}
+              {list.production_data && <Badge variant="outline">Production data</Badge>}
+            </div>
+          )
         }
         actions={
           canEdit && (
@@ -135,13 +139,30 @@ function ListScreen({ modelId, list, structure }: ListScreenProps) {
           <ProductionNotice />
         </div>
       )}
-      <ItemsTab
-        modelId={modelId}
-        list={list}
-        structure={structure}
-        canEdit={canEdit}
-        locked={locked}
-      />
+      <Tabs value={tab} onValueChange={(value) => onTabChange(value as ListTab)}>
+        <TabsList>
+          <TabsTrigger value="items">Items</TabsTrigger>
+          <TabsTrigger value="properties">Properties</TabsTrigger>
+        </TabsList>
+        <TabsContent value="items" className="mt-2">
+          <ItemsTab
+            modelId={modelId}
+            list={list}
+            structure={structure}
+            canEdit={canEdit}
+            locked={locked}
+          />
+        </TabsContent>
+        <TabsContent value="properties" className="mt-2">
+          <PropertiesTab
+            modelId={modelId}
+            list={list}
+            structure={structure}
+            canEdit={canEdit}
+            locked={locked}
+          />
+        </TabsContent>
+      </Tabs>
       {canEdit && (
         <ListSettingsSheet
           modelId={modelId}

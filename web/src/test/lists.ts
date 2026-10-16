@@ -3,7 +3,7 @@ import type { StructureDto } from "@/features/structure/types"
 import type { components } from "@/lib/api/schema"
 import { problem } from "./problem"
 import { server } from "./server"
-import { makeStructure } from "./structure"
+import { makeLineItem, makeStructure } from "./structure"
 
 type Schemas = components["schemas"]
 type StructureList = StructureDto["lists"][number]
@@ -283,6 +283,40 @@ export function serveLists(structure: StructureDto = listsStructure()): ListsSto
         })),
       }
       return new HttpResponse(null, { status: 204 })
+    }),
+    http.post("/api/v1/models/:id/modules/:moduleId/line-items", async ({ params, request }) => {
+      const body = (await record(
+        request,
+        `modules/${params.moduleId}/line-items`,
+      )) as Schemas["CreateLineItemRequest"]
+      const moduleId = String(params.moduleId)
+      const owner = list(moduleId)
+      const modules = store.structure.modules
+      // A list's id stands in for the module of its properties, which exists from the first one.
+      const created = makeLineItem({
+        id: newId(),
+        module: moduleId,
+        name: body.name,
+        ordinal: store.structure.line_items.filter((item) => item.module === moduleId).length,
+        ...(body.format && { format: body.format }),
+      })
+      store.structure = {
+        ...store.structure,
+        modules:
+          owner && !modules.some((module) => module.id === moduleId)
+            ? [
+                ...modules,
+                {
+                  id: moduleId,
+                  name: `${owner.name} Properties`,
+                  functional_area: "System",
+                  axes: [{ kind: "list", list: owner.id }],
+                },
+              ]
+            : modules,
+        line_items: [...store.structure.line_items, created],
+      }
+      return HttpResponse.json(created, { status: 201 })
     }),
     http.post("/api/v1/models/:id/subsets", async ({ request }) => {
       const body = (await record(request, "subsets")) as Schemas["CreateSubsetRequest"]
