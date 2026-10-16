@@ -324,6 +324,54 @@ export interface paths {
         patch: operations["update_item"];
         trace?: never;
     };
+    "/api/v1/models/{id}/live": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["connect"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/models/{id}/live/ticket": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["create_ticket"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/models/{id}/members": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["members"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/models/{id}/modules": {
         parameters: {
             query?: never;
@@ -371,6 +419,22 @@ export interface paths {
          *     exists from its first property on.
          */
         post: operations["create_line_item"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/models/{id}/query": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["query"];
         delete?: never;
         options?: never;
         head?: never;
@@ -712,12 +776,22 @@ export interface components {
             old: components["schemas"]["ValueDto"];
             user?: null | components["schemas"]["ChangedByDto"];
         };
+        /** @description One cell of a view. */
+        CellDto: {
+            /** @description In the order they are listed in here. */
+            flags: components["schemas"]["CellFlagDto"][];
+            /** @description The name that goes with an item value and the label that goes with a period value. */
+            text?: string;
+            value: components["schemas"]["ValueDto"];
+        };
         /** @description One cell to write. */
         CellEditDto: {
             /**
              * @description One token for each dimension of the line item, in the order the cells are laid out: the
              *     list and subset dimensions first, then Time, then Versions. An item id for a list or
              *     subset, a period label such as `Jan 26` for Time, and a version id for Versions.
+             *
+             *     At most 16.
              */
             coords: string[];
             /**
@@ -727,6 +801,11 @@ export interface components {
             line_item_id: string;
             value: components["schemas"]["ValueDto"];
         };
+        /**
+         * @description What a cell is.
+         * @enum {string}
+         */
+        CellFlagDto: "input" | "calculated" | "summary" | "readonly" | "na" | "error" | "switchover";
         ChangePasswordRequest: {
             current_password: string;
             new_password: string;
@@ -854,6 +933,11 @@ export interface components {
             field: string;
             message: string;
         };
+        /**
+         * @description How a filter compares the value of a row with its own.
+         * @enum {string}
+         */
+        FilterOpDto: "eq" | "ne" | "lt" | "le" | "gt" | "ge" | "contains" | "is_blank" | "not_blank" | "is_true" | "is_false";
         /** @description How a line item's values are typed and displayed. */
         FormatDto: {
             /**
@@ -925,6 +1009,10 @@ export interface components {
             min_args: number;
             name: string;
         };
+        /** @description The members of one row or column, one for each of its dimensions, in dimension order. */
+        HeaderDto: {
+            members: components["schemas"]["ViewMemberDto"][];
+        };
         HealthResponse: {
             status: string;
             version: string;
@@ -982,6 +1070,18 @@ export interface components {
             /** Format: uuid */
             write_access_driver?: string | null;
         };
+        /** @description What a client needs to know of a line item to show and edit its cells. */
+        LineItemInfoDto: {
+            /** @description The line item's own dimensions, in the order of its axes. */
+            dims: components["schemas"]["ViewDimDto"][];
+            /** @description What is wrong with its formula. */
+            errors: components["schemas"]["FormulaProblem"][];
+            format: components["schemas"]["FormatDto"];
+            /** Format: uuid */
+            id: string;
+            is_input: boolean;
+            name: string;
+        };
         /** @description A list of the model. */
         ListDto: {
             /** Format: uuid */
@@ -997,6 +1097,13 @@ export interface components {
             selective_access: boolean;
             /** @description The name of the single total item above all items, if the list has one. */
             top_level_name?: string | null;
+        };
+        /** @description Where to open the socket of a model, and the ticket to open it with. */
+        LiveTicketResponse: {
+            /** @description Good for one use, within a minute. */
+            ticket: string;
+            /** @description The address of the socket, to which `?ticket=` and the ticket are added. */
+            url: string;
         };
         LoginRequest: {
             email: string;
@@ -1015,6 +1122,25 @@ export interface components {
             role: components["schemas"]["WorkspaceRole"];
             /** Format: uuid */
             user_id: string;
+        };
+        /**
+         * @description One member of a dimension, named by its key. A list item (at any level), a version and a line
+         *     item are keyed by their id, the total of a list by `"top"` and a period by its label.
+         */
+        MemberRefDto: {
+            dim: components["schemas"]["ViewDimDto"];
+            key: string;
+        };
+        /** @description The dimension whose members to list, in a module. */
+        MembersRequest: {
+            dim: components["schemas"]["ViewDimDto"];
+            /** Format: uuid */
+            module_id: string;
+            /** @description Whether the totals are listed among the members, as in a query. True when absent. */
+            show_summaries?: boolean;
+        };
+        MembersResponse: {
+            members: components["schemas"]["ViewMemberDto"][];
         };
         ModelDto: {
             calendar: components["schemas"]["Calendar"];
@@ -1064,6 +1190,17 @@ export interface components {
             /** @enum {string} */
             type: "percent";
         };
+        /** @description The member a dimension on a page shows. */
+        PageMemberDto: {
+            dim: components["schemas"]["ViewDimDto"];
+            member: components["schemas"]["ViewMemberDto"];
+        };
+        /** @description The member that a dimension on a page shows. */
+        PageSelectionDto: {
+            dim: components["schemas"]["ViewDimDto"];
+            /** @description The key of the member; the default member of the dimension when it is absent. */
+            key?: string | null;
+        };
         /** @description The body of every error response, served as `application/problem+json`. */
         Problem: {
             /** @description A stable code such as `auth.csrf` that clients can match on. */
@@ -1090,7 +1227,7 @@ export interface components {
              *     subset dimension takes an item id, which reads the cell itself, an item of a list above
              *     it, which reads the total of the items below it, or `"top"`, the total of all of them. A
              *     Time dimension takes a period label at its level or a coarser one, whatever the case. A
-             *     Versions dimension takes a version id.
+             *     Versions dimension takes a version id. A cell has at most 16 coordinates.
              */
             cells: string[][];
             /** Format: uuid */
@@ -1105,6 +1242,16 @@ export interface components {
             ids: string[];
             /** Format: uuid */
             module_id: string;
+        };
+        /**
+         * @description A condition on the rows of a view: the value of a line item for the row, compared with
+         *     `value`, which the blank, true and false operations leave out.
+         */
+        RowFilterDto: {
+            /** Format: uuid */
+            line_item: string;
+            op: components["schemas"]["FilterOpDto"];
+            value?: null | components["schemas"]["ValueDto"];
         };
         SetupRequest: {
             email: string;
@@ -1484,6 +1631,112 @@ export interface components {
         VersionsScopeDto: "module" | "none" | {
             only: string[];
         };
+        /** @description A dimension of a module's grid: one of its axes, or its line items. */
+        ViewDimDto: {
+            /** @enum {string} */
+            kind: "line_items";
+        } | {
+            /** @enum {string} */
+            kind: "list";
+            /** Format: uuid */
+            list: string;
+        } | {
+            /** @enum {string} */
+            kind: "subset";
+            /** Format: uuid */
+            subset: string;
+        } | {
+            /** @enum {string} */
+            kind: "time";
+        } | {
+            /** @enum {string} */
+            kind: "versions";
+        };
+        /** @description One member of a dimension as a header shows it. */
+        ViewMemberDto: {
+            /** @description Whether the members below it are left out of the query. */
+            collapsed: boolean;
+            /**
+             * Format: int32
+             * @description How far below the top of a list the member is, or how far above the periods of the
+             *     module's level a period is.
+             */
+            depth: number;
+            has_children: boolean;
+            is_summary: boolean;
+            /** @description What a query names the member by. */
+            key: string;
+            label: string;
+        };
+        /**
+         * @description What to show of a module: its dimensions on rows, columns and pages, and the window of the
+         *     rows and columns to return.
+         */
+        ViewQueryDto: {
+            /** @description Totals whose members are left out. At most 5,000. */
+            collapsed?: components["schemas"]["MemberRefDto"][];
+            columns: components["schemas"]["ViewDimDto"][];
+            /**
+             * @description Conditions every row has to meet. A view of more than 2,000,000 rows, before the filters
+             *     are applied, is refused. At most 10.
+             */
+            filters?: components["schemas"]["RowFilterDto"][];
+            /** @description Members left out. The members below a hidden total stay. At most 5,000. */
+            hidden?: components["schemas"]["MemberRefDto"][];
+            /**
+             * @description The line items to show and their order; all of them, by ordinal, when absent. At most
+             *     1,000.
+             */
+            line_items?: string[] | null;
+            /** Format: uuid */
+            module: string;
+            /** @description The member shown of each dimension that is on neither rows nor columns. */
+            pages?: components["schemas"]["PageSelectionDto"][];
+            /**
+             * @description Every dimension of the module, its axes and its line items, is on the rows, the columns or
+             *     the pages, once.
+             */
+            rows: components["schemas"]["ViewDimDto"][];
+            /**
+             * @description Whether the totals of lists and time are shown among their members. Without them
+             *     `collapsed` is ignored, and `hidden` still applies.
+             */
+            show_summaries?: boolean;
+            window: components["schemas"]["WindowDto"];
+        };
+        /**
+         * @description A window of a view.
+         *
+         *     `cells` holds a row of cells for each of `rows`, each as long as `columns`. A view with a
+         *     page that has no members, such as a list without items, has no rows or columns.
+         */
+        ViewResultDto: {
+            cells: components["schemas"]["CellDto"][][];
+            column_dims: components["schemas"]["ViewDimDto"][];
+            columns: components["schemas"]["HeaderDto"][];
+            line_items: components["schemas"]["LineItemInfoDto"][];
+            pages: components["schemas"]["PageMemberDto"][];
+            row_dims: components["schemas"]["ViewDimDto"][];
+            rows: components["schemas"]["HeaderDto"][];
+            /**
+             * Format: int64
+             * @description The sequence number of the last change of the model that the window shows. A change that
+             *     comes after it, told of on the live channel, is not in the window.
+             */
+            seq: number;
+            total_columns: number;
+            /** @description How many rows the view has, with the window or without it. */
+            total_rows: number;
+        };
+        /** @description The slice of a view to return. */
+        WindowDto: {
+            /** @description At most 200. */
+            col_limit: number;
+            col_offset: number;
+            /** @description At most 1,000. */
+            row_limit: number;
+            row_offset: number;
+        };
         WorkspaceNameRequest: {
             name: string;
         };
@@ -1499,7 +1752,10 @@ export interface components {
             role: components["schemas"]["WorkspaceRole"];
         };
         WriteCellsRequest: {
-            /** @description At most 100,000 cells. A cell edited twice takes the value of its last edit. */
+            /**
+             * @description At most 100,000 cells. A cell edited twice takes the value of its last edit. The body
+             *     may be up to 32 MiB, and only the first 100,000 edits of one that has more are read.
+             */
             edits: components["schemas"]["CellEditDto"][];
         };
         WriteCellsResponse: {
@@ -2055,7 +2311,16 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description More than 100,000 edits (validation), a line item that does not exist (structure.invalid), a coordinate that fits no cell (cells.invalid_coordinate), a calculated line item (cells.not_input), or a value that does not fit its cell (cells.invalid_value; `errors` lists up to 100 edits as `edits[i]`, i being the position in the request). Only the first line item with invalid edits is reported. Nothing is written. */
+            /** @description The body is more than 32 MiB (payload_too_large) */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description More than 100,000 edits (validation), a line item that does not exist (structure.invalid), a coordinate that fits no cell or an edit with more than 16 coordinates (cells.invalid_coordinate), a calculated line item (cells.not_input), or a value that does not fit its cell (cells.invalid_value; `errors` lists up to 100 edits as `edits[i]`, i being the position in the request). Only the first line item with invalid edits is reported. Nothing is written. */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -2169,7 +2434,16 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
-            /** @description More than 10,000 cells (validation), a line item that does not exist (structure.invalid), or a token that fits no level of its dimension (cells.invalid_coordinate) */
+            /** @description The body is more than 8 MiB (payload_too_large) */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description More than 10,000 cells (validation), a line item that does not exist (structure.invalid), or a token that fits no level of its dimension or a cell with more than 16 coordinates (cells.invalid_coordinate) */
             422: {
                 headers: {
                     [name: string]: unknown;
@@ -2975,6 +3249,154 @@ export interface operations {
             };
         };
     };
+    connect: {
+        parameters: {
+            query: {
+                /** @description The ticket from `POST /models/{id}/live/ticket`. */
+                ticket: string;
+            };
+            header?: never;
+            path: {
+                /** @description The model's id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The connection is upgraded to a WebSocket, over which the server sends JSON text frames: `{"type":"hello","seq":N}` when it opens; `{"type":"cells_changed","seq":N,"line_item_ids":[...],"user_id":"..."}` after cells were written; `{"type":"structure_changed","seq":N}` after the structure changed; and `{"type":"resync","seq":N}` when the client missed changes and has to read again. It pings every 25 seconds and closes with code 4403 when the user may no longer read the model and 4404 when the model is gone. What the client sends is ignored. */
+            101: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The request is not a WebSocket upgrade */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The ticket is unknown, expired, used or for another model, the Origin is not the app's, or the user may not read the model (auth.forbidden) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The model is gone (not_found) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    create_ticket: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The model's id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A ticket to open the live socket of the model with */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LiveTicketResponse"];
+                };
+            };
+            /** @description Not signed in (auth.unauthenticated) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            403: components["responses"]["CsrfRejected"];
+            /** @description No such model, or the caller is not a member of its workspace (not_found) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    members: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The model's id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MembersRequest"];
+            };
+        };
+        responses: {
+            /** @description The members of the dimension, in the order a view shows them */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MembersResponse"];
+                };
+            };
+            /** @description Not signed in (auth.unauthenticated) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            403: components["responses"]["CsrfRejected"];
+            /** @description No such model, or the caller is not a member of its workspace (not_found) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description A module or list that does not exist, a dimension the module does not have, or one with more than 100,000 members (structure.invalid) */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
     create_module: {
         parameters: {
             query?: never;
@@ -3244,6 +3666,70 @@ export interface operations {
                 };
             };
             /** @description Some fields are invalid, something the line item refers to does not exist, or the formula is not valid (validation, structure.invalid, formula.*) */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+        };
+    };
+    query: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The model's id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ViewQueryDto"];
+            };
+        };
+        responses: {
+            /** @description A window of the view, with the sequence number of the model it shows. For a caller who is a viewer every cell is also `readonly`. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ViewResultDto"];
+                };
+            };
+            /** @description Not signed in (auth.unauthenticated) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            403: components["responses"]["CsrfRejected"];
+            /** @description No such model, or the caller is not a member of its workspace (not_found) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The body is more than 2 MiB (payload_too_large) */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description More than 10 filters, 1,000 line items, 5,000 collapsed members or 5,000 hidden members (validation); a module, list or line item that does not exist, a dimension that is not on the rows, columns or pages once, a member that does not exist, a window of more than 1,000 rows or 200 columns, a filter that does not fit its line item, a Contains filter on a line item that is not text or a list, or a filtered view of more than 2,000,000 rows (structure.invalid) */
             422: {
                 headers: {
                     [name: string]: unknown;
