@@ -21,6 +21,7 @@ use members::{Frame, Node};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::ops::Range;
+use std::sync::Arc;
 
 /// The most rows a window holds.
 const MAX_ROW_LIMIT: usize = 1000;
@@ -75,6 +76,8 @@ pub enum FilterOp {
     Le,
     Gt,
     Ge,
+    /// Whether the text, or the name of the list item, has the text in it, whatever the case.
+    /// Only a line item of text or of a list takes it.
     Contains,
     IsBlank,
     NotBlank,
@@ -213,8 +216,28 @@ pub struct ViewResult {
     pub line_items: Vec<LineItemInfo>,
 }
 
+/// The rows of a view that pass its filters, as positions among all of its rows in the order the
+/// view shows them. Finding them reads every row, so a caller that shows the same view again
+/// with another window keeps them and hands them to [`query_with`].
+pub type PassingRows = Arc<Vec<usize>>;
+
 /// Runs a query against a model.
 pub fn query(model: &Model, q: &ViewQuery) -> Result<ViewResult, EngineError> {
+    query_with(model, q, None).map(|(result, _)| result)
+}
+
+/// Runs a query as [`query`] does, and gives the rows that pass its filters, none for a query
+/// without filters.
+///
+/// `passing` is what an earlier call gave for the same model and the same query but for its
+/// window, which saves reading the rows again. A set that cannot be of this view, because it
+/// has a row the view does not, is worked out again; one of another query or model that happens
+/// to fit gives the wrong rows.
+pub fn query_with(
+    model: &Model,
+    q: &ViewQuery,
+    passing: Option<&PassingRows>,
+) -> Result<(ViewResult, Option<PassingRows>), EngineError> {
     check_window(&q.window)?;
     let cx = Cx::new(model, q.module, q.line_items.as_deref())?;
     let places = cx.place(q)?;
@@ -241,7 +264,7 @@ pub fn query(model: &Model, q: &ViewQuery) -> Result<ViewResult, EngineError> {
         line_items,
     };
     if !has_members {
-        return Ok(result);
+        return Ok((result, None));
     }
     let page_nodes: Vec<Node> = pages.iter().map(|(_, node)| *node).collect();
 
@@ -255,6 +278,7 @@ pub fn query(model: &Model, q: &ViewQuery) -> Result<ViewResult, EngineError> {
             pages: &page_nodes,
         },
         &filters,
+        passing,
     )?;
     result.total_rows = rows.count();
     result.total_columns = columns.count();
@@ -274,7 +298,7 @@ pub fn query(model: &Model, q: &ViewQuery) -> Result<ViewResult, EngineError> {
         pages: &page_nodes,
     };
     result.cells = cx.cells(&frame, &row_tuples, &column_tuples)?;
-    Ok(result)
+    Ok((result, rows.passing.clone()))
 }
 
 /// The members of one dimension of a module, in the order a view shows them.

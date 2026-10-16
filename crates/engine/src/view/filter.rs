@@ -1,12 +1,13 @@
 use super::cells::{LiPlan, Projection};
 use super::members::{Frame, Id, Node, split};
-use super::{Cx, FilterOp, MAX_FILTERED_ROWS, Place, RowFilter, ViewDim};
+use super::{Cx, FilterOp, MAX_FILTERED_ROWS, PassingRows, Place, RowFilter, ViewDim};
 use crate::calendar::TimeLevel;
 use crate::error::{EngineError, grouped};
 use crate::structure::fold;
 use crate::value::{Value, ValueType};
 use std::cmp::Ordering;
 use std::ops::Range;
+use std::sync::Arc;
 
 /// How many row combinations a filter reads at a time, which bounds the memory a filter holds.
 const FILTER_CHUNK: usize = 16_384;
@@ -63,6 +64,13 @@ impl<'a> Cx<'a> {
                         )));
                     };
                     let ty = plan.line_item.format.value_type();
+                    if filter.op == FilterOp::Contains
+                        && !matches!(ty, ValueType::Text | ValueType::Item(_))
+                    {
+                        return Err(EngineError::invalid(
+                            "Contains needs a text or list line item.",
+                        ));
+                    }
                     let (fits, wanted) = if filter.op == FilterOp::Contains {
                         (matches!(value, Value::Text(_)), "text")
                     } else {
@@ -92,26 +100,27 @@ impl<'a> Cx<'a> {
     /// A filter reads the line item for the members of the row, ignoring the line items
     /// dimension, and for the page's members where the row has none. Dimensions on the columns
     /// are read at their totals and the current version. The rows are read a chunk at a time, and
-    /// a view of more rows than [`MAX_FILTERED_ROWS`] is refused.
+    /// a view of more rows than [`MAX_FILTERED_ROWS`] is refused. `known` is the rows that an
+    /// earlier query of this view found, if they fit it, and then they are not read again.
     pub(super) fn filter_rows(
         &self,
         frame: &Frame<'_>,
         filters: &[ActiveFilter<'a, '_>],
-    ) -> Result<Option<Vec<usize>>, EngineError> {
+        known: Option<&PassingRows>,
+    ) -> Result<Option<PassingRows>, EngineError> {
         if filters.is_empty() {
             return Ok(None);
         }
         let rows = frame.rows;
         let total = rows.total();
-        if total > MAX_FILTERED_ROWS {
-            return Err(EngineError::invalid(format!(
-                "This view has {} rows to filter; the limit is {}. Narrow it with page selections.",
-                grouped(total as u128),
-                grouped(MAX_FILTERED_ROWS as u128)
-            )));
+        check_row_limit(total)?;
+        if let Some(known) = known
+            && known.last().is_none_or(|&last| last < total)
+        {
+            return Ok(Some(Arc::clone(known)));
         }
         if total == 0 {
-            return Ok(Some(Vec::new()));
+            return Ok(Some(Arc::new(Vec::new())));
         }
         let lens = rows.lens();
         let seen: Vec<usize> = (0..rows.dims.len())
@@ -142,7 +151,7 @@ impl<'a> Cx<'a> {
                 passing.push(at);
             }
         }
-        Ok(Some(passing))
+        Ok(Some(Arc::new(passing)))
     }
 
     /// Applies a filter to the row combinations of a chunk that still pass.
@@ -244,6 +253,18 @@ impl<'a> Cx<'a> {
     }
 }
 
+/// Refuses a filtered view of `total` rows, if it has more than [`MAX_FILTERED_ROWS`].
+fn check_row_limit(total: usize) -> Result<(), EngineError> {
+    if total > MAX_FILTERED_ROWS {
+        return Err(EngineError::invalid(format!(
+            "This view has {} rows to filter; the limit is {}. Narrow it with page selections.",
+            grouped(total as u128),
+            grouped(MAX_FILTERED_ROWS as u128)
+        )));
+    }
+    Ok(())
+}
+
 /// How a cell compares with the value a filter wants, if they can be compared. `folded` is the
 /// wanted text in lower case.
 fn compare(cell: &Value, wanted: &Value, folded: Option<&str>) -> Option<Ordering> {
@@ -280,5 +301,23 @@ fn type_word(ty: ValueType) -> &'static str {
         ValueType::Date => "a date",
         ValueType::Item(_) => "a list item",
         ValueType::Period(_) => "a time period",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_view_of_exactly_the_limit_is_filtered_and_one_row_more_is_refused() {
+        assert!(check_row_limit(0).is_ok());
+        assert!(check_row_limit(MAX_FILTERED_ROWS).is_ok());
+        let refused = check_row_limit(MAX_FILTERED_ROWS + 1).unwrap_err();
+        assert_eq!(
+            refused.to_string(),
+            "This view has 2,000,001 rows to filter; the limit is 2,000,000. \
+             Narrow it with page selections."
+        );
+        assert!(check_row_limit(usize::MAX).is_err());
     }
 }

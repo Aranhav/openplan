@@ -1,4 +1,6 @@
-use super::{Cx, Header, Member, MemberRef, PageMember, PageSelection, Place, ViewDim};
+use super::{
+    Cx, Header, Member, MemberRef, PageMember, PageSelection, PassingRows, Place, ViewDim,
+};
 use crate::calendar::{Calendar, TimeLevel};
 use crate::error::EngineError;
 use crate::ids::{ItemId, LineItemId, ListId, VersionId};
@@ -136,7 +138,7 @@ impl Shown<'_> {
 pub(super) struct Side<'a> {
     pub(super) dims: Vec<Shown<'a>>,
     /// The rows that pass the filters, as positions among all of them.
-    pub(super) passing: Option<Vec<usize>>,
+    pub(super) passing: Option<PassingRows>,
 }
 
 impl Side<'_> {
@@ -152,7 +154,9 @@ impl Side<'_> {
     }
 
     pub(super) fn count(&self) -> usize {
-        self.passing.as_ref().map_or_else(|| self.total(), Vec::len)
+        self.passing
+            .as_ref()
+            .map_or_else(|| self.total(), |passing| passing.len())
     }
 
     /// The positions among the shown members of each dimension of the row or column `at`.
