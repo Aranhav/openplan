@@ -12,7 +12,7 @@ mod filter;
 mod members;
 
 use crate::calendar::{Calendar, TimeLevel};
-use crate::error::{EngineError, FormulaError};
+use crate::error::{EngineError, FormulaError, grouped};
 use crate::ids::{LineItemId, ListId, ModuleId, SubsetId, TimeRangeId};
 use crate::model::Model;
 use crate::structure::{AxisSpec, LineItem, List, Module, Structure, Subset};
@@ -29,6 +29,8 @@ const MAX_ROW_LIMIT: usize = 1000;
 const MAX_COL_LIMIT: usize = 200;
 /// The most rows a view with filters may have before they are applied.
 const MAX_FILTERED_ROWS: usize = 2_000_000;
+/// The most members of a dimension that [`members`] lists.
+const MAX_LISTED_MEMBERS: usize = 100_000;
 
 /// A dimension of a module's grid: one of its axes, or its line items.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -301,7 +303,8 @@ pub fn query_with(
     Ok((result, rows.passing.clone()))
 }
 
-/// The members of one dimension of a module, in the order a view shows them.
+/// The members of one dimension of a module, in the order a view shows them. A dimension of more
+/// than 100,000 members is refused.
 pub fn members(
     model: &Model,
     module: ModuleId,
@@ -311,11 +314,15 @@ pub fn members(
     let cx = Cx::new(model, module, None)?;
     cx.require_dim(dim)?;
     let namer = cx.namer(dim)?;
-    Ok(cx
-        .nodes(dim, show_summaries)?
-        .iter()
-        .map(|node| namer.member(node, false))
-        .collect())
+    let nodes = cx.nodes(dim, show_summaries)?;
+    if nodes.len() > MAX_LISTED_MEMBERS {
+        return Err(EngineError::invalid(format!(
+            "This dimension has {} members; at most {} can be listed.",
+            grouped(nodes.len() as u128),
+            grouped(MAX_LISTED_MEMBERS as u128)
+        )));
+    }
+    Ok(nodes.iter().map(|node| namer.member(node, false)).collect())
 }
 
 fn check_window(window: &Window) -> Result<(), EngineError> {

@@ -371,29 +371,6 @@ fn q_without_filters(q: &ViewQuery) -> ViewQuery {
     }
 }
 
-/// A model with a flat list of `count` items named `{name} {n}`.
-fn model_with_list(model: &mut Model, name: &str, count: usize) -> (ListId, Vec<ItemId>) {
-    let list = ListId::new();
-    let items: Vec<_> = (0..count)
-        .map(|at| spec(ItemId::new(), &format!("{name} {at}"), None))
-        .collect();
-    let ids = items.iter().map(|item| item.id).collect();
-    model
-        .apply_batch(vec![
-            Command::CreateList {
-                id: list,
-                name: name.to_string(),
-                parent: None,
-                top_level_name: None,
-                numbered: false,
-                production_data: false,
-            },
-            Command::UpsertListItems { list, items },
-        ])
-        .unwrap();
-    (list, ids)
-}
-
 #[test]
 fn filters_read_the_rows_in_chunks() {
     // More rows than the 16,384 a filter reads at a time, so that rows on both sides of a

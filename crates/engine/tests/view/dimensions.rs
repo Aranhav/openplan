@@ -462,3 +462,26 @@ fn time_summaries_of_half_year_year_and_total_modules() {
         );
     }
 }
+
+#[test]
+fn a_dimension_of_too_many_members_is_not_listed() {
+    let mut model = Model::new(calendar());
+    let (list, _) = model_with_list(&mut model, "Items", 100_000);
+    let module = new_module(&mut model, "Counts", vec![AxisSpec::List { list }]);
+    let dim = ViewDim::List { list };
+
+    // 100,000 members are listed; one more are not.
+    assert_eq!(members(&model, module, &dim, false).unwrap().len(), 100_000);
+    model
+        .apply(Command::UpsertListItems {
+            list,
+            items: vec![spec(ItemId::new(), "One more", None)],
+        })
+        .unwrap();
+    let error = members(&model, module, &dim, false).unwrap_err();
+    assert_eq!(error.code(), "structure.invalid");
+    assert_eq!(
+        error.to_string(),
+        "This dimension has 100,001 members; at most 100,000 can be listed."
+    );
+}

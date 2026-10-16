@@ -256,6 +256,29 @@ impl World {
     }
 }
 
+/// A model with a flat list of `count` items named `{name} {n}`.
+pub fn model_with_list(model: &mut Model, name: &str, count: usize) -> (ListId, Vec<ItemId>) {
+    let list = ListId::new();
+    let items: Vec<_> = (0..count)
+        .map(|at| spec(ItemId::new(), &format!("{name} {at}"), None))
+        .collect();
+    let ids = items.iter().map(|item| item.id).collect();
+    model
+        .apply_batch(vec![
+            Command::CreateList {
+                id: list,
+                name: name.to_string(),
+                parent: None,
+                top_level_name: None,
+                numbered: false,
+                production_data: false,
+            },
+            Command::UpsertListItems { list, items },
+        ])
+        .unwrap();
+    (list, ids)
+}
+
 pub fn page(dim: ViewDim) -> PageSelection {
     PageSelection { dim, key: None }
 }
