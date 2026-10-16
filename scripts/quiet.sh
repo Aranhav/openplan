@@ -20,8 +20,19 @@ esac
 shift 2
 
 root=$(git rev-parse --show-toplevel 2>/dev/null) || root=$(cd "$(dirname "$0")/.." && pwd)
-mkdir -p "$root/.logs" || exit 2
 log="$root/.logs/$name.log"
+# A log that cannot be written does not stop the command: its output goes to a scratch file, and
+# the problem is reported on its own line at the end.
+log_problem=""
+if ! { mkdir -p "$root/.logs" && : >"$log"; } 2>/dev/null; then
+  if scratch=$(mktemp "${TMPDIR:-/tmp}/quiet.XXXXXX.log" 2>/dev/null); then
+    log_problem="quiet.sh: cannot write $log; the output is in $scratch"
+    log=$scratch
+  else
+    log_problem="quiet.sh: cannot write $log; the output is not kept"
+    log=/dev/null
+  fi
+fi
 
 env NO_COLOR=1 CARGO_TERM_COLOR=never FORCE_COLOR=0 "$@" >"$log" 2>&1
 rc=$?
@@ -54,7 +65,7 @@ detect_output() {
   elif grep -q -E '^[[:space:]]*Tests[[:space:]]' <<<"$cleaned"; then echo vitest
   elif grep -q -E '^Running [0-9]+ tests? using' <<<"$cleaned"; then echo playwright
   elif grep -q -E 'error TS[0-9]+:' <<<"$cleaned"; then echo tsc
-  elif grep -q -E '^[[:space:]]+[0-9]+:[0-9]+[[:space:]]+error[[:space:]]' <<<"$cleaned"; then echo eslint
+  elif grep -q -E '^[[:space:]]+[0-9]+:[0-9]+[[:space:]]+(error|warning)[[:space:]]|^✖ [0-9]+ problems? \(' <<<"$cleaned"; then echo eslint
   else echo other
   fi
 }
@@ -66,7 +77,7 @@ error_lines() {
     eslint)
       awk '
         /^[^ \t].*\.[cm]?[jt]sx?$/ { file = $0; next }
-        /^[ \t]+[0-9]+:[0-9]+[ \t]+error[ \t]/ { sub(/^[ \t]+/, ""); print file ":" $0; next }
+        /^[ \t]+[0-9]+:[0-9]+[ \t]+(error|warning)[ \t]/ { sub(/^[ \t]+/, ""); print file ":" $0; next }
         /:[0-9]+:[0-9]+: .*\[Error\// { print }
       ' <<<"$cleaned" ;;
     cargo-test | cargo-build | clippy)
@@ -102,6 +113,13 @@ count_result() {
   fi
 }
 
+# eslint's own tally, such as "0 errors, 1 warning", from its "✖ N problems (...)" line.
+eslint_tally() {
+  local tally
+  tally=$(sed -n -E 's/^✖ [0-9]+ problems? \((.*)\)$/\1/p' <<<"$cleaned" | tail -n 1)
+  [ -n "$tally" ] && echo "$tally"
+}
+
 # "passed failed ignored" summed over every test binary; fails when cargo printed none.
 cargo_test_totals() {
   awk '
@@ -119,7 +137,7 @@ cargo_test_totals() {
 
 # The result line of a recognised tool; fails when the tool's summary is missing.
 result_line() {
-  local tool=$1 rc=$2 totals out count p f k
+  local tool=$1 rc=$2 totals out count p f k tally
   case $tool in
     cargo-test)
       if totals=$(cargo_test_totals); then
@@ -142,7 +160,11 @@ result_line() {
       [ -n "$out" ] || return 1
       if [ "$rc" -ne 0 ] && ! grep -q -E '[0-9]+ (failed|flaky|did not run|interrupted)' <<<"$out"; then out="$out (exit $rc)"; fi
       echo "playwright: $out" ;;
-    tsc | eslint | cargo-build | clippy)
+    eslint)
+      if tally=$(eslint_tally); then echo "eslint: $tally"; return 0; fi
+      count=$(error_lines eslint | wc -l)
+      count_result eslint "$count" "$rc" ;;
+    tsc | cargo-build | clippy)
       count=$(error_lines "$tool" | wc -l)
       count_result "${tool//-/ }" "$count" "$rc" ;;
     *) return 1 ;;
@@ -161,5 +183,9 @@ if [ "$rc" -ne 0 ]; then
   [ -n "$failures" ] && echo "$failures"
 fi
 
-echo "log: .logs/$name.log"
+if [ -n "$log_problem" ]; then
+  echo "$log_problem"
+else
+  echo "log: ${log#"$PWD"/}"
+fi
 exit "$rc"
