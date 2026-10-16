@@ -2452,6 +2452,15 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
+            /** @description Too many pieces of heavy work are going on and none was free within 10 seconds (server.busy); `Retry-After` says when to try again */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
         };
     };
     check_formula: {
@@ -3264,7 +3273,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description The connection is upgraded to a WebSocket, over which the server sends JSON text frames: `{"type":"hello","seq":N}` when it opens; `{"type":"cells_changed","seq":N,"line_item_ids":[...],"user_id":"..."}` after cells were written; `{"type":"structure_changed","seq":N}` after the structure changed; and `{"type":"resync","seq":N}` when the client missed changes and has to read again. It pings every 25 seconds and closes with code 4403 when the user may no longer read the model and 4404 when the model is gone. What the client sends is ignored. */
+            /** @description The connection is upgraded to a WebSocket, over which the server sends JSON text frames: `{"type":"hello","seq":N}` when it opens; `{"type":"cells_changed","seq":N,"line_item_ids":[...],"user_id":"..."}` after cells were written; `{"type":"structure_changed","seq":N}` after the structure changed; and `{"type":"resync","seq":N}` when the client missed changes and has to read again. It pings every 25 seconds, closes a socket that has answered neither of the last two pings, and closes with code 4403 when the user may no longer read the model, 4404 when the model is gone and 1008 when the client sends more than 20 frames in 10 seconds. What the client sends is ignored. */
             101: {
                 headers: {
                     [name: string]: unknown;
@@ -3291,6 +3300,15 @@ export interface operations {
             };
             /** @description The model is gone (not_found) */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The user has 20 sockets open (auth.rate_limited); `Retry-After` is 30 */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3333,6 +3351,15 @@ export interface operations {
             403: components["responses"]["CsrfRejected"];
             /** @description No such model, or the caller is not a member of its workspace (not_found) */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description The caller holds 20 tickets that are neither used nor expired (auth.rate_limited); `Retry-After` is 60 */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3386,8 +3413,26 @@ export interface operations {
                     "application/problem+json": components["schemas"]["Problem"];
                 };
             };
+            /** @description The body is more than 2 MiB (payload_too_large) */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
             /** @description A module or list that does not exist, a dimension the module does not have, or one with more than 100,000 members (structure.invalid) */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many pieces of heavy work are going on and none was free within 10 seconds (server.busy); `Retry-After` says when to try again */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3731,6 +3776,15 @@ export interface operations {
             };
             /** @description More than 10 filters, 1,000 line items, 5,000 collapsed members or 5,000 hidden members (validation); a module, list or line item that does not exist, a dimension that is not on the rows, columns or pages once, a member that does not exist, a window of more than 1,000 rows or 200 columns, a filter that does not fit its line item, a Contains filter on a line item that is not text or a list, or a filtered view of more than 2,000,000 rows (structure.invalid) */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
+            /** @description Too many pieces of heavy work are going on and none was free within 10 seconds (server.busy); `Retry-After` says when to try again */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
