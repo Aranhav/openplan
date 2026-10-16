@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { globex, me, meInTwoWorkspaces, mockSession, renderApp, user, workspace } from "@/test/app"
 import { problem } from "@/test/problem"
 import { server } from "@/test/server"
+import { spinning } from "@/test/spinning"
 import type { components } from "@/lib/api/schema"
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
@@ -281,7 +282,7 @@ describe("the members page", () => {
     const select = screen.getByRole("combobox", { name: "Role for Grace Hopper" })
     expect(select).toBeEnabled()
     expect(select).toHaveTextContent("Builder")
-    expect(select.parentElement?.querySelector("svg.animate-spin")).toBeInTheDocument()
+    expect(spinning(select.parentElement as HTMLElement)).toBe(true)
     await chooseRole(typist, "Grace Hopper", "Viewer")
     finish()
 
@@ -379,7 +380,7 @@ describe("the members page", () => {
 
     const confirm = within(dialog).getByRole("button", { name: "Change role" })
     expect(confirm).toBeDisabled()
-    expect(confirm.querySelector("svg.animate-spin")).toBeInTheDocument()
+    expect(spinning(confirm)).toBe(true)
     expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled()
     await typist.keyboard("{Escape}")
     expect(screen.getByRole("alertdialog")).toBeVisible()
@@ -521,7 +522,7 @@ describe("the members page", () => {
 
     const confirm = within(dialog).getByRole("button", { name: "Remove member" })
     expect(confirm).toBeDisabled()
-    expect(confirm.querySelector("svg.animate-spin")).toBeInTheDocument()
+    expect(spinning(confirm)).toBe(true)
     expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled()
     await typist.keyboard("{Escape}")
     expect(screen.getByRole("alertdialog")).toBeVisible()

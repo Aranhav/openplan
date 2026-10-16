@@ -30,6 +30,7 @@ import {
 } from "@/test/view-query"
 import type { ViewQuery } from "@/features/grid/view-types"
 import { mockViewport } from "@/test/viewport"
+import { spinning } from "@/test/spinning"
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 // jsdom has no canvas: every character is 8 px wide.
@@ -66,11 +67,6 @@ function openApp(
   const served = serveViewQuery()
   const app = renderApp(path)
   return { store, served, ...app }
-}
-
-/** Whether a button shows the spinner that says its request is running. */
-function spinning(button: HTMLElement) {
-  return button.querySelector("svg.animate-spin") !== null
 }
 
 /** The page's own content, without the sidebar and the header, which list the module too. */
@@ -355,7 +351,7 @@ describe("renaming a module in its title", () => {
     expect(await content.findByText("Saving the name")).toHaveAttribute("role", "status")
     expect(input).toHaveAttribute("aria-busy", "true")
     expect(input).toHaveAttribute("readonly")
-    expect(input.parentElement?.querySelector("svg.animate-spin")).not.toBeNull()
+    expect(spinning(input.parentElement as HTMLElement)).toBe(true)
     release()
     expect(await content.findByRole("heading", { level: 1, name: "Sales" })).toBeVisible()
     await waitFor(() => expect(content.queryByText("Saving the name")).toBeNull())

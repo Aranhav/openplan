@@ -8,6 +8,7 @@ import { makeModel, me, mockSession, renderApp, serveModels, workspace } from "@
 import { serveModuleStore } from "@/test/module-edits"
 import { problem } from "@/test/problem"
 import { server } from "@/test/server"
+import { spinning } from "@/test/spinning"
 import {
   headcountModule,
   makeStructure,
@@ -42,11 +43,6 @@ function openApp(
   const store = serveModuleStore(modelStructure)
   const app = renderApp(`/m/${model.id}/modules`)
   return { store, ...app }
-}
-
-/** Whether a button shows the spinner that says its request is running. */
-function spinning(button: HTMLElement) {
-  return button.querySelector("svg.animate-spin") !== null
 }
 
 function namesIn(table: HTMLElement) {

@@ -7,6 +7,7 @@ import { me, mockSession, renderApp, user } from "@/test/app"
 import { renderWithProviders } from "@/test/render"
 import { problem } from "@/test/problem"
 import { server } from "@/test/server"
+import { spinning } from "@/test/spinning"
 import { ProfilePage } from "./profile-page"
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
@@ -175,7 +176,7 @@ describe("the profile card", () => {
 
     const save = profile.getByRole("button", { name: "Save changes" })
     expect(save).toBeDisabled()
-    expect(save.querySelector("svg.animate-spin")).toBeInTheDocument()
+    expect(spinning(save)).toBe(true)
     await waitFor(() => expect(toast.success).toHaveBeenCalled())
   })
 
@@ -376,7 +377,7 @@ describe("the password card", () => {
 
     const submit = password.getByRole("button", { name: "Change password" })
     expect(submit).toBeDisabled()
-    expect(submit.querySelector("svg.animate-spin")).toBeInTheDocument()
+    expect(spinning(submit)).toBe(true)
     await waitFor(() => expect(toast.success).toHaveBeenCalledWith("Password changed"))
   })
 })

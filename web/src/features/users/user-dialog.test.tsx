@@ -7,6 +7,7 @@ import { user as ada } from "@/test/app"
 import { problem } from "@/test/problem"
 import { renderWithProviders } from "@/test/render"
 import { server } from "@/test/server"
+import { spinning } from "@/test/spinning"
 import { UserDialog } from "./user-dialog"
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
@@ -170,7 +171,7 @@ describe("UserDialog, creating a user", () => {
 
     const submit = dialog.getByRole("button", { name: "Create user" })
     expect(submit).toBeDisabled()
-    expect(submit.querySelector("svg.animate-spin")).toBeInTheDocument()
+    expect(spinning(submit)).toBe(true)
     expect(dialog.getByRole("button", { name: "Cancel" })).toBeDisabled()
     expect(dialog.queryByRole("button", { name: "Close" })).not.toBeInTheDocument()
     await typist.keyboard("{Escape}")

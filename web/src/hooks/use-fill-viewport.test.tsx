@@ -8,7 +8,10 @@ class FakeResizeObserver {
   watched: Element[] = []
   disconnected = false
 
-  constructor(private readonly callback: () => void) {
+  private readonly callback: () => void
+
+  constructor(callback: () => void) {
+    this.callback = callback
     FakeResizeObserver.instances.push(this)
   }
 

@@ -7,6 +7,7 @@ import { workspace } from "@/test/app"
 import { problem } from "@/test/problem"
 import { renderWithProviders } from "@/test/render"
 import { server } from "@/test/server"
+import { spinning } from "@/test/spinning"
 import { AddMemberDialog } from "./add-member-dialog"
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
@@ -168,7 +169,7 @@ describe("AddMemberDialog", () => {
 
     const submit = within(dialog).getByRole("button", { name: "Add member" })
     expect(submit).toBeDisabled()
-    expect(submit.querySelector("svg.animate-spin")).toBeInTheDocument()
+    expect(spinning(submit)).toBe(true)
     expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled()
     expect(within(dialog).queryByRole("button", { name: "Close" })).not.toBeInTheDocument()
     await typist.keyboard("{Escape}")

@@ -9,6 +9,7 @@ import { createTestQueryClient } from "@/test/render"
 import { server } from "@/test/server"
 import { MODEL_ID, MODULE_ID } from "@/test/view-query"
 import { makeView, serveViews, simpleDefinition } from "@/test/views"
+import { spinning } from "@/test/spinning"
 import { HttpResponse, http } from "msw"
 import type { SavedView, ViewDefinition } from "../view-types"
 import { SavedViews } from "./saved-views"
@@ -255,7 +256,7 @@ describe("saving as a new view", () => {
 
     const submit = await screen.findByRole("button", { name: "Save view" })
     expect(submit).toBeDisabled()
-    expect(submit.querySelector("svg.animate-spin")).not.toBeNull()
+    expect(spinning(submit)).toBe(true)
     expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled()
     release()
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument())

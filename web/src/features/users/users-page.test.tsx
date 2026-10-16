@@ -7,6 +7,7 @@ import type { components } from "@/lib/api/schema"
 import { me, mockSession, renderApp, user } from "@/test/app"
 import { problem } from "@/test/problem"
 import { server } from "@/test/server"
+import { spinning } from "@/test/spinning"
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 
@@ -351,7 +352,7 @@ describe("the users page", () => {
 
     const confirm = dialog.getByRole("button", { name: "Disable user" })
     expect(confirm).toBeDisabled()
-    expect(confirm.querySelector("svg.animate-spin")).toBeInTheDocument()
+    expect(spinning(confirm)).toBe(true)
     expect(dialog.getByRole("button", { name: "Cancel" })).toBeDisabled()
     await typist.keyboard("{Escape}")
     expect(screen.getByRole("alertdialog")).toBeVisible()
@@ -413,7 +414,7 @@ describe("the users page", () => {
 
     const item = screen.getByRole("menuitem", { name: "Enable" })
     expect(item).toHaveAttribute("aria-disabled", "true")
-    expect(item.querySelector("svg.animate-spin")).toBeInTheDocument()
+    expect(spinning(item)).toBe(true)
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith("Something broke."))
     await waitFor(() =>
       expect(screen.getByRole("menuitem", { name: "Enable" })).not.toHaveAttribute(

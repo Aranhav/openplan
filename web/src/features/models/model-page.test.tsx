@@ -8,6 +8,7 @@ import { queryKeys } from "@/lib/api/keys"
 import { makeModel, me, mockSession, renderApp, serveModels, workspace } from "@/test/app"
 import { problem } from "@/test/problem"
 import { server } from "@/test/server"
+import { spinning } from "@/test/spinning"
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 
@@ -151,7 +152,7 @@ describe("the model page", () => {
 
     const save = settings.getByRole("button", { name: "Save changes" })
     expect(save).toBeDisabled()
-    expect(save.querySelector("svg.animate-spin")).toBeInTheDocument()
+    expect(spinning(save)).toBe(true)
     await waitFor(() => expect(toast.success).toHaveBeenCalledWith("Changes saved"))
   })
 

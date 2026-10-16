@@ -10,6 +10,7 @@ import { formulaText, setFormula } from "@/test/formula"
 import { serveModuleStore } from "@/test/module-edits"
 import { problem } from "@/test/problem"
 import { server } from "@/test/server"
+import { spinning } from "@/test/spinning"
 import {
   makeLineItem,
   makeStructure,
@@ -72,11 +73,6 @@ function names(table: HTMLElement) {
     .getAllByRole("row")
     .slice(1)
     .map((row) => row.querySelector("[title]")?.getAttribute("title"))
-}
-
-/** Whether a button shows the spinner that says its request is running. */
-function spinning(button: HTMLElement) {
-  return button.querySelector("svg.animate-spin") !== null
 }
 
 async function openRowMenu(typist: Typist, table: HTMLElement, name: string) {
