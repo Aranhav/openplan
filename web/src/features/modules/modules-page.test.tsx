@@ -44,6 +44,11 @@ function openApp(
   return { store, ...app }
 }
 
+/** Whether a button shows the spinner that says its request is running. */
+function spinning(button: HTMLElement) {
+  return button.querySelector("svg.animate-spin") !== null
+}
+
 function namesIn(table: HTMLElement) {
   return within(table)
     .getAllByRole("row")
@@ -352,17 +357,8 @@ describe("creating a module", () => {
 
   it("holds the dialog open and the button busy while the module is created", async () => {
     const typist = userEvent.setup()
-    const { dialog } = await openDialog(typist)
-    let release!: () => void
-    const gate = new Promise<void>((resolve) => {
-      release = resolve
-    })
-    server.use(
-      http.post("/api/v1/models/:id/modules", async () => {
-        await gate
-        return problem(500, "internal", "Try again later.")
-      }),
-    )
+    const { store, router, dialog } = await openDialog(typist)
+    const release = store.hold()
 
     await typist.type(dialog.getByLabelText("Name"), "Plan")
     await typist.click(dialog.getByRole("button", { name: "Create module" }))
@@ -370,10 +366,23 @@ describe("creating a module", () => {
     await waitFor(() =>
       expect(dialog.getByRole("button", { name: "Create module" })).toBeDisabled(),
     )
+    expect(spinning(dialog.getByRole("button", { name: "Create module" }))).toBe(true)
     expect(dialog.getByRole("button", { name: "Cancel" })).toBeDisabled()
+    expect(dialog.queryByRole("button", { name: "Close" })).toBeNull()
     await typist.keyboard("{Escape}")
     expect(screen.getByRole("dialog", { name: "New module" })).toBeVisible()
     release()
+    await waitFor(() => expect(router.state.location.pathname).toMatch(/\/modules\/[^/]+$/))
+  })
+
+  it("keeps the title and the buttons out of the part that scrolls", async () => {
+    const typist = userEvent.setup()
+    const { dialog } = await openDialog(typist)
+
+    const scrolling = dialog.getByLabelText("Name").closest(".overflow-y-auto") as HTMLElement
+    expect(scrolling).not.toBeNull()
+    expect(scrolling).not.toContainElement(dialog.getByText("New module", { selector: "h2" }))
+    expect(scrolling).not.toContainElement(dialog.getByRole("button", { name: "Create module" }))
   })
 
   it("starts empty each time it opens", async () => {

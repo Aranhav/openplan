@@ -5,8 +5,13 @@ import { Button } from "@/components/ui/button"
 import { Grid } from "@/features/grid/grid"
 import { lineItemsOf } from "@/features/structure/modules"
 import type { ModuleDto, StructureDto } from "@/features/structure/types"
+import { useFillViewport } from "@/hooks/use-fill-viewport"
 import { defaultPivot } from "./default-view"
 import { gridReference } from "./grid-reference"
+
+/** The least the grid is tall, and the padding the page keeps below it, in pixels. */
+const MIN_HEIGHT = 384
+const PAGE_PADDING = 24
 
 interface ModuleGridProps {
   modelId: string
@@ -26,6 +31,7 @@ export function ModuleGrid({
   readOnly,
   onOpenBlueprint,
 }: ModuleGridProps) {
+  const { ref, height } = useFillViewport(MIN_HEIGHT, PAGE_PADDING)
   const query = useMemo(() => defaultPivot(module), [module])
   const { lists, calendar, month_labels } = structure
   const reference = useMemo(
@@ -44,8 +50,8 @@ export function ModuleGrid({
     )
   }
   return (
-    // The grid scrolls inside the room the page leaves: its header, the module's title and tabs.
-    <div className="h-[max(24rem,calc(100svh-21rem))] md:h-[max(24rem,calc(100svh-15rem))]">
+    // The grid scrolls inside the room the page leaves below the module's title and tabs.
+    <div ref={ref} style={{ height }} className="min-h-96">
       <Grid
         modelId={modelId}
         query={query}

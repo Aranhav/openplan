@@ -1,6 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { Loader2, Trash2 } from "lucide-react"
-import { useRef, useState } from "react"
+import { type RefObject, useRef, useState } from "react"
 import { useForm } from "react-hook-form"
 import { toast } from "sonner"
 import { DeleteDialog } from "@/components/delete-dialog"
@@ -19,14 +19,16 @@ import {
 import { useDeleteModule, useUpdateModule } from "@/features/structure/api"
 import { groupModules } from "@/features/structure/modules"
 import type { ModuleDto, StructureDto } from "@/features/structure/types"
-import { useRestoreFocus } from "@/hooks/use-restore-focus"
 import { closeUnlessBusy } from "@/lib/close-unless-busy"
 import type { components } from "@/lib/api/schema"
 import { reportFormError } from "@/lib/form-errors"
 import { axesOf, axesValues, sameAxes } from "./axes"
 import { ClearValuesDialog } from "./clear-values-dialog"
+import { DiscardChangesDialog } from "./discard-changes-dialog"
 import { MODULE_FIELD_ERRORS, type ModuleValues, moduleSchema } from "./module-form"
 import { ModuleFields } from "./module-fields"
+import { focusFirstField } from "./sheet-focus"
+import { useSheetForm } from "./use-sheet-form"
 
 type UpdateModuleRequest = components["schemas"]["UpdateModuleRequest"]
 
@@ -76,30 +78,56 @@ export function ModuleSettingsSheet({
   onCloseAutoFocus,
 }: ModuleSettingsSheetProps) {
   const update = useUpdateModule(modelId)
+  // Whether the form has edits that dismissing the sheet would lose; the form says.
+  const dirty = useRef(false)
+  const [discarding, setDiscarding] = useState(false)
+
+  // Escape, a click outside and the close button end up here; the Cancel button does not ask.
+  function dismiss(next: boolean) {
+    if (!next && dirty.current) {
+      setDiscarding(true)
+    } else {
+      onOpenChange(next)
+    }
+  }
+
   return (
-    <Sheet open={open} onOpenChange={closeUnlessBusy(update.isPending, onOpenChange)}>
-      <SheetContent
-        onCloseAutoFocus={onCloseAutoFocus}
-        showCloseButton={!update.isPending}
-        className="w-full gap-0 sm:max-w-lg"
-      >
-        <SheetHeader className="border-b pr-12">
-          <SheetTitle>Module settings</SheetTitle>
-          <SheetDescription>
-            What {module.name} is called and the dimensions its line items are laid out over.
-          </SheetDescription>
-        </SheetHeader>
-        <ModuleSettingsForm
-          modelId={modelId}
-          update={update}
-          structure={structure}
-          module={module}
-          locked={locked}
-          onClose={() => onOpenChange(false)}
-          onDeleted={onDeleted}
-        />
-      </SheetContent>
-    </Sheet>
+    <>
+      <Sheet open={open} onOpenChange={(next) => closeUnlessBusy(update.isPending, dismiss)(next)}>
+        <SheetContent
+          onOpenAutoFocus={focusFirstField}
+          onCloseAutoFocus={onCloseAutoFocus}
+          showCloseButton={!update.isPending}
+          className="w-full gap-0 sm:max-w-lg"
+        >
+          <SheetHeader className="border-b pr-12">
+            <SheetTitle>Module settings</SheetTitle>
+            <SheetDescription>
+              What {module.name} is called and the dimensions its line items are laid out over.
+            </SheetDescription>
+          </SheetHeader>
+          <ModuleSettingsForm
+            modelId={modelId}
+            update={update}
+            structure={structure}
+            module={module}
+            locked={locked}
+            dirty={dirty}
+            onClose={() => onOpenChange(false)}
+            onDeleted={onDeleted}
+          />
+        </SheetContent>
+      </Sheet>
+      <DiscardChangesDialog
+        open={discarding}
+        description="Your changes to this module have not been saved."
+        onOpenChange={setDiscarding}
+        onDiscard={() => {
+          setDiscarding(false)
+          onOpenChange(false)
+        }}
+      />
+    </>
   )
 }
 
@@ -109,6 +137,7 @@ interface ModuleSettingsFormProps {
   structure: StructureDto
   module: ModuleDto
   locked: boolean
+  dirty: RefObject<boolean>
   onClose: () => void
   onDeleted: () => void
 }
@@ -119,6 +148,7 @@ function ModuleSettingsForm({
   structure,
   module,
   locked,
+  dirty,
   onClose,
   onDeleted,
 }: ModuleSettingsFormProps) {
@@ -133,9 +163,7 @@ function ModuleSettingsForm({
   // The values waiting for a yes to clearing the module's input values.
   const [confirming, setConfirming] = useState<ModuleValues>()
   const [deleting, setDeleting] = useState(false)
-  const { ref: saveRef, onCloseAutoFocus: restoreFocus } = useRestoreFocus<HTMLButtonElement>()
-  // Set once the module is saved, when the sheet closing takes focus where it belongs.
-  const saved = useRef(false)
+  const { saveRef, markSaved, afterConfirmation } = useSheetForm(form, dirty)
   const areas = groupModules(structure.modules.filter((other) => other.id !== module.id)).areas.map(
     (area) => area.name,
   )
@@ -147,7 +175,7 @@ function ModuleSettingsForm({
         await update.mutateAsync({ moduleId: module.id, body: patch })
         toast.success("Module saved")
       }
-      saved.current = true
+      markSaved()
       onClose()
     } catch (error) {
       reportFormError(form, error, MODULE_FIELD_ERRORS)
@@ -161,22 +189,6 @@ function ModuleSettingsForm({
       setConfirming(values)
     } else {
       await save(values)
-    }
-  }
-
-  // Back to the save button, or if the server refused a field to that field, which is on screen
-  // again once the dialog is gone.
-  function afterDialog(event: Event) {
-    if (saved.current) {
-      event.preventDefault()
-      return
-    }
-    const refused = Object.keys(form.formState.errors)[0] as keyof ModuleValues | undefined
-    if (refused) {
-      event.preventDefault()
-      form.setFocus(refused)
-    } else {
-      restoreFocus(event)
     }
   }
 
@@ -234,7 +246,7 @@ function ModuleSettingsForm({
         pending={update.isPending}
         onConfirm={() => confirming && void save(confirming)}
         onOpenChange={(next) => !next && setConfirming(undefined)}
-        onCloseAutoFocus={afterDialog}
+        onCloseAutoFocus={afterConfirmation}
       />
       <DeleteDialog
         title={`Delete ${module.name}?`}

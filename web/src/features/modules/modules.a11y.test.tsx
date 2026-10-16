@@ -6,13 +6,12 @@ import { makeModel, me, mockSession, renderApp, serveModels, workspace } from "@
 import { violations } from "@/test/axe"
 import { type ModuleStore, serveModuleStore } from "@/test/module-edits"
 import {
-  actualId,
-  forecastId,
   makeLineItem,
   makeStructure,
   revenueAmount,
+  revenueMargin,
   revenueModule,
-  structure,
+  revenuePlan,
   unitsSold,
 } from "@/test/structure"
 import { serveViewQuery } from "@/test/view-query"
@@ -27,22 +26,11 @@ vi.setConfig({ testTimeout: 20_000 })
 
 const model = makeModel({ name: "Revenue plan" })
 const margin = makeLineItem({
-  id: "0192f3a0-0000-7000-8000-000000000404",
-  module: revenueModule.id,
-  name: "Margin",
-  ordinal: 2,
-  notes: "Before tax",
+  ...revenueMargin,
   summary: { method: "ratio", numerator: unitsSold.id, denominator: revenueAmount.id },
-  time_scale: { level: "year" },
-  versions: { only: [forecastId] },
-  applies_to: [{ kind: "list", list: structure.lists[0].id }],
 })
 const withLineItems = makeStructure({
-  ...structure,
-  versions: [
-    { id: actualId, name: "Actual", is_actual: true, is_current: false },
-    { id: forecastId, name: "Forecast", is_actual: false, is_current: true },
-  ],
+  ...revenuePlan,
   line_items: [unitsSold, revenueAmount, margin],
 })
 const modulePath = `/m/${model.id}/modules/${revenueModule.id}`
@@ -134,7 +122,25 @@ describe("a module's page", () => {
       },
     })
     const table = await screen.findByRole("grid", { name: "Line items" })
-    await within(table).findByRole("img", { name: /Formula error/ })
+    await within(table).findByRole("button", { name: /Formula error/ })
+
+    expect(await violations()).toEqual([])
+  })
+
+  it("has none on a Blueprint with a formula error whose settings are open", async () => {
+    const typist = userEvent.setup()
+    open(`${modulePath}?tab=blueprint`, {
+      rows: false,
+      prepare: (store) => {
+        store.formulaErrors[revenueAmount.id] = [
+          { code: "formula.unknown_name", message: "Unknown name 'Units'", start: 0, end: 5 },
+        ]
+      },
+    })
+    const table = await screen.findByRole("grid", { name: "Line items" })
+    await typist.click(await within(table).findByRole("button", { name: /Formula error/ }))
+    const sheet = within(await screen.findByRole("dialog", { name: "Line item settings" }))
+    await sheet.findByText("The formula has a problem.")
 
     expect(await violations()).toEqual([])
   })
@@ -153,6 +159,18 @@ describe("a module's page", () => {
     open(modulePath)
     await typist.click(await screen.findByRole("button", { name: "Module settings" }))
     await screen.findByRole("dialog", { name: "Module settings" })
+
+    expect(await violations()).toEqual([])
+  })
+
+  it("has none with the question about discarding the module settings open", async () => {
+    const typist = userEvent.setup()
+    open(modulePath)
+    await typist.click(await screen.findByRole("button", { name: "Module settings" }))
+    const sheet = within(await screen.findByRole("dialog", { name: "Module settings" }))
+    await typist.type(sheet.getByLabelText("Functional area"), " and Sales")
+    await typist.keyboard("{Escape}")
+    await screen.findByRole("alertdialog", { name: "Discard changes?" })
 
     expect(await violations()).toEqual([])
   })
@@ -226,6 +244,35 @@ describe("the settings of a line item", () => {
     await typist.type(sheet.getByLabelText("Formula"), " + 1")
     await typist.click(sheet.getByRole("button", { name: "Save changes" }))
     await sheet.findByRole("alert")
+
+    expect(await violations()).toEqual([])
+  })
+
+  it("has none with the problems of the saved formula shown on open", async () => {
+    const typist = userEvent.setup()
+    open(`${modulePath}?tab=blueprint&li=${revenueAmount.id}`, {
+      rows: false,
+      prepare: (store) => {
+        store.formulaErrors[revenueAmount.id] = [
+          { code: "formula.unknown_name", message: "Unknown name 'Units'", start: 0, end: 5 },
+        ]
+      },
+    })
+    const table = await screen.findByRole("grid", { name: "Line items" })
+    table.focus()
+    await typist.keyboard("{Enter}")
+    const sheet = within(await screen.findByRole("dialog", { name: "Line item settings" }))
+    await sheet.findByText("The formula has a problem.")
+
+    expect(await violations()).toEqual([])
+  })
+
+  it("has none with the question about discarding changes open", async () => {
+    const typist = userEvent.setup()
+    const sheet = await openSheet(typist, unitsSold.id)
+    await typist.type(sheet.getByLabelText("Notes"), "x")
+    await typist.keyboard("{Escape}")
+    await screen.findByRole("alertdialog", { name: "Discard changes?" })
 
     expect(await violations()).toEqual([])
   })

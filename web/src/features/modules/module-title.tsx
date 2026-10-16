@@ -1,5 +1,5 @@
 import { zodResolver } from "@hookform/resolvers/zod"
-import { Pencil } from "lucide-react"
+import { Loader2, Pencil } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
 import { useForm } from "react-hook-form"
 import { z } from "zod"
@@ -14,10 +14,10 @@ const schema = z.object({ name: structureNameSchema })
 
 type NameValues = z.infer<typeof schema>
 
-const TITLE = "text-2xl font-semibold tracking-tight break-words outline-none"
-
 interface ModuleTitleProps {
   name: string
+  /** The class of the page's title, from `PageHeader`. */
+  headingClassName: string
   /** Saves the new name; a refusal it throws is shown under the input. */
   onRename?: (name: string) => Promise<void>
   /** Whether production mode switches renaming off. */
@@ -28,7 +28,7 @@ interface ModuleTitleProps {
  * The name of a module, as the title of its page. Where the user may rename it, a button next to
  * it turns the title into an input: Enter saves, Escape gives up, and leaving the input saves.
  */
-export function ModuleTitle({ name, onRename, locked }: ModuleTitleProps) {
+export function ModuleTitle({ name, headingClassName, onRename, locked }: ModuleTitleProps) {
   const [editing, setEditing] = useState(false)
   const button = useRef<HTMLButtonElement>(null)
   // Whether focus goes back to the button once the input is gone: after Enter or Escape, not
@@ -59,7 +59,7 @@ export function ModuleTitle({ name, onRename, locked }: ModuleTitleProps) {
   }
   return (
     <div className="flex min-w-0 items-center gap-1">
-      <h1 tabIndex={-1} className={TITLE}>
+      <h1 tabIndex={-1} className={headingClassName}>
         {name}
       </h1>
       {onRename && (
@@ -130,31 +130,45 @@ function NameInput({ name, onRename, onDone }: NameInputProps) {
           name="name"
           render={({ field }) => (
             <FormItem className="gap-1">
-              <FormControl>
-                <Input
-                  {...field}
-                  ref={(element) => {
-                    field.ref(element)
-                    input.current = element
-                  }}
-                  aria-label="Module name"
-                  autoComplete="off"
-                  readOnly={saving}
-                  className="h-10 text-2xl font-semibold tracking-tight md:text-2xl"
-                  onBlur={() => {
-                    field.onBlur()
-                    if (!over.current && !saving) {
-                      void save(false)()
-                    }
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === "Escape") {
-                      event.stopPropagation()
-                      finish(true)
-                    }
-                  }}
-                />
-              </FormControl>
+              <div className="relative">
+                <FormControl>
+                  <Input
+                    {...field}
+                    ref={(element) => {
+                      field.ref(element)
+                      input.current = element
+                    }}
+                    aria-label="Module name"
+                    aria-busy={saving}
+                    autoComplete="off"
+                    readOnly={saving}
+                    className="h-10 pr-10 text-2xl font-semibold tracking-tight md:text-2xl"
+                    onBlur={() => {
+                      field.onBlur()
+                      if (!over.current && !saving) {
+                        void save(false)()
+                      }
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Escape") {
+                        event.stopPropagation()
+                        finish(true)
+                      }
+                    }}
+                  />
+                </FormControl>
+                {saving && (
+                  <>
+                    <Loader2
+                      aria-hidden
+                      className="absolute top-1/2 right-3 size-5 -translate-y-1/2 animate-spin text-muted-foreground"
+                    />
+                    <span role="status" className="sr-only">
+                      Saving the name
+                    </span>
+                  </>
+                )}
+              </div>
               <FormMessage />
             </FormItem>
           )}

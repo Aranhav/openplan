@@ -110,7 +110,6 @@ function ModuleScreen({
   selectedLineItemId,
   onSelectLineItem,
 }: ModuleScreenProps) {
-  useDocumentTitle(`${module.name} · OpenPlan`)
   const navigate = useNavigate()
   const { canEdit, locked } = useStructureAccess(modelId)
   const { workspace } = useCurrentWorkspace()
@@ -120,10 +119,12 @@ function ModuleScreen({
 
   return (
     <>
-      <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-        <div className="flex min-w-0 flex-col gap-1">
+      <PageHeader
+        title={module.name}
+        renderTitle={(headingClassName) => (
           <ModuleTitle
             name={module.name}
+            headingClassName={headingClassName}
             locked={locked}
             onRename={
               canEdit
@@ -134,7 +135,9 @@ function ModuleScreen({
                 : undefined
             }
           />
-          <div className="flex flex-wrap items-center gap-1.5 text-sm text-muted-foreground">
+        )}
+        description={
+          <div className="flex flex-wrap items-center gap-1.5">
             {module.functional_area && (
               <span className="inline-flex items-center gap-1">
                 <Folder className="size-3.5" />
@@ -148,24 +151,26 @@ function ModuleScreen({
               </Badge>
             ))}
           </div>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <LiveIndicator />
-          {canEdit && (
-            <ProductionLock locked={locked}>
-              <Button
-                ref={settingsRef}
-                variant="outline"
-                disabled={locked}
-                onClick={() => setSettingsOpen(true)}
-              >
-                <Settings />
-                Module settings
-              </Button>
-            </ProductionLock>
-          )}
-        </div>
-      </div>
+        }
+        actions={
+          <>
+            <LiveIndicator />
+            {canEdit && (
+              <ProductionLock locked={locked}>
+                <Button
+                  ref={settingsRef}
+                  variant="outline"
+                  disabled={locked}
+                  onClick={() => setSettingsOpen(true)}
+                >
+                  <Settings />
+                  Module settings
+                </Button>
+              </ProductionLock>
+            )}
+          </>
+        }
+      />
       {locked && (
         <div className="mb-4">
           <ProductionNotice />

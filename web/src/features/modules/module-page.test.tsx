@@ -44,7 +44,10 @@ function openApp(
   {
     role = "admin",
     mode = "dev",
-  }: { role?: components["schemas"]["WorkspaceRole"]; mode?: "dev" | "prod" } = {},
+  }: {
+    role?: components["schemas"]["WorkspaceRole"]
+    mode?: "dev" | "prod"
+  } = {},
 ) {
   mockSession({ me: { ...me, workspaces: [{ ...workspace, role }] } })
   serveModels([{ ...model, mode }])
@@ -53,6 +56,11 @@ function openApp(
   const served = serveViewQuery()
   const app = renderApp(path)
   return { store, served, ...app }
+}
+
+/** Whether a button shows the spinner that says its request is running. */
+function spinning(button: HTMLElement) {
+  return button.querySelector("svg.animate-spin") !== null
 }
 
 /** The page's own content, without the sidebar and the header, which list the module too. */
@@ -87,7 +95,12 @@ describe("a module's page", () => {
   it("says so when the module is gone", async () => {
     openApp(`/m/${model.id}/modules/0192f3a0-0000-7000-8000-0000000000ff`)
 
-    expect(await screen.findByRole("heading", { level: 1, name: "Module not found" })).toBeVisible()
+    expect(
+      await screen.findByRole("heading", {
+        level: 1,
+        name: "Module not found",
+      }),
+    ).toBeVisible()
     expect(screen.getByRole("link", { name: "Back to modules" })).toHaveAttribute(
       "href",
       `/m/${model.id}/modules`,
@@ -140,7 +153,7 @@ describe("a module's page", () => {
 })
 
 describe("the tabs", () => {
-  it("opens on the grid, and shows the Blueprint when the address says so", async () => {
+  it("opens on the grid", async () => {
     openApp(revenuePath)
     const content = await page()
 
@@ -149,6 +162,19 @@ describe("the tabs", () => {
       "true",
     )
     expect(await content.findByRole("grid", { name: "Revenue grid" })).toBeVisible()
+    expect(content.queryByRole("grid", { name: "Line items" })).toBeNull()
+  })
+
+  it("shows the Blueprint when the address says so", async () => {
+    openApp(`${revenuePath}?tab=blueprint`)
+    const content = await page()
+
+    expect(await content.findByRole("tab", { name: "Blueprint" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    )
+    expect(await content.findByRole("grid", { name: "Line items" })).toBeVisible()
+    expect(content.queryByRole("grid", { name: "Revenue grid" })).toBeNull()
   })
 
   it("keeps the tab in the address", async () => {
@@ -158,10 +184,16 @@ describe("the tabs", () => {
 
     await typist.click(await content.findByRole("tab", { name: "Blueprint" }))
 
-    expect(router.state.location.search).toEqual({ tab: "blueprint", li: unitsSold.id })
+    expect(router.state.location.search).toEqual({
+      tab: "blueprint",
+      li: unitsSold.id,
+    })
     expect(await content.findByRole("grid", { name: "Line items" })).toBeVisible()
     await typist.click(content.getByRole("tab", { name: "Grid" }))
-    expect(router.state.location.search).toEqual({ tab: "grid", li: unitsSold.id })
+    expect(router.state.location.search).toEqual({
+      tab: "grid",
+      li: unitsSold.id,
+    })
   })
 
   it("moves between the tabs with the arrow keys", async () => {
@@ -229,7 +261,11 @@ describe("renaming a module in its title", () => {
     const app = openApp(path)
     const content = await page()
     await typist.click(await content.findByRole("button", { name: "Rename module" }))
-    return { ...app, content, input: await content.findByRole("textbox", { name: "Module name" }) }
+    return {
+      ...app,
+      content,
+      input: await content.findByRole("textbox", { name: "Module name" }),
+    }
   }
 
   it("turns the title into an input that Enter saves", async () => {
@@ -243,11 +279,33 @@ describe("renaming a module in its title", () => {
 
     expect(await content.findByRole("heading", { level: 1, name: "Sales" })).toBeVisible()
     expect(store.requests).toEqual([
-      { action: "update module", id: revenueModule.id, body: { name: "Sales" } },
+      {
+        action: "update module",
+        id: revenueModule.id,
+        body: { name: "Sales" },
+      },
     ])
     await waitFor(() => expect(toast.success).toHaveBeenCalledWith("Module renamed"))
     expect(content.getByRole("button", { name: "Rename module" })).toHaveFocus()
     expect(document.title).toBe("Sales · OpenPlan")
+  })
+
+  it("shows that it is saving, and leaves the input as it is until the server answers", async () => {
+    const typist = userEvent.setup()
+    const { store, content, input } = await startRename(typist)
+    const release = store.hold()
+
+    await typist.clear(input)
+    await typist.type(input, "Sales{Enter}")
+
+    expect(await content.findByText("Saving the name")).toHaveAttribute("role", "status")
+    expect(input).toHaveAttribute("aria-busy", "true")
+    expect(input).toHaveAttribute("readonly")
+    expect(input.parentElement?.querySelector("svg.animate-spin")).not.toBeNull()
+    release()
+    expect(await content.findByRole("heading", { level: 1, name: "Sales" })).toBeVisible()
+    await waitFor(() => expect(content.queryByText("Saving the name")).toBeNull())
+    expect(content.queryByRole("textbox", { name: "Module name" })).toBeNull()
   })
 
   it("gives up on Escape and changes nothing", async () => {
@@ -319,7 +377,9 @@ describe("renaming a module in its title", () => {
     openApp(revenuePath, structure, { mode: "prod" })
     const content = await page()
 
-    const rename = await content.findByRole("button", { name: "Rename module" })
+    const rename = await content.findByRole("button", {
+      name: "Rename module",
+    })
     expect(rename).toBeDisabled()
     expect(content.getByRole("button", { name: "Module settings" })).toBeDisabled()
     expect(content.getByText(PRODUCTION_MESSAGE)).toBeVisible()
@@ -333,7 +393,10 @@ describe("the module settings", () => {
     const app = openApp(revenuePath, modelStructure)
     const content = await page()
     await typist.click(await content.findByRole("button", { name: "Module settings" }))
-    return { ...app, sheet: within(await screen.findByRole("dialog", { name: "Module settings" })) }
+    return {
+      ...app,
+      sheet: within(await screen.findByRole("dialog", { name: "Module settings" })),
+    }
   }
 
   it("shows the module as it is", async () => {
@@ -412,7 +475,9 @@ describe("the module settings", () => {
     await typist.click(sheet.getByRole("checkbox", { name: /Regions/ }))
     await typist.click(sheet.getByRole("button", { name: "Save changes" }))
     await typist.click(
-      within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Cancel" }),
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Cancel",
+      }),
     )
 
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull())
@@ -488,11 +553,86 @@ describe("the module settings", () => {
 
     await typist.click(sheet.getByRole("button", { name: "Delete module" }))
     await typist.click(
-      within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Delete module" }),
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Delete module",
+      }),
     )
 
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith("Another module uses it."))
     expect(screen.getByRole("alertdialog")).toBeVisible()
+  })
+
+  it("puts the focus in the name without selecting it, so that typing adds to it", async () => {
+    const typist = userEvent.setup()
+    const { sheet } = await openSettings(typist)
+    const name = sheet.getByLabelText<HTMLInputElement>("Name")
+
+    expect(name).toHaveFocus()
+    expect(name.selectionStart).toBe(name.selectionEnd)
+    await typist.keyboard("s")
+
+    expect(name).toHaveValue("Revenues")
+  })
+
+  it("leaves the sheet open and the button busy while it saves, and cannot be dismissed", async () => {
+    const typist = userEvent.setup()
+    const { store, sheet } = await openSettings(typist)
+    const release = store.hold()
+
+    await typist.type(sheet.getByLabelText("Functional area"), "s")
+    await typist.click(sheet.getByRole("button", { name: "Save changes" }))
+
+    await waitFor(() => expect(sheet.getByRole("button", { name: "Save changes" })).toBeDisabled())
+    expect(spinning(sheet.getByRole("button", { name: "Save changes" }))).toBe(true)
+    expect(sheet.getByRole("button", { name: "Cancel" })).toBeDisabled()
+    expect(sheet.queryByRole("button", { name: "Close" })).toBeNull()
+    await typist.keyboard("{Escape}")
+    expect(screen.getByRole("dialog", { name: "Module settings" })).toBeVisible()
+    expect(screen.queryByRole("alertdialog")).toBeNull()
+    release()
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+  })
+
+  it("keeps the question about clearing values open and busy while the change is saved", async () => {
+    const typist = userEvent.setup()
+    const { store, sheet } = await openSettings(typist)
+    const release = store.hold()
+
+    await typist.click(sheet.getByRole("switch", { name: "Versions" }))
+    await typist.click(sheet.getByRole("button", { name: "Save changes" }))
+    const confirm = within(await screen.findByRole("alertdialog", { name: "Clear input values?" }))
+    await typist.click(confirm.getByRole("button", { name: "Save and clear values" }))
+
+    await waitFor(() =>
+      expect(confirm.getByRole("button", { name: "Save and clear values" })).toBeDisabled(),
+    )
+    expect(spinning(confirm.getByRole("button", { name: "Save and clear values" }))).toBe(true)
+    expect(confirm.getByRole("button", { name: "Cancel" })).toBeDisabled()
+    await typist.keyboard("{Escape}")
+    expect(screen.getByRole("alertdialog", { name: "Clear input values?" })).toBeVisible()
+    release()
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull())
+  })
+
+  it("keeps the deletion open and its button busy until the module is gone", async () => {
+    const typist = userEvent.setup()
+    const { store, router, sheet } = await openSettings(typist)
+    const release = store.hold()
+
+    await typist.click(sheet.getByRole("button", { name: "Delete module" }))
+    const confirm = within(await screen.findByRole("alertdialog", { name: "Delete Revenue?" }))
+    await typist.click(confirm.getByRole("button", { name: "Delete module" }))
+
+    await waitFor(() =>
+      expect(confirm.getByRole("button", { name: "Delete module" })).toBeDisabled(),
+    )
+    expect(spinning(confirm.getByRole("button", { name: "Delete module" }))).toBe(true)
+    expect(confirm.getByRole("button", { name: "Cancel" })).toBeDisabled()
+    await typist.keyboard("{Escape}")
+    expect(screen.getByRole("alertdialog", { name: "Delete Revenue?" })).toBeVisible()
+    release()
+    await waitFor(() => expect(router.state.location.pathname).toBe(`/m/${model.id}/modules`))
   })
 
   it("brings focus back to the button that opened it", async () => {
@@ -504,5 +644,99 @@ describe("the module settings", () => {
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Module settings" })).toHaveFocus(),
     )
+  })
+})
+
+describe("closing the module settings with edits", () => {
+  async function openEdited(typist: Typist) {
+    const app = openApp(revenuePath)
+    const content = await page()
+    await typist.click(await content.findByRole("button", { name: "Module settings" }))
+    const sheet = within(await screen.findByRole("dialog", { name: "Module settings" }))
+    await typist.type(sheet.getByLabelText("Functional area"), " and Sales")
+    return { ...app, sheet }
+  }
+
+  it("asks before it drops them, and keeps them when the answer is to keep editing", async () => {
+    const typist = userEvent.setup()
+    const { store, sheet } = await openEdited(typist)
+
+    await typist.keyboard("{Escape}")
+    const ask = within(await screen.findByRole("alertdialog", { name: "Discard changes?" }))
+    expect(ask.getByText("Your changes to this module have not been saved.")).toBeVisible()
+    await typist.click(ask.getByRole("button", { name: "Keep editing" }))
+
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull())
+    expect(screen.getByRole("dialog", { name: "Module settings" })).toBeVisible()
+    expect(sheet.getByLabelText("Functional area")).toHaveValue("Finance and Sales")
+    expect(store.requests).toEqual([])
+  })
+
+  it("closes without saving when the answer is to discard", async () => {
+    const typist = userEvent.setup()
+    const { store } = await openEdited(typist)
+
+    await typist.keyboard("{Escape}")
+    await typist.click(
+      await within(await screen.findByRole("alertdialog")).findByRole("button", {
+        name: "Discard changes",
+      }),
+    )
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+    expect(store.requests).toEqual([])
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Module settings" })).toHaveFocus(),
+    )
+  })
+
+  it("starts from the saved module when it is opened again after a discard", async () => {
+    const typist = userEvent.setup()
+    await openEdited(typist)
+    await typist.keyboard("{Escape}")
+    await typist.click(
+      await within(await screen.findByRole("alertdialog")).findByRole("button", {
+        name: "Discard changes",
+      }),
+    )
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+
+    await typist.click(screen.getByRole("button", { name: "Module settings" }))
+
+    const sheet = within(await screen.findByRole("dialog", { name: "Module settings" }))
+    expect(sheet.getByLabelText("Functional area")).toHaveValue("Finance")
+  })
+
+  it("does not ask when nothing was changed", async () => {
+    const typist = userEvent.setup()
+    openApp(revenuePath)
+    const content = await page()
+    await typist.click(await content.findByRole("button", { name: "Module settings" }))
+    await screen.findByRole("dialog", { name: "Module settings" })
+
+    await typist.keyboard("{Escape}")
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+    expect(screen.queryByRole("alertdialog")).toBeNull()
+  })
+
+  it("does not ask when the Cancel button is pressed, which says what it means", async () => {
+    const typist = userEvent.setup()
+    const { sheet } = await openEdited(typist)
+
+    await typist.click(sheet.getByRole("button", { name: "Cancel" }))
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+    expect(screen.queryByRole("alertdialog")).toBeNull()
+  })
+
+  it("does not ask after the module is saved", async () => {
+    const typist = userEvent.setup()
+    const { sheet } = await openEdited(typist)
+
+    await typist.click(sheet.getByRole("button", { name: "Save changes" }))
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+    expect(screen.queryByRole("alertdialog")).toBeNull()
   })
 })

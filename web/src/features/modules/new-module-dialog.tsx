@@ -58,7 +58,7 @@ export function NewModuleDialog({
         showCloseButton={!createModule.isPending}
         className="max-h-[calc(100svh-2rem)] grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden p-0 sm:max-w-lg"
       >
-        <DialogHeader className="p-6 pb-4">
+        <DialogHeader className="border-b p-6 pb-4">
           <DialogTitle>New module</DialogTitle>
           <DialogDescription>
             Name it and choose the dimensions its line items are laid out over. You open its
@@ -119,7 +119,7 @@ function NewModuleForm({ modelId, structure, areas, createModule, onClose }: New
         noValidate
         className="flex min-h-0 flex-1 flex-col"
       >
-        <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-6 pb-6">
+        <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-6 py-4">
           <ModuleFields form={form} structure={structure} areas={areas} />
         </div>
         <DialogFooter className="border-t p-4 sm:px-6">
