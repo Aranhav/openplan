@@ -1,4 +1,4 @@
-import { Link, useLocation, useMatchRoute } from "@tanstack/react-router"
+import { Link, useLocation, useMatchRoute, useParams } from "@tanstack/react-router"
 import { LayoutGrid, UserCog, Users } from "lucide-react"
 import { type ComponentProps, useEffect } from "react"
 import { NavUser } from "@/components/nav-user"
@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/sidebar"
 import { WorkspaceSwitcher } from "@/components/workspace-switcher"
 import { useMe } from "@/features/auth/api"
+import { BuildSidebar } from "@/features/build/build-sidebar"
 import { useCurrentWorkspace } from "@/hooks/use-current-workspace"
 
 export function AppSidebar(props: ComponentProps<typeof Sidebar>) {
@@ -27,6 +28,7 @@ export function AppSidebar(props: ComponentProps<typeof Sidebar>) {
   const matchRoute = useMatchRoute()
   const { setOpenMobile } = useSidebar()
   const pathname = useLocation({ select: (location) => location.pathname })
+  const { modelId } = useParams({ strict: false })
 
   // On a phone the sidebar is a sheet that covers the page. Close it when a link is chosen (even
   // one to the page already open) and whenever the address changes some other way, like Back.
@@ -36,10 +38,8 @@ export function AppSidebar(props: ComponentProps<typeof Sidebar>) {
   }, [pathname, setOpenMobile])
 
   const workspaceParams = workspace && { workspaceId: workspace.id }
-  const onModels =
-    workspaceParams &&
-    (matchRoute({ to: "/w/$workspaceId", params: workspaceParams }) ||
-      matchRoute({ to: "/m/$modelId", fuzzy: true }))
+  // Inside a model, the Build navigation says where you are.
+  const onModels = workspaceParams && matchRoute({ to: "/w/$workspaceId", params: workspaceParams })
   const onMembers =
     workspaceParams && matchRoute({ to: "/w/$workspaceId/members", params: workspaceParams })
   const onUsers = matchRoute({ to: "/admin/users" })
@@ -50,6 +50,7 @@ export function AppSidebar(props: ComponentProps<typeof Sidebar>) {
         <WorkspaceSwitcher />
       </SidebarHeader>
       <SidebarContent>
+        {modelId && <BuildSidebar modelId={modelId} onNavigate={closeSheet} />}
         <nav aria-label="Main" className="flex flex-col gap-2">
           {(workspace || isLoading) && (
             <SidebarGroup>

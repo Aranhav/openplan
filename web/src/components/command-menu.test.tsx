@@ -9,11 +9,14 @@ import {
   meInTwoWorkspaces,
   mockSession,
   renderApp,
+  serveModels,
+  serveStructure,
   user,
   workspace,
 } from "@/test/app"
 import { problem } from "@/test/problem"
 import { server } from "@/test/server"
+import { hiringModule, revenueModule, structure, unitsSold } from "@/test/structure"
 
 const revenue = makeModel({ id: "0192f3a0-0000-7000-8000-000000000011", name: "Revenue plan" })
 const headcount = makeModel({ id: "0192f3a0-0000-7000-8000-000000000012", name: "Headcount plan" })
@@ -102,7 +105,7 @@ describe("the command palette", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument())
   })
 
-  it("selecting a model navigates to /m/<id> and closes the palette", async () => {
+  it("selecting a model opens its modules and closes the palette", async () => {
     mockSession()
     mockModels()
     const typist = userEvent.setup()
@@ -110,7 +113,7 @@ describe("the command palette", () => {
     const palette = await openPalette(typist)
     await typist.click(await within(palette).findByRole("option", { name: "Headcount plan" }))
 
-    await waitFor(() => expect(router.state.location.pathname).toBe(`/m/${headcount.id}`))
+    await waitFor(() => expect(router.state.location.pathname).toBe(`/m/${headcount.id}/modules`))
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
   })
 
@@ -305,5 +308,112 @@ describe("the command palette's focus", () => {
     await waitFor(() => expect(router.state.location.pathname).toBe(`/w/${workspace.id}/members`))
     await waitFor(() => expect(card).not.toBeInTheDocument())
     await waitFor(() => expect(screen.getByRole("button", { name: /^Search/ })).toHaveFocus())
+  })
+})
+
+describe("the command palette inside a model", () => {
+  const model = makeModel({ name: "Revenue plan" })
+
+  function openModel() {
+    mockSession()
+    serveModels([model])
+    serveStructure(structure)
+    return renderApp(`/m/${model.id}/modules`)
+  }
+
+  it("finds the modules and opens one", async () => {
+    const typist = userEvent.setup()
+    const { router } = openModel()
+    const palette = await openPalette(typist)
+    await typist.click(await within(palette).findByRole("option", { name: /^Hiring plan/ }))
+
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe(`/m/${model.id}/modules/${hiringModule.id}`),
+    )
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+  })
+
+  it("names the functional area of a module beside it", async () => {
+    const typist = userEvent.setup()
+    openModel()
+    const palette = await openPalette(typist)
+
+    const option = await within(palette).findByRole("option", { name: /^Revenue\s*Finance$/ })
+    expect(within(option).getByText("Finance")).toBeVisible()
+  })
+
+  it("finds a line item and opens the blueprint of its module with the line item selected", async () => {
+    const typist = userEvent.setup()
+    const { router } = openModel()
+    const palette = await openPalette(typist)
+    await typist.keyboard("units sold")
+    const option = await within(palette).findByRole("option", { name: /^Units sold/ })
+    expect(within(option).getByText("Revenue")).toBeVisible()
+    await typist.click(option)
+
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe(`/m/${model.id}/modules/${revenueModule.id}`),
+    )
+    expect(router.state.location.search).toEqual({ tab: "blueprint", li: unitsSold.id })
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+  })
+
+  it("groups them as Modules and Line items", async () => {
+    const typist = userEvent.setup()
+    openModel()
+    const palette = await openPalette(typist)
+    await within(palette).findByRole("option", { name: /^Units sold/ })
+
+    expect(within(palette).getByRole("group", { name: "Modules" })).toBeVisible()
+    expect(within(palette).getByRole("group", { name: "Line items" })).toBeVisible()
+  })
+
+  it("goes to the modules and the settings of the model", async () => {
+    const typist = userEvent.setup()
+    const { router } = openModel()
+    const palette = await openPalette(typist)
+    await typist.click(within(palette).getByRole("option", { name: "Model settings" }))
+
+    await waitFor(() => expect(router.state.location.pathname).toBe(`/m/${model.id}/settings`))
+    const reopened = await openPalette(typist)
+    await typist.click(within(reopened).getByRole("option", { name: "Modules" }))
+
+    await waitFor(() => expect(router.state.location.pathname).toBe(`/m/${model.id}/modules`))
+  })
+
+  it("says so and offers a retry when the structure cannot be loaded", async () => {
+    mockSession()
+    serveModels([model])
+    server.use(
+      http.get(`/api/v1/models/${model.id}/structure`, () =>
+        problem(500, "internal", "The database is starting up."),
+      ),
+    )
+    const typist = userEvent.setup()
+    renderApp(`/m/${model.id}/settings`)
+    const palette = await openPalette(typist)
+
+    expect(await within(palette).findByRole("alert")).toHaveTextContent(
+      "The database is starting up.",
+    )
+    serveStructure(structure)
+    await typist.click(within(palette).getByRole("button", { name: "Retry" }))
+
+    expect(await within(palette).findByRole("option", { name: /^Units sold/ })).toBeVisible()
+  })
+
+  it("has no modules or line items outside a model", async () => {
+    mockSession()
+    mockModels()
+    const typist = userEvent.setup()
+    renderApp(`/w/${workspace.id}`)
+    const palette = await openPalette(typist)
+    await within(palette).findByRole("option", { name: "Revenue plan" })
+
+    expect(within(palette).queryByRole("group", { name: "Modules" })).not.toBeInTheDocument()
+    expect(within(palette).queryByRole("group", { name: "Line items" })).not.toBeInTheDocument()
+    expect(
+      within(palette).queryByRole("option", { name: "Model settings" }),
+    ).not.toBeInTheDocument()
   })
 })

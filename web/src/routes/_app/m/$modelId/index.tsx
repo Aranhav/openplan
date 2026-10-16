@@ -1,11 +1,7 @@
-import { createFileRoute } from "@tanstack/react-router"
-import { ModelPage } from "@/features/models/model-page"
+import { createFileRoute, redirect } from "@tanstack/react-router"
 
 export const Route = createFileRoute("/_app/m/$modelId/")({
-  component: ModelRoute,
+  beforeLoad: ({ params }) => {
+    throw redirect({ to: "/m/$modelId/modules", params, replace: true })
+  },
 })
-
-function ModelRoute() {
-  const { modelId } = Route.useParams()
-  return <ModelPage key={modelId} modelId={modelId} />
-}

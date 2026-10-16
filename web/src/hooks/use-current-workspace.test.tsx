@@ -32,7 +32,7 @@ describe("the current workspace", () => {
         return HttpResponse.json(model)
       }),
     )
-    renderApp(`/m/${model.id}`)
+    renderApp(`/m/${model.id}/settings`)
 
     await waitFor(() => expect(screen.getByRole("heading", { name: "Model" })).toBeVisible())
     expect(screen.queryByRole("button", { name: /Acme Corp/ })).not.toBeInTheDocument()

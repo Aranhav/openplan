@@ -8,6 +8,7 @@ import { createAppRouter } from "@/router"
 import { problem } from "./problem"
 import { createTestQueryClient } from "./render"
 import { server } from "./server"
+import { type StructureDto, makeStructure } from "./structure"
 
 type MeResponse = components["schemas"]["MeResponse"]
 type ModelDto = components["schemas"]["ModelDto"]
@@ -61,7 +62,8 @@ export interface Session {
 
 /**
  * Answers the setup-status and me endpoints from `state`, which a test can change mid-flight.
- * Every workspace is empty of models until a test calls `serveModels`.
+ * Every workspace is empty of models until a test calls `serveModels`, and every model empty of
+ * structure until it calls `serveStructure`.
  */
 export function mockSession(initial: Partial<Session> = {}): Session {
   const state: Session = { needsSetup: false, signedIn: true, me, meRequests: 0, ...initial }
@@ -74,8 +76,14 @@ export function mockSession(initial: Partial<Session> = {}): Session {
         : problem(401, "auth.unauthenticated", "Sign in to continue.")
     }),
     http.get("/api/v1/workspaces/:id/models", () => HttpResponse.json([])),
+    http.get("/api/v1/models/:id/structure", () => HttpResponse.json(makeStructure())),
   )
   return state
+}
+
+/** Serves `structure` as the structure of every model; call it after `mockSession`. */
+export function serveStructure(structure: StructureDto) {
+  server.use(http.get("/api/v1/models/:id/structure", () => HttpResponse.json(structure)))
 }
 
 export interface ModelStore {

@@ -8,10 +8,13 @@ import {
   meInTwoWorkspaces,
   mockSession,
   renderApp,
+  serveModels,
+  serveStructure,
   user,
   workspace,
 } from "@/test/app"
 import { server } from "@/test/server"
+import { revenueModule, structure } from "@/test/structure"
 
 const nonAdmin = { ...me, user: { ...user, is_instance_admin: false } }
 
@@ -82,13 +85,19 @@ describe("the sidebar", () => {
     )
   })
 
-  it("keeps Models highlighted while you are in one of its models", async () => {
+  it("leaves Models to the Build navigation while you are in one of its models", async () => {
     mockSession()
     const model = makeModel()
     server.use(http.get(`/api/v1/models/${model.id}`, () => HttpResponse.json(model)))
     renderApp(`/m/${model.id}`)
 
-    expect(await screen.findByRole("link", { name: "Models" })).toHaveAttribute(
+    const workspaceNav = within(await screen.findByRole("navigation", { name: "Main" }))
+    expect(await workspaceNav.findByRole("link", { name: "Models" })).toHaveAttribute(
+      "data-active",
+      "false",
+    )
+    const build = within(screen.getByRole("navigation", { name: "Build" }))
+    expect(await build.findByRole("link", { name: "Modules" })).toHaveAttribute(
       "data-active",
       "true",
     )
@@ -178,15 +187,48 @@ describe("the header", () => {
     expect(workspaceCrumb?.className).not.toMatch(/\bhidden\b/)
   })
 
-  it("names the model when you are in one", async () => {
+  it("names the model and the screen when you are in one", async () => {
     mockSession({ me: meInTwoWorkspaces })
     const model = makeModel({ name: "Revenue plan" })
-    server.use(http.get(`/api/v1/models/${model.id}`, () => HttpResponse.json(model)))
-    renderApp(`/m/${model.id}`)
+    serveModels([model])
+    renderApp(`/m/${model.id}/modules`)
 
     const crumbs = await screen.findByRole("navigation", { name: "breadcrumb" })
-    expect(await within(crumbs).findByText("Revenue plan")).toHaveAttribute("aria-current", "page")
+    expect(await within(crumbs).findByRole("link", { name: "Revenue plan" })).toHaveAttribute(
+      "href",
+      `/m/${model.id}/modules`,
+    )
     expect(within(crumbs).getByRole("link", { name: "Acme Corp" })).toBeInTheDocument()
+    expect(within(crumbs).getByText("Modules")).toHaveAttribute("aria-current", "page")
+  })
+
+  it("names the settings of the model", async () => {
+    mockSession()
+    const model = makeModel({ name: "Revenue plan" })
+    serveModels([model])
+    renderApp(`/m/${model.id}/settings`)
+
+    const crumbs = await screen.findByRole("navigation", { name: "breadcrumb" })
+    expect(await within(crumbs).findByRole("link", { name: "Revenue plan" })).toBeInTheDocument()
+    expect(within(crumbs).getByText("Model settings")).toHaveAttribute("aria-current", "page")
+  })
+
+  it("names the module you are in after the modules", async () => {
+    mockSession()
+    const model = makeModel({ name: "Revenue plan" })
+    serveModels([model])
+    serveStructure(structure)
+    renderApp(`/m/${model.id}/modules/${revenueModule.id}`)
+
+    const crumbs = await screen.findByRole("navigation", { name: "breadcrumb" })
+    expect(
+      await within(crumbs).findByText("Revenue", { selector: "[aria-current=page]" }),
+    ).toBeVisible()
+    expect(within(crumbs).getByRole("link", { name: "Modules" })).toHaveAttribute(
+      "href",
+      `/m/${model.id}/modules`,
+    )
+    expect(within(crumbs).getByRole("link", { name: "Revenue plan" })).toBeInTheDocument()
   })
 
   it("does not tie the profile to a workspace", async () => {

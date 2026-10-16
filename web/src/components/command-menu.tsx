@@ -1,4 +1,4 @@
-import { useNavigate } from "@tanstack/react-router"
+import { useNavigate, useParams } from "@tanstack/react-router"
 import { Box, Building2, Check, CircleUser, LayoutGrid, UserCog, Users } from "lucide-react"
 import { type ReactNode, type RefObject, useEffect, useRef } from "react"
 import { ErrorState } from "@/components/error-state"
@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/dialog"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useMe } from "@/features/auth/api"
+import { ModelCommands } from "@/features/build/model-commands"
 import { useModels } from "@/features/models/api"
 import { useWorkspaces } from "@/features/workspaces/api"
 import { roleLabels } from "@/features/workspaces/roles"
@@ -49,6 +50,7 @@ export function CommandMenu({
   const { data: me } = useMe()
   const { data: workspaces = [] } = useWorkspaces()
   const { workspace } = useCurrentWorkspace()
+  const { modelId } = useParams({ strict: false })
   // Set by the shortcut only: the search button is its own opener, and is the fallback anyway.
   const opener = useRef<HTMLElement | null>(null)
 
@@ -142,6 +144,7 @@ export function CommandMenu({
             Profile
           </CommandItem>
         </CommandGroup>
+        {modelId && <ModelCommands modelId={modelId} run={run} />}
         {workspace && <ModelsGroup workspaceId={workspace.id} run={run} />}
         {workspaces.length > 1 && (
           <CommandGroup heading="Workspaces">

@@ -167,7 +167,7 @@ describe("the models page", () => {
       await screen.findByText("Top-down revenue forecast for the next fiscal year."),
     )
 
-    await waitFor(() => expect(router.state.location.pathname).toBe(`/m/${revenue.id}`))
+    await waitFor(() => expect(router.state.location.pathname).toBe(`/m/${revenue.id}/modules`))
   })
 
   it("offers a first model when there are none", async () => {
@@ -227,7 +227,7 @@ describe("the models page", () => {
     await typist.type(within(dialog).getByLabelText("Name"), "FY27 Budget")
     await typist.click(within(dialog).getByRole("button", { name: "Create model" }))
 
-    await waitFor(() => expect(router.state.location.pathname).toBe(`/m/${created.id}`))
+    await waitFor(() => expect(router.state.location.pathname).toBe(`/m/${created.id}/modules`))
     expect(toast.success).toHaveBeenCalledWith("Model created")
   })
 
