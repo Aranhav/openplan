@@ -138,20 +138,8 @@ export function VersionsTable({ modelId, structure, canEdit, locked, narrow }: V
 
   return (
     <div className="rounded-lg border">
-      <Table aria-label="Versions">
-        <TableHeader>
-          <TableRow>
-            <TableHead className="pl-4">Name</TableHead>
-            <TableHead className={cn("text-center", !narrow && "w-20")}>Actual</TableHead>
-            <TableHead className={cn("text-center", !narrow && "w-20")}>Current</TableHead>
-            {!narrow && <TableHead className={canEdit ? undefined : "pr-4"}>Switchover</TableHead>}
-            {canEdit && (
-              <TableHead className="w-24 pr-4">
-                <span className="sr-only">Actions</span>
-              </TableHead>
-            )}
-          </TableRow>
-        </TableHeader>
+      <Table aria-label="Versions" className="table-fixed">
+        <VersionsHead canEdit={canEdit} narrow={narrow} />
         <TableBody>
           {rows.map((row) => {
             const switchover = (
@@ -166,7 +154,7 @@ export function VersionsTable({ modelId, structure, canEdit, locked, narrow }: V
             )
             return (
               <TableRow key={row.id}>
-                <TableCell className="max-w-xs min-w-32 pl-4 sm:min-w-40">
+                <TableCell className="pl-4">
                   {canEdit && !locked ? (
                     <VersionName name={row.name} onRename={(name) => rename(row, name)} />
                   ) : (
@@ -182,7 +170,7 @@ export function VersionsTable({ modelId, structure, canEdit, locked, narrow }: V
                     </div>
                   )}
                 </TableCell>
-                <TableCell className="text-center">
+                <TableCell className={cn("text-center", narrow && "px-1")}>
                   <VersionChoice
                     flag="is_actual"
                     row={row}
@@ -191,7 +179,7 @@ export function VersionsTable({ modelId, structure, canEdit, locked, narrow }: V
                     onChoose={() => void choose(row, { is_actual: true }, "Actual version updated")}
                   />
                 </TableCell>
-                <TableCell className="text-center">
+                <TableCell className={cn("text-center", narrow && "px-1")}>
                   <VersionChoice
                     flag="is_current"
                     row={row}
@@ -206,16 +194,21 @@ export function VersionsTable({ modelId, structure, canEdit, locked, narrow }: V
                   <TableCell className={canEdit ? undefined : "pr-4"}>{switchover}</TableCell>
                 )}
                 {canEdit && (
-                  <TableCell className="pr-4">
-                    <div className="flex items-center justify-end gap-2">
-                      {saving?.versionId === row.id && (
-                        <span role="status" aria-label={`Saving ${row.name}`}>
-                          <Loader2
-                            aria-hidden
-                            className="size-4 animate-spin text-muted-foreground"
-                          />
-                        </span>
-                      )}
+                  <TableCell className="relative pr-4">
+                    {saving?.versionId === row.id && (
+                      // Beside the delete button without taking room from the column.
+                      <span
+                        role="status"
+                        aria-label={`Saving ${row.name}`}
+                        className="absolute top-1/2 right-14 -translate-y-1/2"
+                      >
+                        <Loader2
+                          aria-hidden
+                          className="size-4 animate-spin text-muted-foreground"
+                        />
+                      </span>
+                    )}
+                    <div className="flex justify-end">
                       <RowDeleteButton
                         label={`Delete ${row.name}`}
                         tooltip="Delete version"
@@ -252,6 +245,37 @@ export function VersionsTable({ modelId, structure, canEdit, locked, narrow }: V
   )
 }
 
+interface VersionsHeadProps {
+  canEdit: boolean
+  narrow: boolean
+}
+
+/**
+ * The header of the versions table, whose columns have widths of their own (the name takes what is
+ * left), so that nothing moves when a name turns into an input or the data replaces a placeholder.
+ */
+export function VersionsHead({ canEdit, narrow }: VersionsHeadProps) {
+  return (
+    <TableHeader>
+      <TableRow>
+        <TableHead className="pl-4">Name</TableHead>
+        <TableHead className={cn("text-center", narrow ? "w-14 px-1" : "w-24")}>Actual</TableHead>
+        <TableHead
+          className={cn("text-center", narrow ? "w-16 px-1" : "w-24", !canEdit && narrow && "pr-4")}
+        >
+          Current
+        </TableHead>
+        {!narrow && <TableHead className={cn("w-40", !canEdit && "pr-4")}>Switchover</TableHead>}
+        {canEdit && (
+          <TableHead className={cn("pr-4", narrow ? "w-16" : "w-24")}>
+            <span className="sr-only">Actions</span>
+          </TableHead>
+        )}
+      </TableRow>
+    </TableHeader>
+  )
+}
+
 interface VersionChoiceProps {
   /** Which choice the column holds: the actual version or the current one. */
   flag: "is_actual" | "is_current"
@@ -280,7 +304,12 @@ function VersionChoice({ flag, row, canEdit, locked, onChoose }: VersionChoicePr
         disabled={locked}
         onValueChange={onChoose}
       >
-        <RadioGroupItem value={row.id} aria-label={`${row.name}, ${kind} version`} />
+        <RadioGroupItem
+          value={row.id}
+          aria-label={`${row.name}, ${kind} version`}
+          // The stock border is too faint to find the unchecked radios by.
+          className="size-5 border-muted-foreground/60"
+        />
       </RadioGroup>
     </ProductionLock>
   )

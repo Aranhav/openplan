@@ -118,7 +118,43 @@ describe("the versions page", () => {
     ).toBeVisible()
   })
 
+  it("says to an editor that the actual and current versions stay", async () => {
+    openVersions()
+
+    expect(
+      await screen.findByText("The actual and current versions can't be deleted."),
+    ).toBeVisible()
+    expect(screen.queryByText(/Only workspace admins and builders/)).not.toBeInTheDocument()
+  })
+
+  it.each(["viewer", "planner"] as const)(
+    "tells a %s why there is nothing to change",
+    async (role) => {
+      openVersions(undefined, { role })
+
+      expect(
+        await screen.findByText(
+          "The scenarios you plan and compare. Only workspace admins and builders can change them.",
+        ),
+      ).toBeVisible()
+      expect(
+        screen.queryByText("The actual and current versions can't be deleted."),
+      ).not.toBeInTheDocument()
+    },
+  )
+
   describe("the table", () => {
+    it("gives its columns widths of their own, so nothing moves when a name is edited", async () => {
+      openVersions()
+      const table = await findTable()
+
+      expect(screen.getByRole("table", { name: "Versions" })).toHaveClass("table-fixed")
+      expect(table.getByRole("columnheader", { name: "Actual" })).toHaveClass("w-24")
+      expect(table.getByRole("columnheader", { name: "Current" })).toHaveClass("w-24")
+      expect(table.getByRole("columnheader", { name: "Switchover" })).toHaveClass("w-40")
+      expect(table.getByRole("columnheader", { name: "Name" })).not.toHaveClass(/(^| )w-/)
+    })
+
     it("lists each version with what it is and when it switches over", async () => {
       openVersions()
       const table = await findTable()
@@ -370,6 +406,30 @@ describe("the versions page", () => {
   })
 
   describe("choosing the actual and current version", () => {
+    it("works from the keyboard: Tab to a radio and Space", async () => {
+      const typist = userEvent.setup()
+      const store = openVersions()
+      const saved = serveVersionSaves(store)
+      const table = await findTable()
+      const radio = table.getByRole("radio", { name: "Forecast, current version" })
+      await typist.click(table.getByRole("button", { name: "Rename Actual" }))
+      await typist.keyboard("{Escape}")
+      for (let presses = 0; presses < 12 && document.activeElement !== radio; presses += 1) {
+        await typist.tab()
+      }
+      expect(radio).toHaveFocus()
+
+      await typist.keyboard(" ")
+
+      await waitFor(() => expect(toast.success).toHaveBeenCalledWith("Current version updated"))
+      expect(saved).toHaveBeenCalledWith(
+        { name: "Forecast", is_actual: false, is_current: true, switchover: null },
+        forecast.id,
+      )
+      expect(table.getByRole("radio", { name: "Forecast, current version" })).toBeChecked()
+      expect(table.getByRole("radio", { name: "Budget, current version" })).not.toBeChecked()
+    })
+
     it("makes a version the actual one, and clears its switchover", async () => {
       const typist = userEvent.setup()
       const store = openVersions()
@@ -792,11 +852,46 @@ describe("the versions page", () => {
       renderApp(`/m/${model.id}/versions`)
 
       expect(await screen.findByRole("heading", { level: 1, name: "Versions" })).toBeVisible()
-      expect(await screen.findByRole("status", { name: "Loading versions" })).toBeVisible()
+      const loading = await screen.findByRole("status", { name: "Loading versions" })
+      expect(loading).toBeVisible()
+      // The placeholder has the table's own header, so its columns are where the table's will be.
+      const names = (root: HTMLElement) =>
+        within(root)
+          .getAllByRole("columnheader")
+          .map((header) => header.textContent)
+      await waitFor(() =>
+        expect(names(loading)).toEqual(["Name", "Actual", "Current", "Switchover", "Actions"]),
+      )
+      expect(within(loading).getByRole("table", { hidden: true })).toHaveClass("table-fixed")
       release()
 
-      expect(await screen.findByRole("table", { name: "Versions" })).toBeVisible()
+      const table = await screen.findByRole("table", { name: "Versions" })
+      expect(names(table)).toEqual(names(loading))
       expect(screen.queryByRole("status", { name: "Loading versions" })).not.toBeInTheDocument()
+    })
+
+    it("waits for the user's role before it draws the table, rather than showing a builder text", async () => {
+      mockSession()
+      serveModels([model])
+      serveStructureStore(makeStructure({ versions: [actual, budget, forecast] }))
+      let release!: () => void
+      const gate = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      server.use(
+        http.get(`/api/v1/models/${model.id}`, async () => {
+          await gate
+          return HttpResponse.json(model)
+        }),
+      )
+      renderApp(`/m/${model.id}/versions`)
+
+      expect(await screen.findByRole("status", { name: "Loading versions" })).toBeVisible()
+      expect(screen.queryByRole("table", { name: "Versions" })).not.toBeInTheDocument()
+      expect(screen.queryByText(/Only workspace admins and builders/)).not.toBeInTheDocument()
+      release()
+
+      expect(await screen.findByRole("radio", { name: "Budget, current version" })).toBeVisible()
     })
 
     it("says so and offers a retry when the versions cannot be loaded", async () => {
@@ -816,15 +911,6 @@ describe("the versions page", () => {
       await typist.click(page.getByRole("button", { name: "Retry" }))
 
       expect(await screen.findByRole("table", { name: "Versions" })).toBeVisible()
-    })
-
-    it("says so when the model has no versions", async () => {
-      openVersions([])
-
-      expect(
-        await screen.findByRole("heading", { level: 2, name: "No versions yet" }),
-      ).toBeVisible()
-      expect(screen.queryByRole("table")).not.toBeInTheDocument()
     })
   })
 })
