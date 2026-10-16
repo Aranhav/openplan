@@ -159,6 +159,19 @@ export async function createModelViaApi(
   })
 }
 
+/** Creates a module in a model through the API and returns its id. */
+export async function createModuleViaApi(
+  baseURL: string,
+  user: Pick<User, "email" | "password">,
+  modelId: string,
+  module: { name: string; functional_area: string; axes: unknown[] },
+) {
+  return withApi(baseURL, user, async (api) => {
+    const created = await api.post<{ id: string }>(`/api/v1/models/${modelId}/modules`, module)
+    return created.id
+  })
+}
+
 /** Creates an account through the API (as `admin`) and adds it to the admin's first workspace. */
 export async function createMemberViaApi(
   baseURL: string,
