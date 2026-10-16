@@ -42,9 +42,14 @@ for (const width of [375, 800]) {
         ready: page.getByRole("link", { name: new RegExp(LONG_MODEL_NAME) }),
       },
       {
-        path: `/m/${modelId}`,
+        path: `/m/${modelId}/modules`,
+        h1: "Modules",
+        ready: page.getByRole("heading", { name: "No modules yet", level: 2 }),
+      },
+      {
+        path: `/m/${modelId}/settings`,
         h1: LONG_MODEL_NAME,
-        ready: page.getByText("Model settings", { exact: true }),
+        ready: page.getByRole("heading", { name: "Model settings", level: 2 }),
       },
       {
         path: `${models}/members`,
@@ -79,7 +84,7 @@ for (const width of [375, 800]) {
   })
 }
 
-test("the skip link shows itself on focus and moves focus past the navigation", async ({
+test("the skip link shows itself on focus and moves focus past the navigation and the header", async ({
   page,
 }) => {
   await login(page, ADMIN)
@@ -95,6 +100,8 @@ test("the skip link shows itself on focus and moves focus past the navigation", 
   expect(box?.width).toBeGreaterThan(50)
   await page.keyboard.press("Enter")
 
-  await expect(page.getByRole("main")).toBeFocused()
+  // The page's own container, not <main>, which also holds the header with the search button.
+  await expect(page.locator("#content")).toBeFocused()
+  await expect(page.locator("#content").getByRole("button", { name: /^Search/ })).toHaveCount(0)
   expect(new URL(page.url()).hash).toBe("")
 })

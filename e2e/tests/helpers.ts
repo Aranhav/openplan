@@ -33,14 +33,17 @@ export async function signOut(page: Page, user: Pick<User, "email">) {
   await expect(page).toHaveURL(/\/login$/)
 }
 
-/** Creates a model from the models page and waits for its page to open. */
+/** Creates a model from the models page and waits for its modules to open. */
 export async function createModel(page: Page, name: string) {
   await page.getByRole("button", { name: "New model" }).click()
   const dialog = page.getByRole("dialog", { name: "Create model" })
   await dialog.getByLabel("Name").fill(name)
   await dialog.getByRole("button", { name: "Create model" }).click()
-  await expect(page).toHaveURL(/\/m\/[0-9a-f-]{36}$/)
-  await expect(page.getByRole("heading", { name, level: 1 })).toBeVisible()
+  await expect(page).toHaveURL(/\/m\/[0-9a-f-]{36}\/modules$/)
+  await expect(page.getByRole("heading", { name: "Modules", level: 1 })).toBeVisible()
+  await expect(
+    page.getByRole("navigation", { name: "breadcrumb" }).getByRole("link", { name }),
+  ).toBeVisible()
 }
 
 /** A toast with this text; sonner renders each one as a list item. */

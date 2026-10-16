@@ -29,8 +29,12 @@ test("Control+K opens the command palette, and choosing a model opens it", async
   await expect(palette(page).getByRole("option")).toHaveCount(1)
   await page.keyboard.press("Enter")
 
-  await expect(page).toHaveURL(/\/m\/[0-9a-f-]{36}$/)
-  await expect(page.getByRole("heading", { name: "Headcount Plan", level: 1 })).toBeVisible()
+  await expect(page).toHaveURL(/\/m\/[0-9a-f-]{36}\/modules$/)
+  await expect(
+    page
+      .getByRole("navigation", { name: "breadcrumb" })
+      .getByRole("link", { name: "Headcount Plan" }),
+  ).toBeVisible()
   await expect(palette(page)).toBeHidden()
 })
 
