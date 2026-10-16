@@ -18,7 +18,7 @@ import type { Format, Value } from "./core/types"
 import type { CellEdit } from "./core/undo"
 import { type GridReference, displayText, parseContextFor, sameValue } from "./edit-reference"
 import { shortcut } from "./shortcuts"
-import { useCellEdits } from "./use-cell-edits"
+import { type BatchSource, useCellEdits } from "./use-cell-edits"
 
 /** The most cells one paste, fill, clear or copy takes. */
 const MAX_CELLS = 10_000
@@ -130,9 +130,9 @@ export function useGridEditing({
   const edits = useCellEdits(modelId, moduleId, {
     // Undo and redo show what they changed.
     onReplay: selectRange,
-    // A paste or a fill has its toast, and so has a refusal; one cell saved is said here.
-    onSaved: (count) => {
-      if (count === 1) {
+    // A paste and a fill say what they did, and a refusal has its toast; one cell saved is said here.
+    onSaved: (count, source) => {
+      if (count === 1 && source !== "paste" && source !== "fill") {
         announce("Saved")
       }
     },
@@ -168,9 +168,13 @@ export function useGridEditing({
   }
 
   /** Writes what differs from what the cells hold; `where` is what undo and redo select. */
-  function write(candidates: readonly Candidate[], where: CellRange): Promise<boolean> {
+  function write(
+    candidates: readonly Candidate[],
+    where: CellRange,
+    source: BatchSource = "edit",
+  ): Promise<boolean> {
     const changes = candidates.flatMap(({ target, value }) => changeOf(target, value) ?? [])
-    return edits.commit(changes, where)
+    return edits.commit(changes, where, source)
   }
 
   function toggle(target: CellTarget, pos: Pos) {
@@ -332,8 +336,13 @@ export function useGridEditing({
       }
       candidates.push({ target, value: parsed.value })
     }
-    if ((await write(candidates, range)) && skipped > 0) {
-      toast.success(`Filled ${cells(candidates.length)}${skippedNote(skipped)}`)
+    if (await write(candidates, range, "fill")) {
+      if (skipped > 0) {
+        toast.success(`Filled ${cells(candidates.length)}${skippedNote(skipped)}`)
+      } else {
+        // A fill that skipped nothing has no toast, and is not announced as a save either.
+        announce(`Filled ${cells(candidates.length)}`)
+      }
     }
   }
 
@@ -390,7 +399,7 @@ export function useGridEditing({
     // The pasted cells are selected, with the active cell at the top left, once it is known that
     // every value fits.
     selectRange(pasted)
-    if (await write(candidates, pasted)) {
+    if (await write(candidates, pasted, "paste")) {
       toast.success(`Pasted ${cells(candidates.length)}${skippedNote(skipped)}`)
     }
   }

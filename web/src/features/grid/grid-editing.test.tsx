@@ -990,6 +990,50 @@ describe("saying what happened", () => {
     await waitFor(() => expect(toast.success).toHaveBeenCalled())
     expect(screen.queryByText("Saved")).not.toBeInTheDocument()
   })
+
+  it("does not say Saved for a paste of one cell either", async () => {
+    const { grid, bodies } = await setup()
+    await select(grid, 1, BUDGET)
+
+    fireEvent.paste(document.body, { clipboardData: { getData: () => "5" } })
+
+    await waitFor(() => expect(bodies).toHaveLength(1))
+    await waitFor(() => expect(toast.success).toHaveBeenCalledExactlyOnceWith("Pasted 1 cell"))
+    expect(screen.queryByText("Saved")).not.toBeInTheDocument()
+  })
+
+  it("does not say Saved for a paste of which one cell differs from what it holds", async () => {
+    const { grid, bodies } = await setup()
+    await select(grid, 1, BUDGET)
+
+    fireEvent.paste(document.body, { clipboardData: { getData: () => "10\n6" } })
+
+    await waitFor(() => expect(bodies).toEqual([{ edits: [written("li-budget", 2, number(6))] }]))
+    await waitFor(() => expect(toast.success).toHaveBeenCalledExactlyOnceWith("Pasted 2 cells"))
+    expect(screen.queryByText("Saved")).not.toBeInTheDocument()
+  })
+
+  it("says Filled when a fill changes one cell and skips nothing, which has no toast", async () => {
+    const { grid, bodies } = await setup()
+    await select(grid, 2, NOTES)
+
+    await userEvent.keyboard("{Control>}d{/Control}")
+
+    await waitFor(() => expect(bodies).toHaveLength(1))
+    const message = await screen.findByText("Filled 1 cell")
+    expect(message.closest("[role='status']")).toHaveClass("sr-only")
+    expect(toast.success).not.toHaveBeenCalled()
+  })
+
+  it("says Saved when one cell is cleared, which has no message of its own", async () => {
+    const { grid, bodies } = await setup()
+    await select(grid, 1, BUDGET)
+
+    await userEvent.keyboard("{Delete}")
+
+    await waitFor(() => expect(bodies).toHaveLength(1))
+    expect(await screen.findByText("Saved")).toBeInTheDocument()
+  })
 })
 
 describe("a grid that is read only, in its look", () => {

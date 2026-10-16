@@ -11,14 +11,20 @@ import { type CellEdit, UndoStack } from "./core/undo"
 
 type Side = "before" | "after"
 
+/**
+ * What made a batch. A paste and a fill say what they did themselves, so for them a save is not
+ * announced as well.
+ */
+export type BatchSource = "edit" | "paste" | "fill"
+
 type Handlers = {
   /** A batch was taken up by undo or redo: where it was made. */
   onReplay?: (where: CellRange) => void
   /**
    * The server took a batch, or an undo or redo of one, and the views have been read again: how
-   * many cells it was. A refusal is not reported here, it has its toast.
+   * many cells it was and what made it. A refusal is not reported here, it has its toast.
    */
-  onSaved?: (count: number) => void
+  onSaved?: (count: number, source: BatchSource | "undo" | "redo") => void
 }
 
 type Shown = { value: Value; batch: number }
@@ -116,7 +122,11 @@ export function useCellEdits(modelId: string, moduleId: string, handlers: Handle
    * Writes a batch of edits made in `where`, which undo and redo select again. Resolves to whether
    * the server took it.
    */
-  async function commit(edits: readonly CellEdit[], where?: CellRange): Promise<boolean> {
+  async function commit(
+    edits: readonly CellEdit[],
+    where?: CellRange,
+    source: BatchSource = "edit",
+  ): Promise<boolean> {
     if (edits.length === 0) {
       return true
     }
@@ -128,7 +138,7 @@ export function useCellEdits(modelId: string, moduleId: string, handlers: Handle
         history.push({ edits: [...edits], where })
       })
       await reread()
-      handlers.onSaved?.(edits.length)
+      handlers.onSaved?.(edits.length, source)
       return true
     } catch (error) {
       toast.error(failureMessage(error))
@@ -169,7 +179,7 @@ export function useCellEdits(modelId: string, moduleId: string, handlers: Handle
       })
       if (replayed) {
         await reread()
-        handlers.onSaved?.(count)
+        handlers.onSaved?.(count, direction)
       }
     } catch (error) {
       toast.error(failureMessage(error))

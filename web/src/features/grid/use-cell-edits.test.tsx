@@ -497,7 +497,20 @@ describe("useCellEdits saved", () => {
       await result.current.commit([edit(5), edit(6, 1, ["p-2", "Jan 26"])])
     })
 
-    expect(onSaved).toHaveBeenCalledExactlyOnceWith(2)
+    expect(onSaved).toHaveBeenCalledExactlyOnceWith(2, "edit")
+  })
+
+  it("says what made the batch, for the paste and the fill to announce for themselves", async () => {
+    serveCells()
+    const { result, onSaved } = setup()
+
+    await act(async () => {
+      await result.current.commit([edit(5)], undefined, "paste")
+      await result.current.commit([edit(6, 1, ["p-2", "Jan 26"])], undefined, "fill")
+    })
+
+    expect(onSaved).toHaveBeenNthCalledWith(1, 1, "paste")
+    expect(onSaved).toHaveBeenNthCalledWith(2, 1, "fill")
   })
 
   it("says nothing when the server refused them, which has its toast", async () => {
@@ -527,7 +540,19 @@ describe("useCellEdits saved", () => {
     })
 
     expect(onSaved).toHaveBeenCalledTimes(2)
-    expect(onSaved).toHaveBeenLastCalledWith(1)
+    expect(onSaved).toHaveBeenLastCalledWith(1, "undo")
+  })
+
+  it("says it for a redo, as a redo", async () => {
+    serveCells()
+    const { result, onSaved } = setup()
+    await act(async () => {
+      await result.current.commit([edit(5)])
+      await result.current.undo()
+      await result.current.redo()
+    })
+
+    expect(onSaved).toHaveBeenLastCalledWith(1, "redo")
   })
 
   it("says nothing for an empty batch or an undo with nothing to undo", async () => {
