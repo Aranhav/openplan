@@ -50,6 +50,8 @@ export function ParentPicker({
   const [query, setQuery] = useState("")
   const matching = query.trim() ? parents.filter((parent) => matchesQuery(parent, query)) : parents
   const shown = matching.slice(0, MAX_PARENT_OPTIONS)
+  // The visible text with nothing chosen; the name starts with it (WCAG 2.5.3).
+  const choose = `Choose from ${parentList}`
 
   return (
     <Popover
@@ -67,7 +69,7 @@ export function ParentPicker({
           size="sm"
           role="combobox"
           aria-expanded={open}
-          aria-label={`${label}: ${selected?.name ?? "none chosen"}`}
+          aria-label={selected ? `${label}: ${selected.name}` : `${choose}: ${label}`}
           aria-busy={pending || undefined}
           aria-disabled={pending || undefined}
           className={cn(
@@ -77,7 +79,7 @@ export function ParentPicker({
           {...buttonProps}
         >
           <span className={cn("truncate", !selected && "text-muted-foreground")}>
-            {selected?.name ?? `Choose from ${parentList}`}
+            {selected?.name ?? choose}
           </span>
           {pending ? (
             <Loader2 className="animate-spin text-muted-foreground" />

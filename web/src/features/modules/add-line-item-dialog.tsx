@@ -81,7 +81,7 @@ interface AddLineItemDialogProps {
   copy?: Partial<AddLineItemCopy>
 }
 
-export interface AddLineItemCopy {
+interface AddLineItemCopy {
   title: string
   /** Under the title; without it, where the line item goes. */
   description: string

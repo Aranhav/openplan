@@ -83,15 +83,18 @@ export function SubsetsSheet({
   // The items ticked for the subset on show: a draft until it is saved.
   const [draft, setDraft] = useState<ReadonlySet<string>>(new Set())
   const dirty = opened !== undefined && !sameIds(draft, opened.items)
-  // What to do once the user agrees to drop the draft, and where focus goes if they do not.
-  const [discarding, setDiscarding] = useState<{ then: () => void }>()
+  // What to do once the user agrees to drop the draft, and the name of the subset it is about. The
+  // name outlasts the question, so the text still reads while the dialog animates out.
+  const [discarding, setDiscarding] = useState<{ then: () => void; name?: string }>()
+  const [discardOpen, setDiscardOpen] = useState(false)
   const asker = useRef<HTMLElement | null>(null)
   const busy = createSubset.isPending || updateSubset.isPending || deleteSubset.isPending
 
   function leave(then: () => void) {
     if (dirty) {
       asker.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
-      setDiscarding({ then })
+      setDiscarding({ then, name: opened?.name })
+      setDiscardOpen(true)
     } else {
       then()
     }
@@ -164,10 +167,7 @@ export function SubsetsSheet({
           )}
         </SheetContent>
       </Sheet>
-      <AlertDialog
-        open={discarding !== undefined}
-        onOpenChange={(next) => !next && setDiscarding(undefined)}
-      >
+      <AlertDialog open={discardOpen} onOpenChange={setDiscardOpen}>
         <AlertDialogContent
           onCloseAutoFocus={(event) => {
             event.preventDefault()
@@ -177,7 +177,7 @@ export function SubsetsSheet({
           <AlertDialogHeader>
             <AlertDialogTitle>Discard changes?</AlertDialogTitle>
             <AlertDialogDescription>
-              The items ticked in {opened?.name} are not saved yet.
+              The items ticked in {discarding?.name} are not saved yet.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

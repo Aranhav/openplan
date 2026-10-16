@@ -337,17 +337,15 @@ describe("ticks that are not saved", () => {
 
   it("are asked about before closing the sheet drops them", async () => {
     const typist = userEvent.setup()
-    const { sheet } = await tickGadgets(typist)
+    const { store } = await tickGadgets(typist)
     await typist.keyboard("{Escape}")
-    await typist.click(
-      within(await screen.findByRole("alertdialog", { name: "Discard changes?" })).getByRole(
-        "button",
-        { name: "Discard changes" },
-      ),
-    )
+
+    const dialog = within(await screen.findByRole("alertdialog", { name: "Discard changes?" }))
+    expect(dialog.getByText("The items ticked in Core products are not saved yet.")).toBeVisible()
+    await typist.click(dialog.getByRole("button", { name: "Discard changes" }))
 
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument())
-    expect(sheet).toBeDefined()
+    expect(store.writes).toEqual([])
   })
 
   it("are kept, with nothing asked, once they are saved", async () => {

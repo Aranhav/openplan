@@ -30,18 +30,25 @@ interface ItemsTabProps {
   locked: boolean
 }
 
-/** Tells the user a read of items that are on screen already has failed, which the screen otherwise would not show. */
-function useRefetchFailureToast(query: {
-  isRefetchError: boolean
-  error: Error | null
-  errorUpdatedAt: number
-}) {
+/**
+ * Tells the user a read of items that are on screen already has failed, which the screen otherwise
+ * would not show. The toast has the list's id, so two failed reads of one list show one toast, and
+ * a remount while it is up does not stack another.
+ */
+function useRefetchFailureToast(
+  query: {
+    isRefetchError: boolean
+    error: Error | null
+    errorUpdatedAt: number
+  },
+  listId: string,
+) {
   const { isRefetchError, error, errorUpdatedAt } = query
   useEffect(() => {
     if (isRefetchError) {
-      toast.error(errorDetail(error))
+      toast.error(errorDetail(error), { id: `items-refresh-failed-${listId}` })
     }
-  }, [isRefetchError, error, errorUpdatedAt])
+  }, [isRefetchError, error, errorUpdatedAt, listId])
 }
 
 /** The items of a list, and what can be done to them. */
@@ -52,8 +59,8 @@ export function ItemsTab({ modelId, list, structure, canEdit, locked }: ItemsTab
     : undefined
   const parentItems = useListItems(modelId, parentList?.id)
 
-  useRefetchFailureToast(items)
-  useRefetchFailureToast(parentItems)
+  useRefetchFailureToast(items, list.id)
+  useRefetchFailureToast(parentItems, list.id)
 
   // The error takes the place of the table only when there is no table to keep: a refresh that
   // fails behind items already on screen leaves them alone, and a toast says so.

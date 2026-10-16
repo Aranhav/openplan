@@ -57,7 +57,7 @@ async function newList(page: Page, name: string, options: { parent?: string; top
 /** Types an item into the open row, choosing its parent first if it is given. */
 async function typeItem(page: Page, name: string, parent?: string) {
   if (parent) {
-    await page.getByRole("combobox", { name: /^Parent of the new item/ }).click()
+    await page.getByRole("combobox", { name: /Parent of the new item/ }).click()
     await page.getByRole("option", { name: new RegExp(`^${parent}`) }).click()
   }
   await page.getByRole("textbox", { name: "New item name" }).fill(name)
@@ -118,7 +118,7 @@ test("a builder makes lists, adds items one by one and in bulk, edits them in pl
   await typeItem(page, "Japan", "APAC")
   const typeNext = async () => {
     await page.getByRole("button", { name: "Add item" }).click()
-    await page.getByRole("combobox", { name: /^Parent of the new item/ }).click()
+    await page.getByRole("combobox", { name: /Parent of the new item/ }).click()
     await page.getByRole("option", { name: /^EMEA/ }).click()
     await page.getByRole("textbox", { name: "New item name" }).fill("Spain")
     await page.getByRole("textbox", { name: "New item code" }).fill("ES")

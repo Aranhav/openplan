@@ -203,7 +203,11 @@ describe("loading the items", () => {
     )
     await queryClient.invalidateQueries({ queryKey: ["models", model.id, "structure"] })
 
-    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("The server is busy."))
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith("The server is busy.", {
+        id: `items-refresh-failed-${countriesList}`,
+      }),
+    )
     expect(table.getByRole("button", { name: "Rename France" })).toBeVisible()
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument()
   })
@@ -406,7 +410,7 @@ describe("adding items one after another", () => {
     expect(name).toHaveFocus()
     await chooseOption(
       typist,
-      table.getByRole("combobox", { name: /^Parent of the new item/ }),
+      table.getByRole("combobox", { name: /Parent of the new item/ }),
       "EMEA",
     )
     await typist.type(name, "Italy")
@@ -461,7 +465,7 @@ describe("adding items one after another", () => {
     const name = await startAdding(typist)
     await chooseOption(
       typist,
-      table.getByRole("combobox", { name: /^Parent of the new item/ }),
+      table.getByRole("combobox", { name: /Parent of the new item/ }),
       "APAC",
     )
     await typist.type(name, "China")
@@ -483,7 +487,7 @@ describe("adding items one after another", () => {
     await typist.type(name, "Italy{Enter}")
 
     expect(table.getByText("Choose a parent.")).toBeVisible()
-    expect(table.getByRole("combobox", { name: /^Parent of the new item/ })).toBeInvalid()
+    expect(table.getByRole("combobox", { name: /Parent of the new item/ })).toBeInvalid()
     expect(store.writes).toEqual([])
   })
 
@@ -494,7 +498,7 @@ describe("adding items one after another", () => {
     const name = await startAdding(typist)
     await chooseOption(
       typist,
-      table.getByRole("combobox", { name: /^Parent of the new item/ }),
+      table.getByRole("combobox", { name: /Parent of the new item/ }),
       "EMEA",
     )
     await typist.type(name, "France{Enter}")
@@ -532,7 +536,7 @@ describe("adding items one after another", () => {
     const table = await findTable()
     const name = await startAdding(typist)
     await typist.type(name, "Italy")
-    await typist.click(table.getByRole("combobox", { name: /^Parent of the new item/ }))
+    await typist.click(table.getByRole("combobox", { name: /Parent of the new item/ }))
     await screen.findByRole("combobox", { name: "Items of Regions" })
     await typist.keyboard("{Escape}")
 
@@ -548,7 +552,7 @@ describe("adding items one after another", () => {
     const table = await findTable()
     const name = await startAdding(typist)
     await typist.type(name, "Italy")
-    await typist.click(table.getByRole("combobox", { name: /^Parent of the new item/ }))
+    await typist.click(table.getByRole("combobox", { name: /Parent of the new item/ }))
     await typist.type(await screen.findByRole("combobox", { name: "Items of Regions" }), "emea")
     await typist.keyboard("{Enter}")
 
