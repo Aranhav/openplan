@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button"
 import { useDeleteLineItem, useReorderLineItems } from "@/features/structure/api"
 import { lineItemsOf } from "@/features/structure/modules"
 import type { LineItemDto, ModuleDto, StructureDto } from "@/features/structure/types"
+import { useHeadingFocus } from "@/hooks/use-heading-focus"
 import { useRestoreFocus } from "@/hooks/use-restore-focus"
 import { errorDetail } from "@/lib/api/client"
 import { AddLineItemDialog } from "./add-line-item-dialog"
@@ -52,6 +53,7 @@ export function Blueprint({
   const [confirming, setConfirming] = useState(false)
   const [adding, setAdding] = useState(false)
   const tableRef = useRef<HTMLTableElement>(null)
+  const heading = useHeadingFocus()
   const { ref: addRef, onCloseAutoFocus: restoreAddFocus } = useRestoreFocus<HTMLButtonElement>()
 
   const byId = new Map(saved.map((item) => [item.id, item]))
@@ -64,7 +66,7 @@ export function Blueprint({
   // item has gone, to the button that adds the next.
   function focusTable(event: Event) {
     event.preventDefault()
-    ;(tableRef.current ?? addRef.current ?? document.querySelector("h1"))?.focus()
+    ;(tableRef.current ?? addRef.current ?? heading())?.focus()
   }
 
   function openSettings(id: string) {

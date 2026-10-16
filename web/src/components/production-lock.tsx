@@ -23,13 +23,15 @@ export function ProductionNotice() {
 
 interface ProductionLockProps {
   locked: boolean
+  /** How the wrapper is laid out, as `DisabledReason` has it. */
+  className?: string
   children: ReactNode
 }
 
 /** Wraps a control that production mode disables, so hovering it says why. */
-export function ProductionLock({ locked, children }: ProductionLockProps) {
+export function ProductionLock({ locked, className, children }: ProductionLockProps) {
   return (
-    <DisabledReason reason={locked ? PRODUCTION_LOCKED_MESSAGE : undefined}>
+    <DisabledReason reason={locked ? PRODUCTION_LOCKED_MESSAGE : undefined} className={className}>
       {children}
     </DisabledReason>
   )

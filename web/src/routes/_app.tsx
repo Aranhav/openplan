@@ -1,5 +1,6 @@
 import { Outlet, createFileRoute, redirect } from "@tanstack/react-router"
 import { AppSidebar } from "@/components/app-sidebar"
+import { HeadingFocusProvider } from "@/components/heading-focus-provider"
 import { SiteHeader } from "@/components/site-header"
 import { SkipLink } from "@/components/skip-link"
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
@@ -37,7 +38,9 @@ function AppLayout() {
       <SidebarInset className="min-w-0">
         <SiteHeader />
         <div id={CONTENT_ID} tabIndex={-1} className="flex-1 p-4 outline-none md:p-6">
-          <Outlet />
+          <HeadingFocusProvider>
+            <Outlet />
+          </HeadingFocusProvider>
         </div>
       </SidebarInset>
     </SidebarProvider>

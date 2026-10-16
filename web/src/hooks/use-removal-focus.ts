@@ -1,16 +1,19 @@
 import { useEffect, useRef } from "react"
 import { useElementMap } from "@/hooks/use-element-map"
+import { useHeadingFocus } from "@/hooks/use-heading-focus"
 
 /**
  * For a list whose rows each have a button that opens a dialog to remove the row. When the dialog
  * closes, focus goes back to that row's button, or if the row is gone to the button of the row
- * that took its place (else the one before), or if no row has a usable button to the page heading.
+ * that took its place (else the one before), or if no row has a usable button to the heading of
+ * the page (`useHeadingFocus`).
  *
  * Put `refFor(id)` on each row's button, call `remember(id)` as one opens the dialog, and give
  * `onCloseAutoFocus` to the dialog.
  */
 export function useRemovalFocus(ids: string[]) {
   const buttons = useElementMap<HTMLButtonElement>()
+  const heading = useHeadingFocus()
   const opener = useRef<{ id: string; index: number }>(undefined)
 
   // Radix keeps the handler from the dialog's last render, which also drops the removed row, so
@@ -33,7 +36,7 @@ export function useRemovalFocus(ids: string[]) {
     const target = candidates
       .map((candidate) => buttons.get(candidate))
       .find((button) => button && !button.disabled)
-    ;(target ?? document.querySelector("h1"))?.focus()
+    ;(target ?? heading())?.focus()
   }
 
   return {

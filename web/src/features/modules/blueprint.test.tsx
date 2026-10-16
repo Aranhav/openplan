@@ -1010,6 +1010,34 @@ describe("who may change the line items", () => {
       "true",
     )
   })
+
+  it.each(["Move up", "Move down", "Delete line item"])(
+    "says why %s in the row menu is off in production mode",
+    async (name) => {
+      const typist = userEvent.setup()
+      openBlueprint(withLineItems, { mode: "prod" })
+      const table = await findTable()
+      const menu = await openRowMenu(typist, table, "Revenue amount")
+
+      const item = menu.getByRole("menuitem", { name })
+      expect(item).toHaveAttribute("aria-disabled", "true")
+      await typist.hover(item.parentElement as HTMLElement)
+
+      expect(await screen.findByRole("tooltip")).toHaveTextContent(PRODUCTION_MESSAGE)
+    },
+  )
+
+  it("gives no reason for a Move that is off because the row is at the end", async () => {
+    const typist = userEvent.setup()
+    openBlueprint(withLineItems, { mode: "dev" })
+    const table = await findTable()
+    const menu = await openRowMenu(typist, table, "Units sold")
+
+    const up = menu.getByRole("menuitem", { name: "Move up" })
+    expect(up).toHaveAttribute("aria-disabled", "true")
+    await typist.hover(up.parentElement as HTMLElement)
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument()
+  })
 })
 
 describe("the structure changing underneath", () => {

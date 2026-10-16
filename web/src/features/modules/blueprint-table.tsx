@@ -443,23 +443,38 @@ function BlueprintRow({
             </DropdownMenuItem>
             {canEdit && (
               <>
-                <DropdownMenuItem disabled={frozen || first} onSelect={() => onMove(item.id, -1)}>
-                  <ArrowUp />
-                  Move up
-                </DropdownMenuItem>
-                <DropdownMenuItem disabled={frozen || last} onSelect={() => onMove(item.id, 1)}>
-                  <ArrowDown />
-                  Move down
-                </DropdownMenuItem>
+                <ProductionLock locked={locked} className="flex">
+                  <DropdownMenuItem
+                    className="flex-1"
+                    disabled={frozen || first}
+                    onSelect={() => onMove(item.id, -1)}
+                  >
+                    <ArrowUp />
+                    Move up
+                  </DropdownMenuItem>
+                </ProductionLock>
+                <ProductionLock locked={locked} className="flex">
+                  <DropdownMenuItem
+                    className="flex-1"
+                    disabled={frozen || last}
+                    onSelect={() => onMove(item.id, 1)}
+                  >
+                    <ArrowDown />
+                    Move down
+                  </DropdownMenuItem>
+                </ProductionLock>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  variant="destructive"
-                  disabled={locked}
-                  onSelect={() => onDelete(item.id)}
-                >
-                  <Trash2 />
-                  Delete line item
-                </DropdownMenuItem>
+                <ProductionLock locked={locked} className="flex">
+                  <DropdownMenuItem
+                    className="flex-1"
+                    variant="destructive"
+                    disabled={locked}
+                    onSelect={() => onDelete(item.id)}
+                  >
+                    <Trash2 />
+                    Delete line item
+                  </DropdownMenuItem>
+                </ProductionLock>
               </>
             )}
           </DropdownMenuContent>

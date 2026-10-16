@@ -7,6 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Skeleton } from "@/components/ui/skeleton"
 import { canEditModels } from "@/features/workspaces/roles"
 import { useCurrentWorkspace } from "@/hooks/use-current-workspace"
+import { useHeadingFocus } from "@/hooks/use-heading-focus"
 import { useRestoreFocus } from "@/hooks/use-restore-focus"
 import type { components } from "@/lib/api/schema"
 import { useModel } from "./api"
@@ -53,6 +54,7 @@ function ModelDetails({ model }: { model: components["schemas"]["ModelDto"] }) {
   const navigate = useNavigate()
   const [deleting, setDeleting] = useState(false)
   const { ref: deleteRef, onCloseAutoFocus: restoreFocus } = useRestoreFocus<HTMLButtonElement>()
+  const heading = useHeadingFocus()
   const canEdit = workspace !== undefined && canEditModels(workspace.role)
 
   return (
@@ -96,7 +98,7 @@ function ModelDetails({ model }: { model: components["schemas"]["ModelDto"] }) {
           open={deleting}
           onOpenChange={setDeleting}
           onCloseAutoFocus={restoreFocus}
-          focusAfterDelete={() => document.querySelector("h1")}
+          focusAfterDelete={heading}
           onDeleted={() =>
             navigate({ to: "/w/$workspaceId", params: { workspaceId: model.workspace_id } })
           }
