@@ -2,7 +2,6 @@ import {
   type Announcements,
   DndContext,
   type DragEndEvent,
-  DragOverlay,
   KeyboardSensor,
   PointerSensor,
   closestCorners,
@@ -39,9 +38,9 @@ import { useElementMap } from "@/hooks/use-element-map"
 import { cn } from "@/lib/utils"
 import type { ViewDefinition, ViewDim } from "../view-types"
 import { dimLabel } from "./dim-labels"
-import { ZONES, type Zones, dropTarget } from "./pivot-drop"
+import { ZONES, type Zones, dropTarget, movesDim } from "./pivot-drop"
 import { ToolbarPanel } from "./toolbar-panel"
-import { type ViewAction, type Zone, dimKey, reduceView } from "./view-state"
+import { type ViewAction, type Zone, dimKey } from "./view-state"
 
 const ZONE_NAMES: Record<Zone, string> = { rows: "Rows", columns: "Columns", pages: "Pages" }
 
@@ -83,7 +82,6 @@ export function PivotPopover({
     const dim = all.find((candidate) => dimKey(candidate) === id)
     return dim ? dimLabel(dim, module, structure) : ZONE_NAMES[id as Zone]
   }
-  const [dragging, setDragging] = useState<string>()
   const [announcement, setAnnouncement] = useState("")
   // The chip's menu button keeps focus when the chip lands in another zone, where it is drawn anew.
   const menus = useElementMap<HTMLButtonElement>()
@@ -110,21 +108,16 @@ export function PivotPopover({
       if (!target || !dim) {
         return `Dropped ${labelOf(active.id)}.`
       }
-      return movesDim(dim, target.to, target.index)
+      return movesDim(view, dim, target.to, target.index)
         ? `Dropped ${labelOf(active.id)} in ${ZONE_NAMES[target.to]}, position ${target.index + 1}.`
         : `Dropped ${labelOf(active.id)}. It stays where it is.`
     },
     onDragCancel: ({ active }) => `Cancelled. ${labelOf(active.id)} has not moved.`,
   }
 
-  /** Whether the dimension ends up somewhere else: not when it is dropped where it is, or is the last of the rows. */
-  function movesDim(dim: ViewDim, to: Zone, index?: number) {
-    return reduceView(view, { type: "move", dim, to, index }) !== view
-  }
-
   function moveDim(dim: ViewDim, to: Zone, index?: number) {
     const name = dimLabel(dim, module, structure)
-    if (!movesDim(dim, to, index)) {
+    if (!movesDim(view, dim, to, index)) {
       setAnnouncement(`${name} stays where it is.`)
       return
     }
@@ -134,7 +127,6 @@ export function PivotPopover({
   }
 
   function onDragEnd({ active, over }: DragEndEvent) {
-    setDragging(undefined)
     const target = dropTarget(zones, String(active.id), over ? String(over.id) : undefined)
     const dim = all.find((candidate) => dimKey(candidate) === active.id)
     if (target && dim) {
@@ -175,9 +167,7 @@ export function PivotPopover({
       <DndContext
         sensors={sensors}
         collisionDetection={closestCorners}
-        onDragStart={({ active }) => setDragging(String(active.id))}
         onDragEnd={onDragEnd}
-        onDragCancel={() => setDragging(undefined)}
         accessibility={{ announcements }}
       >
         <div className="flex flex-col gap-2">
@@ -193,14 +183,6 @@ export function PivotPopover({
             />
           ))}
         </div>
-        <DragOverlay>
-          {dragging !== undefined && (
-            <div className="flex items-center gap-1.5 rounded-md border bg-popover px-2 py-1.5 text-sm shadow-md">
-              <GripVertical className="size-4 text-muted-foreground" />
-              {labelOf(dragging)}
-            </div>
-          )}
-        </DragOverlay>
       </DndContext>
       <div role="status" className="sr-only">
         {announcement}

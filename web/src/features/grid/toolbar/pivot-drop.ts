@@ -1,4 +1,5 @@
-import type { Zone } from "./view-state"
+import type { ViewDefinition, ViewDim } from "../view-types"
+import { type Zone, reduceView } from "./view-state"
 
 /** The dimensions in each zone of a pivot, by the key of the dimension. */
 export type Zones = Record<Zone, string[]>
@@ -25,4 +26,12 @@ export function dropTarget(
   }
   const to = ZONES.find((zone) => zones[zone].includes(overId))
   return to && { to, index: zones[to].indexOf(overId) }
+}
+
+/**
+ * Whether putting a dimension at a place changes the view: not when it is dropped where it is,
+ * and not for the last dimension of the rows, which stays there.
+ */
+export function movesDim(view: ViewDefinition, dim: ViewDim, to: Zone, index?: number): boolean {
+  return reduceView(view, { type: "move", dim, to, index }) !== view
 }
