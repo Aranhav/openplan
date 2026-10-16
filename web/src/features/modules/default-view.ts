@@ -1,21 +1,6 @@
-import type { ViewDefinition, ViewDim } from "@/features/grid/view-types"
+import { dimOfAxis } from "@/features/grid/toolbar/view-state"
+import type { ViewDefinition } from "@/features/grid/view-types"
 import type { ModuleDto } from "@/features/structure/types"
-import type { components } from "@/lib/api/schema"
-
-type Axis = components["schemas"]["AxisDto"]
-
-function dimOf(axis: Axis): ViewDim {
-  switch (axis.kind) {
-    case "list":
-      return { kind: "list", list: axis.list }
-    case "subset":
-      return { kind: "subset", subset: axis.subset }
-    case "time":
-      return { kind: "time" }
-    case "versions":
-      return { kind: "versions" }
-  }
-}
 
 /**
  * The view a module opens with when it has no saved default: the line items down the rows, Time
@@ -23,7 +8,7 @@ function dimOf(axis: Axis): ViewDim {
  * its default member.
  */
 export function defaultView(module: ModuleDto): ViewDefinition {
-  const dims = module.axes.map(dimOf)
+  const dims = module.axes.map(dimOfAxis)
   const across = dims.find((dim) => dim.kind === "time") ?? dims[0]
   return {
     rows: [{ kind: "line_items" }],

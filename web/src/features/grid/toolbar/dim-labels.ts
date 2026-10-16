@@ -1,25 +1,12 @@
 import { axisLabel, timeLevelLabel } from "@/features/structure/labels"
 import type { ModuleDto, StructureDto } from "@/features/structure/types"
 import type { ViewDefinition, ViewDim } from "../view-types"
-import { dimKey } from "./view-state"
+import { dimKey, dimOfAxis } from "./view-state"
 
 type Axis = ModuleDto["axes"][number]
 
-function axisDim(axis: Axis): ViewDim {
-  switch (axis.kind) {
-    case "list":
-      return { kind: "list", list: axis.list }
-    case "subset":
-      return { kind: "subset", subset: axis.subset }
-    case "time":
-      return { kind: "time" }
-    case "versions":
-      return { kind: "versions" }
-  }
-}
-
 function axisOf(dim: ViewDim, module: Pick<ModuleDto, "axes">): Axis | undefined {
-  return module.axes.find((axis) => dimKey(axisDim(axis)) === dimKey(dim))
+  return module.axes.find((axis) => dimKey(dimOfAxis(axis)) === dimKey(dim))
 }
 
 /** What a dimension is called on the toolbar: "Line items", a list's name, "Time (Month)". */

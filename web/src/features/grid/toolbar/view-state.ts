@@ -24,6 +24,20 @@ export function dimKey(dim: ViewDim): string {
   }
 }
 
+/** The dimension an axis of a module is: the same kind, and the list or subset it names. */
+export function dimOfAxis(axis: ModuleDto["axes"][number]): ViewDim {
+  switch (axis.kind) {
+    case "list":
+      return { kind: "list", list: axis.list }
+    case "subset":
+      return { kind: "subset", subset: axis.subset }
+    case "time":
+      return { kind: "time" }
+    case "versions":
+      return { kind: "versions" }
+  }
+}
+
 const isDim = (dim: ViewDim) => (other: ViewDim) => dimKey(other) === dimKey(dim)
 const isMember = (member: MemberRef) => (other: MemberRef) =>
   dimKey(other.dim) === dimKey(member.dim) && other.key === member.key
@@ -167,18 +181,7 @@ export function queryOf(moduleId: string, view: ViewDefinition): GridQuery {
  */
 export function fitsModule(view: ViewDefinition, module: Pick<ModuleDto, "axes">): boolean {
   const placed = [...view.rows, ...view.columns, ...(view.pages ?? []).map((page) => page.dim)]
-  const wanted = [
-    "line_items",
-    ...module.axes.map((axis) =>
-      dimKey(
-        axis.kind === "list"
-          ? { kind: "list", list: axis.list }
-          : axis.kind === "subset"
-            ? { kind: "subset", subset: axis.subset }
-            : { kind: axis.kind },
-      ),
-    ),
-  ]
+  const wanted = ["line_items", ...module.axes.map((axis) => dimKey(dimOfAxis(axis)))]
   const keys = placed.map(dimKey)
   return keys.length === wanted.length && wanted.every((key) => keys.filter((k) => k === key).length === 1)
 }

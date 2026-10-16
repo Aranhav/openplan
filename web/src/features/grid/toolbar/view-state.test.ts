@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest"
 import type { MemberRef, RowFilter, ViewDefinition, ViewDim } from "../view-types"
-import { type ViewAction, dimKey, fitsModule, isModified, queryOf, reduceView } from "./view-state"
+import {
+  type ViewAction,
+  dimKey,
+  dimOfAxis,
+  fitsModule,
+  isModified,
+  queryOf,
+  reduceView,
+} from "./view-state"
 
 const lineItems: ViewDim = { kind: "line_items" }
 const regions: ViewDim = { kind: "list", list: "regions" }
@@ -403,5 +411,14 @@ describe("dimKey", () => {
     expect(dimKey(channels)).toBe("subset:channels")
     expect(dimKey(time)).toBe("time")
     expect(dimKey(versions)).toBe("versions")
+  })
+})
+
+describe("dimOfAxis", () => {
+  it("is the dimension an axis of a module stands for", () => {
+    expect(dimOfAxis({ kind: "list", list: "regions" })).toEqual(regions)
+    expect(dimOfAxis({ kind: "subset", subset: "channels" })).toEqual(channels)
+    expect(dimOfAxis({ kind: "time", level: "month" })).toEqual(time)
+    expect(dimOfAxis({ kind: "versions" })).toEqual(versions)
   })
 })
