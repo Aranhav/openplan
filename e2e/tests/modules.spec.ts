@@ -308,17 +308,22 @@ test("the Blueprint marks a formula that no longer works and the settings sheet 
   await login(page, ADMIN)
   await page.goto(`/m/${modelId}/modules/${costs.id}?tab=blueprint`)
   const row = blueprintRow(page, "Rent per head")
-  await expect(row.getByRole("img", { name: /Formula error/ })).toBeVisible()
+  await expect(row.getByRole("button", { name: /Formula error: / })).toBeVisible()
+  // The first problem is in the name of the row too, for a screen reader that never hovers.
+  await expect(row).toHaveAccessibleName(/formula has errors: /i)
   await row.getByText("Rent per head", { exact: true }).click()
   await expect(row).toHaveAttribute("aria-selected", "true")
   await screenshot(page, "w3-blueprint", {
-    ready: blueprintRow(page, "Rent per head").getByRole("img", { name: /Formula error/ }),
+    ready: blueprintRow(page, "Rent per head").getByRole("button", { name: /Formula error: / }),
   })
 
   await page.getByRole("grid", { name: "Line items" }).press("Enter")
   const sheet = page.getByRole("dialog", { name: "Line item settings" })
   await expect(sheet.getByLabel("Currency code")).toHaveValue("EUR")
   await expect(sheet.getByText("Shown as")).toContainText("€1,234.57 and (€1,234.57)")
+  // The formula that stopped working is explained as soon as the sheet opens, not announced.
+  await expect(sheet.getByText("The formula has a problem.")).toBeVisible()
+  await expect(sheet.getByLabel("Formula")).toHaveAttribute("aria-invalid", "true")
   await expect(sheet.getByRole("alert")).toHaveCount(0)
   await screenshot(page, "w3-line-item-sheet", {
     ready: page.getByRole("dialog", { name: "Line item settings" }),
@@ -326,6 +331,29 @@ test("the Blueprint marks a formula that no longer works and the settings sheet 
       await page.getByRole("grid", { name: "Line items" }).press("Enter")
     },
   })
+
+  await screenshot(page, "w3f1-sheet-problem", {
+    ready: page
+      .getByRole("dialog", { name: "Line item settings" })
+      .getByText("The formula has a problem."),
+    reopen: async () => {
+      await page.getByRole("grid", { name: "Line items" }).press("Enter")
+      await page
+        .getByRole("dialog", { name: "Line item settings" })
+        .getByText("The formula has a problem.")
+        .scrollIntoViewIfNeeded()
+    },
+  })
+
+  // Closing the sheet with an edit asks first; keeping the edit leaves the sheet as it was.
+  await sheet.getByLabel("Notes").fill("To be checked")
+  await page.keyboard.press("Escape")
+  const discard = page.getByRole("alertdialog", { name: "Discard changes?" })
+  await expect(discard).toBeVisible()
+  await discard.getByRole("button", { name: "Keep editing" }).click()
+  await expect(discard).toBeHidden()
+  await expect(sheet.getByLabel("Notes")).toHaveValue("To be checked")
+  await sheet.getByLabel("Notes").fill("")
 
   // A formula that does not parse is refused with every problem listed under it.
   await sheet.getByLabel("Formula").fill("Utilities + Rentt")
