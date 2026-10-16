@@ -1,6 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { Loader2, X } from "lucide-react"
-import { type KeyboardEvent, type Ref, useEffect } from "react"
+import { type KeyboardEvent, type Ref, useEffect, useRef } from "react"
 import { useForm } from "react-hook-form"
 import { toast } from "sonner"
 import { z } from "zod"
@@ -64,7 +64,7 @@ export function NewItemRow({
     form.setFocus("name")
   }, [form])
 
-  const add = form.handleSubmit(async (values) => {
+  const save = form.handleSubmit(async (values) => {
     try {
       await createItems.mutateAsync({
         listId,
@@ -85,7 +85,27 @@ export function NewItemRow({
     }
   })
 
+  // Set at once, where a request's pending state would only show after the next render: a second
+  // Enter typed that fast would add the item twice.
+  const submitting = useRef(false)
+  async function add() {
+    if (submitting.current) {
+      return
+    }
+    submitting.current = true
+    try {
+      await save()
+    } finally {
+      submitting.current = false
+    }
+  }
+
   function onKeyDown(event: KeyboardEvent) {
+    // A key pressed in the parent's popover bubbles up to the row through the portal; it is not
+    // for the row, whose Enter and Escape would add the item and drop the row.
+    if (!(event.target instanceof Node) || !event.currentTarget.contains(event.target)) {
+      return
+    }
     if (event.key === "Escape") {
       event.stopPropagation()
       onClose()

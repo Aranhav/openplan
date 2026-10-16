@@ -486,6 +486,93 @@ describe("adding items one after another", () => {
 
     expect(name).toHaveFocus()
   })
+
+  it("lets Escape in the parent list close only the list", async () => {
+    const typist = userEvent.setup()
+    openList()
+    const table = await findTable()
+    const name = await startAdding(typist)
+    await typist.type(name, "Italy")
+    await typist.click(table.getByRole("combobox", { name: /^Parent of the new item/ }))
+    await screen.findByRole("combobox", { name: "Items of Regions" })
+    await typist.keyboard("{Escape}")
+
+    await waitFor(() =>
+      expect(screen.queryByRole("combobox", { name: "Items of Regions" })).not.toBeInTheDocument(),
+    )
+    expect(table.getByRole("textbox", { name: "New item name" })).toHaveValue("Italy")
+  })
+
+  it("lets Enter in the parent list choose the parent and add nothing", async () => {
+    const typist = userEvent.setup()
+    const { store } = openList()
+    const table = await findTable()
+    const name = await startAdding(typist)
+    await typist.type(name, "Italy")
+    await typist.click(table.getByRole("combobox", { name: /^Parent of the new item/ }))
+    await typist.type(await screen.findByRole("combobox", { name: "Items of Regions" }), "emea")
+    await typist.keyboard("{Enter}")
+
+    expect(
+      await table.findByRole("combobox", { name: "Parent of the new item: EMEA" }),
+    ).toBeVisible()
+    expect(store.writes).toEqual([])
+    expect(name).toHaveValue("Italy")
+    // The code can still be typed before the item is added.
+    await typist.type(table.getByRole("textbox", { name: "New item code" }), "IT{Enter}")
+
+    await waitFor(() => expect(store.writes).toHaveLength(1))
+    expect(store.writes[0].body).toEqual({
+      items: [{ name: "Italy", code: "IT", parent_id: emea }],
+    })
+  })
+
+  it("adds an item once when Enter is pressed twice", async () => {
+    const typist = userEvent.setup()
+    openList(regionsList)
+    let posts = 0
+    server.use(
+      http.post("/api/v1/models/:id/lists/:listId/items", async () => {
+        posts += 1
+        await new Promise((resolve) => setTimeout(resolve, 200))
+        return HttpResponse.json([{ id: "added", name: "Americas" }], { status: 201 })
+      }),
+    )
+    const name = await startAdding(typist)
+    await typist.type(name, "Americas{Enter}{Enter}")
+
+    await waitFor(() =>
+      expect(toast.success).toHaveBeenCalledWith("Added Americas", expect.anything()),
+    )
+    expect(posts).toBe(1)
+  })
+})
+
+describe("moving an item to another parent", () => {
+  it("shows the move as pending and keeps the button focusable", async () => {
+    const typist = userEvent.setup()
+    openList()
+    server.use(
+      http.patch("/api/v1/models/:id/lists/:listId/items/:itemId", async () => {
+        await new Promise((resolve) => setTimeout(resolve, 300))
+        return HttpResponse.json({ id: france, name: "France", parent_id: apac })
+      }),
+    )
+    const table = await findTable()
+    await chooseOption(
+      typist,
+      table.getByRole("combobox", { name: "Parent of France: EMEA" }),
+      "APAC",
+    )
+
+    const picker = table.getByRole("combobox", { name: /^Parent of France/ })
+    expect(picker).toHaveAttribute("aria-busy", "true")
+    expect(picker).toHaveAttribute("aria-disabled", "true")
+    // Another click does not open the list while the move is saved.
+    await typist.click(picker)
+    expect(screen.queryByRole("option")).not.toBeInTheDocument()
+    await waitFor(() => expect(picker).not.toHaveAttribute("aria-busy"))
+  })
 })
 
 describe("adding many items at once", () => {

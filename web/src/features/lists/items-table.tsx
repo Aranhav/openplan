@@ -106,6 +106,9 @@ export function ItemsTable({
     [parents],
   )
 
+  // The item being saved: a name, a code or a parent of it changes, and the others wait.
+  const savingId = updateItem.isPending ? updateItem.variables?.itemId : undefined
+
   async function saveItem(item: ItemDto, body: UpdateItemRequest) {
     await updateItem.mutateAsync({ listId: list.id, itemId: item.id, body })
   }
@@ -246,6 +249,7 @@ export function ItemsTable({
                         parentList={parentList?.name ?? "the parent list"}
                         selected={parent}
                         label={`Parent of ${item.name}`}
+                        pending={savingId === item.id}
                         onChange={(parentId) =>
                           void saveItem(item, { parent_id: parentId }).then(
                             () =>

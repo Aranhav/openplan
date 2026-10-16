@@ -1,4 +1,4 @@
-import { Check, ChevronsUpDown } from "lucide-react"
+import { Check, ChevronsUpDown, Loader2 } from "lucide-react"
 import { type ComponentProps, useState } from "react"
 import { Button } from "@/components/ui/button"
 import {
@@ -28,6 +28,11 @@ interface ParentPickerProps extends Omit<ComponentProps<typeof Button>, "value" 
   onChange: (parentId: string) => void
   /** What the button is called to assistive technology, before the parent it shows: "Parent of Paris". */
   label: string
+  /**
+   * The parent is being saved. The button is marked as unavailable and spins, but stays focusable:
+   * a disabled button could not take focus back when the list closes after a choice.
+   */
+  pending?: boolean
 }
 
 /** A button that shows the parent item and opens a searchable list of the parent list's items to change it. */
@@ -37,6 +42,7 @@ export function ParentPicker({
   selected,
   onChange,
   label,
+  pending,
   className,
   ...buttonProps
 }: ParentPickerProps) {
@@ -47,10 +53,12 @@ export function ParentPicker({
 
   return (
     <Popover
-      open={open}
+      open={open && !pending}
       onOpenChange={(next) => {
-        setOpen(next)
-        setQuery("")
+        if (!pending) {
+          setOpen(next)
+          setQuery("")
+        }
       }}
     >
       <PopoverTrigger asChild>
@@ -60,13 +68,22 @@ export function ParentPicker({
           role="combobox"
           aria-expanded={open}
           aria-label={`${label}: ${selected?.name ?? "none chosen"}`}
-          className={cn("w-full min-w-0 justify-between font-normal", className)}
+          aria-busy={pending || undefined}
+          aria-disabled={pending || undefined}
+          className={cn(
+            "w-full min-w-0 justify-between font-normal aria-disabled:opacity-50",
+            className,
+          )}
           {...buttonProps}
         >
           <span className={cn("truncate", !selected && "text-muted-foreground")}>
             {selected?.name ?? `Choose from ${parentList}`}
           </span>
-          <ChevronsUpDown className="text-muted-foreground" />
+          {pending ? (
+            <Loader2 className="animate-spin text-muted-foreground" />
+          ) : (
+            <ChevronsUpDown className="text-muted-foreground" />
+          )}
         </Button>
       </PopoverTrigger>
       <PopoverContent align="start" aria-label={`Items of ${parentList}`} className="w-72 p-0">
