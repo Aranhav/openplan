@@ -125,3 +125,9 @@ Testing cost (every task keeps writing tests; this limits how often they are run
 - Implementers run only the tests relevant to what they are changing while they work, then the full suite once before writing the report, and quote only the summary lines.
 - Reviewers run the suites once. Extra deep checks (building every commit on its own, deliberately breaking code to prove a test catches it, re-running tests to look for flakes) are only for security- and concurrency-critical code: authentication and sessions, the live-update sockets, model actors and the calculation engine. Never for UI screens, docs or config.
 - CI on the pull request is the final full gate.
+
+Context cost (what reaches the chat stays in context for the rest of the session):
+
+- Quiet test and check runs. Every test, lint, typecheck, clippy, build or e2e run writes its full output to a log file under `.logs/` (git-ignored, e.g. `.logs/server-tests.log`). Only one result line plus the failures (names and their first error lines) reach the chat. Never print a whole run. Use `scripts/quiet.sh <name> -- <command>`, which does exactly this; until it exists, redirect to the log and grep the summary and failure lines yourself.
+- Wide searches go to a subagent. The controller sends broad searches and research (sweeping many files, reading docs, comparing options) to a subagent with its model named. Only the conclusion comes back to the main thread, never file dumps. Read a file directly only when you already know which file and which part.
+- Compact early. The controller compacts the session when its context reaches about 40%, and at the latest at each milestone boundary. The controller cannot see an exact percentage, so it asks the owner to run `/compact` at those points. The ledgers in `.superpowers/sdd/` keep the state across compactions.
