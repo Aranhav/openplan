@@ -90,7 +90,7 @@ async function breadcrumbProblems(page: Page) {
   })
 }
 
-for (const width of [375, 800, 1280]) {
+for (const width of [375, 800, 1024, 1280]) {
   test(`every signed-in page fits a ${width}px screen and starts with its own h1`, async ({
     page,
   }) => {
