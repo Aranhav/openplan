@@ -20,6 +20,8 @@ const PLANNER = { name: "Pia Planner", email: "pia@acme.test", password: "planne
 let baseURL: string
 let modelId: string
 let moduleId: string
+// A module with Time alone, so that its view has no page selectors.
+let totalsId: string
 
 test.describe.configure({ mode: "serial" })
 
@@ -45,6 +47,12 @@ test.beforeAll(async ({}, testInfo) => {
       { kind: "time", level: "quarter" },
     ],
   })
+  totalsId = await createModuleViaApi(baseURL, ADMIN, modelId, {
+    name: "Totals",
+    functional_area: "Finance",
+    axes: [{ kind: "time", level: "quarter" }],
+  })
+  await createLineItemViaApi(baseURL, ADMIN, modelId, totalsId, { name: "Total sales" })
   const unitsSold = await createLineItemViaApi(baseURL, ADMIN, modelId, moduleId, {
     name: "Units sold",
   })
@@ -291,7 +299,10 @@ test("every control of the toolbar is reached with the keyboard, and the panels 
       const reopened = page.getByRole("dialog", { name: "Show or hide members" })
       await reopened.getByRole("combobox", { name: "Dimension" }).click()
       await page.getByRole("option", { name: "Time (Quarter)" }).click()
-      await reopened.getByRole("checkbox", { name: "Q4 FY26" }).click()
+      // The hidden member is part of the view, which the session keeps across the reload: it is
+      // put in the state the picture is of, and not toggled.
+      await reopened.getByRole("checkbox", { name: "Q4 FY26" }).uncheck()
+      await expect(reopened.getByText("1 member hidden")).toBeVisible()
     },
   })
   await page.keyboard.press("Escape")
@@ -380,25 +391,154 @@ test("a planner can switch views and change the pivot, but is offered no way to 
   await expect(page.getByRole("menuitem", { name: "Save", exact: true })).toHaveCount(0)
 })
 
-test("below 1100 px the secondary controls move into a More menu", async ({ page }) => {
-  await login(page, ADMIN)
-  await page.setViewportSize({ width: 900, height: 720 })
-  await openGrid(page)
-  const bar = controls(page)
-
-  await expect(bar.getByRole("button", { name: "Filter" })).toHaveCount(0)
-  await expect(bar.getByRole("button", { name: "More" })).toBeVisible()
-  await expect(bar.getByRole("button", { name: "Pivot" })).toBeVisible()
-  await bar.getByRole("button", { name: "More" }).click()
-  await screenshot(page, "g4-more-menu", {
-    ready: page.getByRole("menuitem", { name: "Filter…" }),
-    fullPage: false,
-    reopen: async () => {
-      await controls(page).getByRole("button", { name: "More" }).click()
-    },
+/**
+ * Nothing in the toolbar is cut off, covered or off the page: every control is inside the row and
+ * none lies over another, the row does not scroll, and neither does the page sideways.
+ */
+async function expectToolbarWhole(page: Page) {
+  const problems = await controls(page).evaluate((row) => {
+    const box = row.getBoundingClientRect()
+    const found: string[] = []
+    const shown = [...row.querySelectorAll<HTMLElement>("button, [role=combobox]")]
+      .map((control) => ({
+        name: control.getAttribute("aria-label") ?? control.textContent?.trim() ?? "a control",
+        rect: control.getBoundingClientRect(),
+      }))
+      .filter(({ rect }) => rect.width > 0 && rect.height > 0)
+    for (const { name, rect } of shown) {
+      if (rect.left < box.left - 0.5 || rect.right > box.right + 0.5) {
+        found.push(`${name} sticks out of the row`)
+      }
+    }
+    shown.forEach((one, index) => {
+      for (const other of shown.slice(index + 1)) {
+        const across = Math.min(one.rect.right, other.rect.right) - Math.max(one.rect.left, other.rect.left)
+        const down = Math.min(one.rect.bottom, other.rect.bottom) - Math.max(one.rect.top, other.rect.top)
+        if (across > 1 && down > 1) {
+          found.push(`${one.name} lies over ${other.name}`)
+        }
+      }
+    })
+    if (row.scrollWidth > row.clientWidth + 1) {
+      found.push("the row scrolls sideways")
+    }
+    if (document.documentElement.scrollWidth > window.innerWidth) {
+      found.push("the page scrolls sideways")
+    }
+    return found
   })
-  await page.getByRole("menuitem", { name: "Filter…" }).click()
-  await expect(page.getByRole("dialog", { name: "Filter rows" })).toBeVisible()
-  await page.keyboard.press("Escape")
-  await expect(bar.getByRole("button", { name: "More" })).toBeFocused()
+  expect(problems).toEqual([])
+}
+
+async function openModuleGrid(page: Page, id: string, name: string) {
+  await page.goto(`/m/${modelId}/modules/${id}`)
+  await expect(page.getByRole("grid", { name: `${name} grid` })).toBeVisible()
+  await expect(controls(page).getByRole("combobox", { name: "Saved view" })).toBeVisible()
+}
+
+// The width from which everything is in the row: Revenue has two page selectors to hold, Totals
+// has none and so needs the room for less.
+for (const [name, widest] of [
+  ["Revenue", 1280],
+  ["Totals", 900],
+] as const) {
+  test(`the toolbar of ${name} fits the screen, with nothing cut off or covered, from 1280 down to 375 px`, async ({
+    page,
+  }) => {
+    await login(page, ADMIN)
+    for (const width of [1280, 1100, 900, 768, 375]) {
+      await page.setViewportSize({ width, height: 720 })
+      await openModuleGrid(page, name === "Revenue" ? moduleId : totalsId, name)
+      const bar = controls(page)
+
+      await expectToolbarWhole(page)
+      // One row where everything is in it, the More menu below that.
+      const everything = width >= widest
+      await expect(bar.getByRole("button", { name: "More" })).toHaveCount(everything ? 0 : 1)
+      await expect(bar.getByRole("button", { name: "Filter" })).toHaveCount(everything ? 1 : 0)
+      await expect(bar.getByRole("button", { name: "Pivot" })).toBeVisible()
+      await expect(bar.getByRole("combobox", { name: "Saved view" })).toBeVisible()
+      if (name === "Revenue") {
+        await expect(bar.getByRole("combobox", { name: /^Regions/ })).toBeVisible()
+        await expect(bar.getByRole("combobox", { name: /^Products/ })).toBeVisible()
+      }
+      if (width === 1280) {
+        expect((await bar.boundingBox())?.height).toBeLessThan(48)
+      }
+      // The More menu opens the panels.
+      if (!everything) {
+        await bar.getByRole("button", { name: "More" }).click()
+        await page.getByRole("menuitem", { name: "Filter…" }).click()
+        await expect(page.getByRole("dialog", { name: "Filter rows" })).toBeVisible()
+        await page.keyboard.press("Escape")
+      }
+    }
+  })
+}
+
+test("below 1280 px the secondary controls move into a More menu, shown at 900 and 768 px", async ({
+  page,
+}) => {
+  await login(page, ADMIN)
+  for (const width of [900, 768]) {
+    await page.setViewportSize({ width, height: 720 })
+    await openGrid(page)
+    const bar = controls(page)
+
+    await expect(bar.getByRole("button", { name: "Filter" })).toHaveCount(0)
+    await expect(bar.getByRole("button", { name: "More" })).toBeVisible()
+    await expect(bar.getByRole("button", { name: "Pivot" })).toBeVisible()
+    await expectToolbarWhole(page)
+    await bar.getByRole("button", { name: "More" }).click()
+    await screenshot(page, `g4-more-menu-${width}`, {
+      ready: page.getByRole("menuitem", { name: "Filter…" }),
+      fullPage: false,
+      reopen: async () => {
+        await controls(page).getByRole("button", { name: "More" }).click()
+      },
+    })
+    await page.getByRole("menuitem", { name: "Filter…" }).click()
+    await expect(page.getByRole("dialog", { name: "Filter rows" })).toBeVisible()
+    await page.keyboard.press("Escape")
+    await expect(bar.getByRole("button", { name: "More" })).toBeFocused()
+  }
+})
+
+test("a dimension is dragged to another zone of the pivot, and the grid follows", async ({
+  page,
+}) => {
+  await login(page, ADMIN)
+  await openGrid(page)
+  await controls(page).getByRole("button", { name: "Pivot" }).click()
+  const popover = page.getByRole("dialog", { name: "Pivot" })
+  const zone = (name: string) => popover.getByRole("region", { name })
+
+  // The one dimension of the rows has nothing to pick up.
+  await expect(popover.getByRole("button", { name: "Drag Line items" })).toBeDisabled()
+
+  // Picks the grip of Regions up and takes it to the Columns zone, where it lands over the chip of Time.
+  const grip = popover.getByRole("button", { name: "Drag Regions" })
+  const from = (await grip.boundingBox()) as { x: number; y: number; width: number; height: number }
+  const to = (await zone("Columns").locator("ul").boundingBox()) as {
+    x: number
+    y: number
+    width: number
+    height: number
+  }
+  await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(from.x + from.width / 2 + 12, from.y + from.height / 2 - 12, { steps: 4 })
+  await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 12 })
+  await page.waitForTimeout(500)
+  console.log("DBG", JSON.stringify({ from, to, live: await page.evaluate(() => [...document.querySelectorAll("[aria-live]")].map((e) => e.textContent)), all: await popover.locator("section").evaluateAll((els) => els.map((e) => [e.getAttribute("aria-labelledby"), JSON.stringify(e.querySelector("ul")?.getBoundingClientRect())])) }))
+  await page.screenshot({ path: "/tmp/dbg-drag2.png" })
+  // Letting go before the page has drawn where the dimension is would drop it where it was a few moves ago.
+  await expect(page.getByText(/Regions is over (Time \(Quarter\)|Columns)\./)).toBeAttached()
+  await page.mouse.up()
+
+  await expect(zone("Columns").getByText("Regions")).toBeVisible()
+  await expect(zone("Pages").getByText("Regions")).toHaveCount(0)
+  await expect(popover.getByText("Moved Regions to Columns.")).toBeAttached()
+  await expect(grid(page).locator("[data-corner-label]")).toHaveText("Line items / Regions, Quarters")
+  await expect(controls(page).getByText("Modified")).toBeVisible()
 })
