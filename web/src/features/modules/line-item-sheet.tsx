@@ -31,7 +31,7 @@ import type { LineItemDto, ModuleDto, StructureDto } from "@/features/structure/
 import { useRestoreFocus } from "@/hooks/use-restore-focus"
 import { ApiError, type FormulaProblem } from "@/lib/api/client"
 import { closeUnlessBusy } from "@/lib/close-unless-busy"
-import { reportFormError } from "@/lib/form-errors"
+import { NAME_TAKEN_FIELD_ERRORS, reportFormError } from "@/lib/form-errors"
 import { ClearValuesDialog } from "./clear-values-dialog"
 import { FormulaField } from "./formula-field"
 import { formulaIndex } from "./formula-text"
@@ -45,9 +45,6 @@ import {
 import { LineItemFormatFields } from "./line-item-format-fields"
 import { LineItemScopeFields } from "./line-item-scope-fields"
 import { LineItemSummaryFields } from "./line-item-summary-fields"
-
-/** Where a refusal that carries only a code belongs: a name that is taken is about the name. */
-const FIELD_ERRORS = { "structure.name_taken": "name" } as const
 
 interface LineItemSheetProps {
   modelId: string
@@ -158,7 +155,7 @@ function LineItemForm({
       if (error instanceof ApiError && error.formulaErrors.length > 0) {
         showProblems(error, values.formula)
       } else {
-        reportFormError(form, error, FIELD_ERRORS)
+        reportFormError(form, error, NAME_TAKEN_FIELD_ERRORS)
       }
     } finally {
       setConfirming(undefined)

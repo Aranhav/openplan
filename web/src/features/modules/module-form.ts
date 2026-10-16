@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { NAME_TAKEN_FIELD_ERRORS } from "@/lib/form-errors"
 import { structureNameSchema } from "@/lib/validation"
 import { MODULE_TIME_LEVELS } from "./axes"
 
@@ -27,6 +28,6 @@ export type ModuleValues = z.infer<typeof moduleSchema>
  * a time scale finer than the module's) is about the dimensions.
  */
 export const MODULE_FIELD_ERRORS = {
-  "structure.name_taken": "name",
+  ...NAME_TAKEN_FIELD_ERRORS,
   "structure.invalid": "dimensions",
 } as const

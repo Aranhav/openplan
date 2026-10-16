@@ -33,7 +33,7 @@ import { timeLevelLabel } from "@/features/structure/labels"
 import { useCreateLineItem, useReorderLineItems } from "@/features/structure/api"
 import type { LineItemDto, StructureDto } from "@/features/structure/types"
 import { closeUnlessBusy } from "@/lib/close-unless-busy"
-import { reportFormError } from "@/lib/form-errors"
+import { NAME_TAKEN_FIELD_ERRORS, reportFormError } from "@/lib/form-errors"
 import { structureNameSchema } from "@/lib/validation"
 import { MODULE_TIME_LEVELS } from "./axes"
 import {
@@ -58,9 +58,6 @@ const schema = z
   })
 
 type AddLineItemValues = z.infer<typeof schema>
-
-/** Where a refusal that carries only a code belongs: a name that is taken is about the name. */
-const FIELD_ERRORS = { "structure.name_taken": "name" } as const
 
 interface AddLineItemDialogProps {
   modelId: string
@@ -165,7 +162,7 @@ function AddLineItemForm({ structure, pending, onAdd, onAdded, onCancel }: AddLi
     try {
       onAdded(await onAdd(values))
     } catch (error) {
-      reportFormError(form, error, FIELD_ERRORS)
+      reportFormError(form, error, NAME_TAKEN_FIELD_ERRORS)
     }
   }
 
