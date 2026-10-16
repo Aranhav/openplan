@@ -13,9 +13,10 @@ import {
 } from "./helpers"
 
 const MODEL_NAME = "Live plan"
+// The accounts of the specs share one database: no other spec uses this address.
 const PLANNER: User = {
-  name: "Pat Planner",
-  email: "pat@acme.test",
+  name: "Lou Live",
+  email: "lou@acme.test",
   password: "planner-password-4",
 }
 const LIVE_SOCKET = /\/api\/v1\/models\/[0-9a-f-]{36}\/live/
