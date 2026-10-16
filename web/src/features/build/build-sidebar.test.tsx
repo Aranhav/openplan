@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from "@testing-library/react"
+import { act, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { HttpResponse, http } from "msw"
 import { describe, expect, it } from "vitest"
@@ -12,8 +12,10 @@ import {
 } from "@/test/app"
 import { problem } from "@/test/problem"
 import { server } from "@/test/server"
+import { queryKeys } from "@/lib/api/keys"
 import {
   costsModule,
+  hiringModule,
   makeStructure,
   pricingModule,
   revenueModule,
@@ -147,6 +149,20 @@ describe("the build navigation", () => {
     expect(nav.getByRole("link", { name: "Revenue" })).toHaveAttribute("data-active", "false")
   })
 
+  it.each([
+    ["the list of modules", `/m/${model.id}/modules`, "Modules"],
+    ["a module", `/m/${model.id}/modules/${costsModule.id}`, "Costs"],
+    ["the settings", `/m/${model.id}/settings`, "Model settings"],
+  ])("marks one link as the current page on %s", async (_, path, name) => {
+    openApp(path)
+
+    const nav = await findLoadedNav()
+    const current = nav
+      .getAllByRole("link")
+      .filter((link) => link.getAttribute("aria-current") === "page")
+    expect(current.map((link) => link.textContent)).toEqual([name])
+  })
+
   it("highlights the settings", async () => {
     openApp(`/m/${model.id}/settings`)
 
@@ -182,7 +198,7 @@ describe("the build navigation", () => {
     expect(nav.queryByRole("status")).not.toBeInTheDocument()
   })
 
-  it("says so and offers a retry when the structure cannot be loaded", async () => {
+  it("says so and offers a retry, without an alert besides the page's, when the structure cannot be loaded", async () => {
     const typist = userEvent.setup()
     mockSession()
     serveModels([model])
@@ -192,11 +208,13 @@ describe("the build navigation", () => {
     renderApp(`/m/${model.id}/settings`)
 
     const nav = await findBuildNav()
-    expect(await nav.findByRole("alert")).toHaveTextContent("The database is starting up.")
+    expect(await nav.findByText("Modules could not be loaded.")).toBeVisible()
+    expect(nav.queryByRole("alert")).not.toBeInTheDocument()
     serveStructure(structure)
     await typist.click(nav.getByRole("button", { name: "Retry" }))
 
     expect(await nav.findByRole("link", { name: "Pricing" })).toBeVisible()
+    expect(nav.queryByText("Modules could not be loaded.")).not.toBeInTheDocument()
   })
 
   it("is not there outside a model", async () => {
@@ -254,5 +272,158 @@ describe("the build navigation", () => {
     } finally {
       window.innerWidth = desktopWidth
     }
+  })
+})
+
+describe("the folders of the build navigation", () => {
+  async function goToModule(router: ReturnType<typeof openApp>["router"], moduleId: string) {
+    await act(() =>
+      router.navigate({
+        to: "/m/$modelId/modules/$moduleId",
+        params: { modelId: model.id, moduleId },
+      }),
+    )
+  }
+
+  it("opens the folder of a module you go to", async () => {
+    const typist = userEvent.setup()
+    const { router } = openApp(`/m/${model.id}/modules/${pricingModule.id}`)
+    const nav = await findLoadedNav()
+    const finance = nav.getByRole("button", { name: "Finance" })
+    const people = nav.getByRole("button", { name: "People" })
+    await typist.click(finance)
+    await typist.click(people)
+    expect(nav.queryByRole("link", { name: "Revenue" })).not.toBeInTheDocument()
+
+    await goToModule(router, revenueModule.id)
+
+    expect(finance).toHaveAttribute("aria-expanded", "true")
+    expect(nav.getByRole("link", { name: "Revenue" })).toHaveAttribute("aria-current", "page")
+    expect(people).toHaveAttribute("aria-expanded", "false")
+  })
+
+  it("opens the modules when you go to one of them with the modules folded away", async () => {
+    const typist = userEvent.setup()
+    const { router } = openApp(`/m/${model.id}/settings`)
+    const nav = await findLoadedNav()
+    await typist.click(nav.getByRole("button", { name: "Toggle modules" }))
+    expect(nav.queryByRole("link", { name: "Pricing" })).not.toBeInTheDocument()
+
+    await goToModule(router, pricingModule.id)
+
+    expect(nav.getByRole("button", { name: "Toggle modules" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    )
+    expect(nav.getByRole("link", { name: "Pricing" })).toHaveAttribute("aria-current", "page")
+  })
+
+  it("leaves a folder you fold on the page it holds folded, even when the structure is read again", async () => {
+    const typist = userEvent.setup()
+    const { queryClient } = openApp(`/m/${model.id}/modules/${revenueModule.id}`)
+    const nav = await findLoadedNav()
+    const finance = nav.getByRole("button", { name: "Finance" })
+    await typist.click(finance)
+    await act(() => queryClient.invalidateQueries({ queryKey: queryKeys.structure(model.id) }))
+
+    expect(finance).toHaveAttribute("aria-expanded", "false")
+    expect(nav.queryByRole("link", { name: "Revenue" })).not.toBeInTheDocument()
+  })
+
+  it("lights a folder that is folded away over the module you are in", async () => {
+    const typist = userEvent.setup()
+    openApp(`/m/${model.id}/modules/${revenueModule.id}`)
+    const nav = await findLoadedNav()
+    const finance = nav.getByRole("button", { name: "Finance" })
+    expect(finance).toHaveAttribute("data-active", "false")
+    await typist.click(finance)
+
+    expect(finance).toHaveAttribute("data-active", "true")
+    expect(nav.getByRole("button", { name: "People" })).toHaveAttribute("data-active", "false")
+    await typist.click(finance)
+
+    expect(finance).toHaveAttribute("data-active", "false")
+    expect(nav.getByRole("link", { name: "Revenue" })).toHaveAttribute("data-active", "true")
+  })
+
+  it("lights Modules while the modules are folded away and you are in one of them", async () => {
+    const typist = userEvent.setup()
+    openApp(`/m/${model.id}/modules/${hiringModule.id}`)
+    const nav = await findLoadedNav()
+    const modules = nav.getByRole("link", { name: "Modules" })
+    expect(modules).toHaveAttribute("data-active", "false")
+    await typist.click(nav.getByRole("button", { name: "Toggle modules" }))
+
+    expect(modules).toHaveAttribute("data-active", "true")
+    expect(modules).not.toHaveAttribute("aria-current")
+    await typist.click(nav.getByRole("button", { name: "Toggle modules" }))
+
+    expect(modules).toHaveAttribute("data-active", "false")
+  })
+
+  it("lights Modules on a module's page when the sidebar is collapsed to its icons", async () => {
+    document.cookie = "sidebar_state=false; path=/"
+    openApp(`/m/${model.id}/modules/${costsModule.id}`)
+    const nav = await findLoadedNav()
+    await waitFor(() =>
+      expect(document.querySelector("[data-slot=sidebar]")).toHaveAttribute(
+        "data-state",
+        "collapsed",
+      ),
+    )
+
+    expect(nav.getByRole("link", { name: "Modules" })).toHaveAttribute("data-active", "true")
+    expect(nav.getByRole("link", { name: "Model settings" })).toHaveAttribute(
+      "data-active",
+      "false",
+    )
+  })
+
+  it("lights no Modules in the icon rail on the settings", async () => {
+    document.cookie = "sidebar_state=false; path=/"
+    openApp(`/m/${model.id}/settings`)
+    const nav = await findBuildNav()
+    await waitFor(() =>
+      expect(document.querySelector("[data-slot=sidebar]")).toHaveAttribute(
+        "data-state",
+        "collapsed",
+      ),
+    )
+
+    expect(nav.getByRole("link", { name: "Modules" })).toHaveAttribute("data-active", "false")
+  })
+
+  it("names a folder in full where its name is cut short", async () => {
+    openApp()
+    const nav = await findLoadedNav()
+
+    expect(nav.getByRole("button", { name: "Finance" })).toHaveAttribute("title", "Finance")
+  })
+})
+
+describe("the build navigation by keyboard", () => {
+  it("is walked with Tab, and a folder folds with Enter and with Space", async () => {
+    const typist = userEvent.setup()
+    openApp()
+    const nav = await findLoadedNav()
+    nav.getByRole("link", { name: "Modules" }).focus()
+
+    await typist.tab()
+    expect(nav.getByRole("button", { name: "Toggle modules" })).toHaveFocus()
+    await typist.tab()
+    expect(nav.getByRole("link", { name: "Pricing" })).toHaveFocus()
+    await typist.tab()
+    expect(nav.getByRole("link", { name: "Headcount" })).toHaveFocus()
+    await typist.tab()
+    const finance = nav.getByRole("button", { name: "Finance" })
+    expect(finance).toHaveFocus()
+    await typist.keyboard("{Enter}")
+
+    expect(finance).toHaveAttribute("aria-expanded", "false")
+    await typist.keyboard(" ")
+
+    expect(finance).toHaveAttribute("aria-expanded", "true")
+    await typist.tab()
+    expect(nav.getByRole("link", { name: "Revenue" })).toHaveFocus()
   })
 })

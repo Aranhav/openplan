@@ -1,7 +1,6 @@
 import { Link, useMatchRoute, useParams } from "@tanstack/react-router"
-import { ChevronRight, Folder } from "lucide-react"
-import type { ReactNode } from "react"
-import { ErrorState } from "@/components/error-state"
+import { ChevronRight, Folder, RotateCw } from "lucide-react"
+import { useState } from "react"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import {
   SidebarGroup,
@@ -15,12 +14,12 @@ import {
   SidebarMenuSub,
   SidebarMenuSubButton,
   SidebarMenuSubItem,
+  useSidebar,
 } from "@/components/ui/sidebar"
-import { useModel } from "@/features/models/api"
+import { useModelNotFound } from "@/features/models/api"
 import { useStructure } from "@/features/structure/api"
 import { type ModuleGroups, groupModules } from "@/features/structure/modules"
 import type { ModuleDto } from "@/features/structure/types"
-import { ApiError } from "@/lib/api/client"
 import { BUILD_GROUPS, type BuildPage } from "./build-nav"
 
 interface BuildSidebarProps {
@@ -31,9 +30,8 @@ interface BuildSidebarProps {
 
 /** The navigation of the model being worked on: its structure screens and settings. */
 export function BuildSidebar({ modelId, onNavigate }: BuildSidebarProps) {
-  const model = useModel(modelId)
   // There is nothing to navigate in a model that is gone; the page says so.
-  if (model.error instanceof ApiError && model.error.status === 404) {
+  if (useModelNotFound(modelId)) {
     return null
   }
   return (
@@ -43,14 +41,18 @@ export function BuildSidebar({ modelId, onNavigate }: BuildSidebarProps) {
           <SidebarGroupLabel>{group.label}</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {group.pages.map((page) => (
-                <BuildPageItem
-                  key={page.to}
-                  page={page}
-                  modelId={modelId}
-                  onNavigate={onNavigate}
-                />
-              ))}
+              {group.pages.map((page) =>
+                page.withModules ? (
+                  <ModulesItem
+                    key={page.to}
+                    page={page}
+                    modelId={modelId}
+                    onNavigate={onNavigate}
+                  />
+                ) : (
+                  <PageItem key={page.to} page={page} modelId={modelId} onNavigate={onNavigate} />
+                ),
+              )}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
@@ -59,50 +61,79 @@ export function BuildSidebar({ modelId, onNavigate }: BuildSidebarProps) {
   )
 }
 
-interface BuildPageItemProps extends BuildSidebarProps {
+interface PageProps extends BuildSidebarProps {
   page: BuildPage
 }
 
-function BuildPageItem({ page, modelId, onNavigate }: BuildPageItemProps) {
+function PageItem({ page, modelId, onNavigate }: PageProps) {
   const matchRoute = useMatchRoute()
-  // The module you are in is lit instead of the list of modules above it.
-  const active = Boolean(matchRoute({ to: page.to, params: { modelId }, fuzzy: !page.withModules }))
+  const lit = Boolean(matchRoute({ to: page.to, params: { modelId }, fuzzy: true }))
+  return (
+    <SidebarMenuItem>
+      <PageLink page={page} modelId={modelId} onNavigate={onNavigate} lit={lit} />
+    </SidebarMenuItem>
+  )
+}
+
+interface PageLinkProps extends PageProps {
+  /** Whether the item is drawn as where you are. */
+  lit: boolean
+}
+
+function PageLink({ page, modelId, onNavigate, lit }: PageLinkProps) {
   const Icon = page.icon
-  const link = (
-    <SidebarMenuButton asChild tooltip={page.label} isActive={active}>
-      <Link to={page.to} params={{ modelId }} onClick={onNavigate}>
+  return (
+    <SidebarMenuButton asChild tooltip={page.label} isActive={lit}>
+      {/* Exact, or the router also marks Modules as the current page inside a module. */}
+      <Link to={page.to} params={{ modelId }} activeOptions={{ exact: true }} onClick={onNavigate}>
         <Icon />
         <span>{page.label}</span>
       </Link>
     </SidebarMenuButton>
   )
+}
 
-  if (!page.withModules) {
-    return <SidebarMenuItem>{link}</SidebarMenuItem>
+/**
+ * The open state of a folder of the navigation. It starts open and is the user's to fold, except
+ * that going to a page the folder holds (`pageKey` names the page) opens it again, so a folded
+ * folder never hides where you have arrived.
+ */
+function useFolder(holdsPage: boolean, pageKey: string | undefined) {
+  const [open, setOpen] = useState(true)
+  const [lastPageKey, setLastPageKey] = useState(pageKey)
+  if (lastPageKey !== pageKey) {
+    setLastPageKey(pageKey)
+    if (holdsPage) {
+      setOpen(true)
+    }
   }
-  return (
-    <ModulesItem modelId={modelId} onNavigate={onNavigate}>
-      {link}
-    </ModulesItem>
-  )
+  return [open, setOpen] as const
 }
 
 /** The link to the modules, with the modules themselves beneath it. */
-function ModulesItem({
-  modelId,
-  onNavigate,
-  children,
-}: BuildSidebarProps & { children: ReactNode }) {
+function ModulesItem({ page, modelId, onNavigate }: PageProps) {
   const structure = useStructure(modelId)
+  const matchRoute = useMatchRoute()
+  const { moduleId } = useParams({ strict: false })
+  const { state, isMobile } = useSidebar()
+  const [open, setOpen] = useFolder(Boolean(moduleId), moduleId)
+
+  // The module you are in stands in for the list above it. Where the modules are out of sight,
+  // folded away or hidden by the icon rail, the list stands in for the module.
+  const inModule = Boolean(moduleId && structure.data?.modules.some(({ id }) => id === moduleId))
+  const modulesHidden = !open || (state === "collapsed" && !isMobile)
+  const lit =
+    Boolean(matchRoute({ to: page.to, params: { modelId } })) || (inModule && modulesHidden)
+  const link = <PageLink page={page} modelId={modelId} onNavigate={onNavigate} lit={lit} />
+
   // A model without modules has nothing to fold, and no list to draw under the link.
   if (structure.data?.modules.length === 0) {
-    return <SidebarMenuItem>{children}</SidebarMenuItem>
+    return <SidebarMenuItem>{link}</SidebarMenuItem>
   }
-
   return (
-    <Collapsible defaultOpen asChild>
+    <Collapsible open={open} onOpenChange={setOpen} asChild>
       <SidebarMenuItem>
-        {children}
+        {link}
         <CollapsibleTrigger asChild>
           <SidebarMenuAction className="data-[state=open]:rotate-90">
             <ChevronRight />
@@ -119,7 +150,15 @@ function ModulesItem({
               />
             ) : structure.isError ? (
               <SidebarMenuSubItem>
-                <ErrorState error={structure.error} onRetry={() => void structure.refetch()} />
+                <p className="px-2 py-1 text-xs text-muted-foreground">
+                  Modules could not be loaded.
+                </p>
+                <SidebarMenuSubButton asChild>
+                  <button type="button" className="w-full" onClick={() => void structure.refetch()}>
+                    <RotateCw />
+                    <span>Retry</span>
+                  </button>
+                </SidebarMenuSubButton>
               </SidebarMenuSubItem>
             ) : (
               <SidebarMenuSubItem>
@@ -146,26 +185,41 @@ function ModuleLinks({ groups, modelId, onNavigate }: ModuleLinksProps) {
     <>
       <ModuleLinkItems modules={groups.ungrouped} modelId={modelId} onNavigate={onNavigate} />
       {groups.areas.map((area) => (
-        <Collapsible key={area.name} defaultOpen asChild className="group/area">
-          <SidebarMenuSubItem>
-            <CollapsibleTrigger asChild>
-              <SidebarMenuSubButton asChild>
-                <button type="button" className="w-full">
-                  <Folder />
-                  <span className="truncate">{area.name}</span>
-                  <ChevronRight className="ml-auto transition-transform group-data-[state=open]/area:rotate-90" />
-                </button>
-              </SidebarMenuSubButton>
-            </CollapsibleTrigger>
-            <CollapsibleContent>
-              <SidebarMenuSub>
-                <ModuleLinkItems modules={area.modules} modelId={modelId} onNavigate={onNavigate} />
-              </SidebarMenuSub>
-            </CollapsibleContent>
-          </SidebarMenuSubItem>
-        </Collapsible>
+        <AreaFolder key={area.name} area={area} modelId={modelId} onNavigate={onNavigate} />
       ))}
     </>
+  )
+}
+
+interface AreaFolderProps extends BuildSidebarProps {
+  area: ModuleGroups["areas"][number]
+}
+
+function AreaFolder({ area, modelId, onNavigate }: AreaFolderProps) {
+  const { moduleId } = useParams({ strict: false })
+  const holdsModule = area.modules.some(({ id }) => id === moduleId)
+  const [open, setOpen] = useFolder(holdsModule, moduleId)
+
+  return (
+    <Collapsible open={open} onOpenChange={setOpen} asChild className="group/area">
+      <SidebarMenuSubItem>
+        <CollapsibleTrigger asChild>
+          {/* Folded, the folder is lit instead of the module it holds. */}
+          <SidebarMenuSubButton asChild isActive={holdsModule && !open}>
+            <button type="button" className="w-full" title={area.name}>
+              <Folder />
+              <span className="truncate">{area.name}</span>
+              <ChevronRight className="ml-auto transition-transform group-data-[state=open]/area:rotate-90" />
+            </button>
+          </SidebarMenuSubButton>
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <SidebarMenuSub>
+            <ModuleLinkItems modules={area.modules} modelId={modelId} onNavigate={onNavigate} />
+          </SidebarMenuSub>
+        </CollapsibleContent>
+      </SidebarMenuSubItem>
+    </Collapsible>
   )
 }
 

@@ -1,5 +1,5 @@
 import { skipToken, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { api, unwrap } from "@/lib/api/client"
+import { ApiError, api, unwrap } from "@/lib/api/client"
 import { queryKeys } from "@/lib/api/keys"
 import type { components } from "@/lib/api/schema"
 
@@ -23,6 +23,12 @@ export function useModel(id: string | undefined) {
         ? skipToken
         : () => unwrap(api.GET("/models/{id}", { params: { path: { id } } })),
   })
+}
+
+/** A 404 means the model is gone, even while a copy of it is still cached. */
+export function useModelNotFound(id: string | undefined) {
+  const { error } = useModel(id)
+  return error instanceof ApiError && error.status === 404
 }
 
 export function useCreateModel(wsId: string) {
