@@ -1,7 +1,7 @@
 import { fireEvent, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import axe from "axe-core"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { violations as pageViolations } from "@/test/axe"
 import { BUDGET, NOTES, REGION, START, cellAt, editView, select, setup } from "@/test/edit-view"
 import { mockViewport } from "@/test/viewport"
 import { serveViewQuery } from "@/test/view-query"
@@ -19,18 +19,7 @@ afterEach(() => {
 })
 
 /** What axe finds wrong with the whole page, portalled popovers and menus included. */
-async function violations() {
-  const results = await axe.run(document.body, {
-    rules: {
-      // jsdom has no layout, so contrast cannot be judged, and the page is a fragment.
-      "color-contrast": { enabled: false },
-      region: { enabled: false },
-    },
-  })
-  return results.violations.map(
-    (v) => `${v.id}: ${v.nodes.map((n) => n.target.join(" ")).join(", ")}`,
-  )
-}
+const violations = () => pageViolations({ ignore: ["region"] })
 
 describe("the editors, menus and popovers", () => {
   it("have nothing for axe to find while a text editor is open", async () => {

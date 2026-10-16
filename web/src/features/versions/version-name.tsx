@@ -6,15 +6,12 @@ import { z } from "zod"
 import { Button } from "@/components/ui/button"
 import { Form, FormControl, FormField, FormItem, FormMessage } from "@/components/ui/form"
 import { Input } from "@/components/ui/input"
-import { reportFormError } from "@/lib/form-errors"
+import { NAME_TAKEN_FIELD_ERRORS, reportFormError } from "@/lib/form-errors"
 import { structureNameSchema } from "@/lib/validation"
 
 const schema = z.object({ name: structureNameSchema })
 
 type NameValues = z.infer<typeof schema>
-
-/** Where a refusal that carries only a code belongs: a name that is taken is about the name. */
-const FIELD_ERRORS = { "structure.name_taken": "name" } as const
 
 interface VersionNameProps {
   name: string
@@ -99,7 +96,7 @@ function NameInput({ name, onRename, onDone }: NameInputProps) {
         await onRename(renamed)
         finish(focusName)
       } catch (error) {
-        reportFormError(form, error, FIELD_ERRORS)
+        reportFormError(form, error, NAME_TAKEN_FIELD_ERRORS)
       } finally {
         setSaving(false)
       }

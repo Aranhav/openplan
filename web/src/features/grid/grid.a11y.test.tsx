@@ -1,8 +1,8 @@
 import { QueryClientProvider } from "@tanstack/react-query"
 import { render, screen, waitFor } from "@testing-library/react"
-import axe from "axe-core"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { QUERY_STALE_TIME } from "@/lib/query-client"
+import { violations } from "@/test/axe"
 import { numberFormat } from "@/test/number-format"
 import { createTestQueryClient } from "@/test/render"
 import {
@@ -129,15 +129,6 @@ describe("grid accessibility", () => {
       expect(grid.querySelector("[data-row='0'][data-col='0']")?.textContent).not.toBe(""),
     )
 
-    const results = await axe.run(container, {
-      // jsdom has no layout, so contrast and anything that needs a size cannot be judged here.
-      rules: { "color-contrast": { enabled: false } },
-    })
-
-    expect(
-      results.violations.map(
-        (v) => `${v.id}: ${v.nodes.map((n) => n.target.join(" ")).join(", ")}`,
-      ),
-    ).toEqual([])
+    expect(await violations({ context: container })).toEqual([])
   })
 })

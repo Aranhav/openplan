@@ -28,3 +28,6 @@ export function reportFormError<T extends FieldValues>(
   }
   toast.error(errorDetail(error))
 }
+
+/** For a form with a name: a name that is taken (`structure.name_taken`) is shown under the name. */
+export const NAME_TAKEN_FIELD_ERRORS = { "structure.name_taken": "name" } as const

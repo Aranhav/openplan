@@ -24,7 +24,7 @@ import { Input } from "@/components/ui/input"
 import { useCreateTimeRange } from "@/features/structure/api"
 import type { StructureDto } from "@/features/structure/types"
 import { closeUnlessBusy } from "@/lib/close-unless-busy"
-import { reportFormError } from "@/lib/form-errors"
+import { NAME_TAKEN_FIELD_ERRORS, reportFormError } from "@/lib/form-errors"
 import { structureNameSchema } from "@/lib/validation"
 import { wholeNumberSchema } from "./whole-number"
 
@@ -35,9 +35,6 @@ const schema = z.object({
 })
 
 type TimeRangeValues = z.infer<typeof schema>
-
-/** Where a refusal that carries only a code belongs: a name that is taken is about the name. */
-const FIELD_ERRORS = { "structure.name_taken": "name" } as const
 
 interface AddTimeRangeDialogProps {
   modelId: string
@@ -104,7 +101,7 @@ function AddTimeRangeForm({ createTimeRange, calendar, onClose }: AddTimeRangeFo
       toast.success("Time range added")
       onClose()
     } catch (error) {
-      reportFormError(form, error, FIELD_ERRORS)
+      reportFormError(form, error, NAME_TAKEN_FIELD_ERRORS)
     }
   }
 

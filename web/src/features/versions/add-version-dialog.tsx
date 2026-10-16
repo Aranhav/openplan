@@ -23,15 +23,12 @@ import {
 import { Input } from "@/components/ui/input"
 import { useCreateVersion } from "@/features/structure/api"
 import { closeUnlessBusy } from "@/lib/close-unless-busy"
-import { reportFormError } from "@/lib/form-errors"
+import { NAME_TAKEN_FIELD_ERRORS, reportFormError } from "@/lib/form-errors"
 import { structureNameSchema } from "@/lib/validation"
 
 const schema = z.object({ name: structureNameSchema })
 
 type VersionValues = z.infer<typeof schema>
-
-/** Where a refusal that carries only a code belongs: a name that is taken is about the name. */
-const FIELD_ERRORS = { "structure.name_taken": "name" } as const
 
 interface AddVersionDialogProps {
   modelId: string
@@ -87,7 +84,7 @@ function AddVersionForm({
       toast.success("Version added")
       onClose()
     } catch (error) {
-      reportFormError(form, error, FIELD_ERRORS)
+      reportFormError(form, error, NAME_TAKEN_FIELD_ERRORS)
     }
   }
 
