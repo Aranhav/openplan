@@ -20,7 +20,8 @@ query="${admin_url#"$base"}"
 authority="${base#*://}"
 authority="${authority%%/*}"
 export DATABASE_URL="${base%%://*}://$authority/$database$query"
-export OPENPLAN_BIND="127.0.0.1:8090"
-export OPENPLAN_PUBLIC_URL="http://localhost:8090"
+port="${E2E_PORT:-8090}"
+export OPENPLAN_BIND="127.0.0.1:$port"
+export OPENPLAN_PUBLIC_URL="http://localhost:$port"
 
 exec ../target/debug/openplan serve
