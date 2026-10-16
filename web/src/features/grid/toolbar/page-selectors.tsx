@@ -1,4 +1,4 @@
-import { Check, ChevronsUpDown, RefreshCw } from "lucide-react"
+import { Check, ChevronsUpDown } from "lucide-react"
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import {
@@ -24,7 +24,8 @@ import { cn } from "@/lib/utils"
 import type { Member, PageMember, ViewDefinition, ViewDim } from "../view-types"
 import { dimLabel } from "./dim-labels"
 import { MAX_LISTED, membersMatching } from "./member-search"
-import { useMembers } from "./members-api"
+import { useDimensionMembers } from "./members-api"
+import { ToolbarError } from "./toolbar-error"
 import { type ViewAction, dimKey } from "./view-state"
 
 /** A dimension with this many members or fewer is chosen from a menu; with more, from a search. */
@@ -84,16 +85,17 @@ function PageSelector({
   selectedKey,
   onChange,
 }: PageSelectorProps) {
-  const members = useMembers(modelId, moduleId, dim, showSummaries)
+  const members = useDimensionMembers(modelId, moduleId, dim, showSummaries)
   if (members.isPending) {
     return <Skeleton aria-label={`Loading ${name}`} role="status" className="h-8 w-32" />
   }
   if (members.isError) {
     return (
-      <Button variant="outline" size="sm" onClick={() => void members.refetch()}>
-        <RefreshCw />
-        {name}: retry
-      </Button>
+      <ToolbarError
+        label={`${name}: couldn't load`}
+        error={members.error}
+        onRetry={() => void members.refetch()}
+      />
     )
   }
   if (members.data.length === 0) {

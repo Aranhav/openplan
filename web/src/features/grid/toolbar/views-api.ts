@@ -1,5 +1,5 @@
 import { type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { api, unwrap } from "@/lib/api/client"
+import { ApiError, api, unwrap } from "@/lib/api/client"
 import { queryKeys } from "@/lib/api/keys"
 import type { components } from "@/lib/api/schema"
 import type { SavedView } from "../view-types"
@@ -41,6 +41,18 @@ async function refreshViews(
   await queryClient.invalidateQueries({ queryKey: key })
 }
 
+/**
+ * Another view became the default while this one was being saved as it: the list is read again,
+ * so that the screen shows which one it is before the user tries once more.
+ */
+function readAgainOnDefaultConflict(queryClient: QueryClient, modelId: string, moduleId: string) {
+  return (error: unknown) => {
+    if (error instanceof ApiError && error.code === "view.default_conflict") {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.views(modelId, moduleId) })
+    }
+  }
+}
+
 export function useCreateView(modelId: string, moduleId: string) {
   const queryClient = useQueryClient()
   return useMutation({
@@ -58,6 +70,7 @@ export function useCreateView(modelId: string, moduleId: string) {
         ...views.map((other) => (view.is_default ? { ...other, is_default: false } : other)),
         view,
       ]),
+    onError: readAgainOnDefaultConflict(queryClient, modelId, moduleId),
   })
 }
 
@@ -86,6 +99,7 @@ export function useUpdateView(modelId: string, moduleId: string) {
               : other,
         ),
       ),
+    onError: readAgainOnDefaultConflict(queryClient, modelId, moduleId),
   })
 }
 

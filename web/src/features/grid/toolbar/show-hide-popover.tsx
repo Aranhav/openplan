@@ -1,5 +1,6 @@
-import { Eye, RefreshCw, Search } from "lucide-react"
+import { Eye, Search } from "lucide-react"
 import { type RefObject, useId, useState } from "react"
+import { ErrorState } from "@/components/error-state"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -21,7 +22,7 @@ import { INDENT } from "../grid-layout"
 import type { Member, ViewDefinition, ViewDim } from "../view-types"
 import { dimLabel } from "./dim-labels"
 import { MAX_LISTED, membersMatching } from "./member-search"
-import { useMembers } from "./members-api"
+import { useDimensionMembers } from "./members-api"
 import { ToolbarPanel } from "./toolbar-panel"
 import { type ViewAction, dimKey } from "./view-state"
 
@@ -96,7 +97,7 @@ function ShowHideList({ modelId, module, structure, view, dispatch }: ListProps)
   const dim = shownDims.find((candidate) => dimKey(candidate) === chosen) ?? shownDims[0]
   const [query, setQuery] = useState("")
   const searchId = useId()
-  const members = useMembers(modelId, module.id, dim, view.show_summaries ?? true)
+  const members = useDimensionMembers(modelId, module.id, dim, view.show_summaries ?? true)
   const hiddenHere = (view.hidden ?? []).filter((member) => dimKey(member.dim) === dimKey(dim))
   const isHidden = (key: string) => hiddenHere.some((member) => member.key === key)
 
@@ -148,10 +149,7 @@ function ShowHideList({ modelId, module, structure, view, dispatch }: ListProps)
           ))}
         </div>
       ) : members.isError ? (
-        <Button variant="outline" size="sm" onClick={() => void members.refetch()}>
-          <RefreshCw />
-          Retry
-        </Button>
+        <ErrorState error={members.error} onRetry={() => void members.refetch()} />
       ) : matching.length === 0 ? (
         <p className="py-2 text-sm text-muted-foreground">
           {query.trim() === "" ? "This dimension has no members." : "No member matches."}

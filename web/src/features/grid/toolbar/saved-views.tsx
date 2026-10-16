@@ -1,5 +1,5 @@
 import { zodResolver } from "@hookform/resolvers/zod"
-import { CopyPlus, Loader2, MoreHorizontal, RefreshCw, Save, Star, Trash2, Undo2 } from "lucide-react"
+import { CopyPlus, Loader2, MoreHorizontal, Save, Star, Trash2, Undo2 } from "lucide-react"
 import { useState } from "react"
 import { useForm } from "react-hook-form"
 import { toast } from "sonner"
@@ -45,6 +45,7 @@ import { closeUnlessBusy } from "@/lib/close-unless-busy"
 import { NAME_TAKEN_FIELD_ERRORS, reportFormError } from "@/lib/form-errors"
 import { structureNameSchema } from "@/lib/validation"
 import type { SavedView, ViewDefinition } from "../view-types"
+import { ToolbarError } from "./toolbar-error"
 import { useCreateView, useDeleteView, useUpdateView } from "./views-api"
 
 /** What the select holds for the module's own default pivot, which no saved view stands for. */
@@ -55,8 +56,8 @@ interface SavedViewsProps {
   moduleId: string
   /** The saved views of the module: the default one first, then by name. */
   views: readonly SavedView[]
-  /** The saved views could not be read; the button that replaces the menu tries again. */
-  failed?: { retry: () => void }
+  /** The saved views could not be read; the button that replaces the menu says why and tries again. */
+  failed?: { error: unknown; retry: () => void }
   /** The view in use, or nothing for the module's own default pivot. */
   saved: SavedView | undefined
   /** The view as it is now, with the changes that are not saved. */
@@ -131,12 +132,7 @@ export function SavedViews({
   }
 
   if (failed) {
-    return (
-      <Button variant="outline" size="sm" onClick={failed.retry}>
-        <RefreshCw />
-        Saved views: retry
-      </Button>
-    )
+    return <ToolbarError label="Saved views: couldn't load" error={failed.error} onRetry={failed.retry} />
   }
 
   const canDiscard = modified
@@ -185,7 +181,8 @@ export function SavedViews({
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             {canSave && saved && (
-              <DropdownMenuItem disabled={!modified} onSelect={() => void save()}>
+              // A view cut down to what the module has is saved as it is shown, to keep it so.
+              <DropdownMenuItem disabled={!modified && !saved.pruned} onSelect={() => void save()}>
                 <Save />
                 Save
               </DropdownMenuItem>
@@ -257,6 +254,10 @@ export function SavedViews({
     </div>
   )
 }
+
+// A name that is taken goes under the name; another view that became the default at the same
+// time goes under "Set as default".
+const SAVE_AS_FIELD_ERRORS = { ...NAME_TAKEN_FIELD_ERRORS, "view.default_conflict": "is_default" } as const
 
 const saveAsSchema = z.object({
   name: structureNameSchema,
@@ -334,7 +335,7 @@ function SaveAsForm({
       onClose()
       onCreated(view)
     } catch (error) {
-      reportFormError(form, error, NAME_TAKEN_FIELD_ERRORS)
+      reportFormError(form, error, SAVE_AS_FIELD_ERRORS)
     }
   }
 
@@ -358,11 +359,14 @@ function SaveAsForm({
           control={form.control}
           name="is_default"
           render={({ field }) => (
-            <FormItem className="flex items-center gap-2">
-              <FormControl>
-                <Checkbox checked={field.value} onCheckedChange={(next) => field.onChange(next === true)} />
-              </FormControl>
-              <FormLabel>Set as default</FormLabel>
+            <FormItem>
+              <div className="flex items-center gap-2">
+                <FormControl>
+                  <Checkbox checked={field.value} onCheckedChange={(next) => field.onChange(next === true)} />
+                </FormControl>
+                <FormLabel>Set as default</FormLabel>
+              </div>
+              <FormMessage />
             </FormItem>
           )}
         />

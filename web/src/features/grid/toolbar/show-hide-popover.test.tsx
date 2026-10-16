@@ -1,8 +1,11 @@
 import { screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { useState } from "react"
+import { HttpResponse, http } from "msw"
 import { describe, expect, it } from "vitest"
 import { violations } from "@/test/axe"
+import { problem } from "@/test/problem"
+import { server } from "@/test/server"
 import { productsId, regionsId, revenueModule, structure } from "@/test/structure"
 import { renderOverView } from "@/test/toolbar"
 import { MODEL_ID } from "@/test/view-query"
@@ -216,5 +219,24 @@ describe("the show/hide popover", () => {
     await screen.findByRole("list", { name: "Members of Regions" })
 
     await waitFor(async () => expect(await violations({ ignore: ["region"] })).toEqual([]))
+  })
+})
+
+describe("when the members cannot be read", () => {
+  it("says why and offers to try again, then lists them", async () => {
+    const user = userEvent.setup()
+    let failing = true
+    server.use(
+      http.post("/api/v1/models/:id/members", () =>
+        failing ? problem(503, "server.busy", "Busy.") : HttpResponse.json({ members: regionMembers }),
+      ),
+    )
+    renderShowHide()
+
+    expect(await screen.findByText("Busy.")).toBeVisible()
+    failing = false
+    await user.click(screen.getByRole("button", { name: "Retry" }))
+
+    expect(await screen.findByRole("list", { name: "Members of Regions" })).toBeVisible()
   })
 })

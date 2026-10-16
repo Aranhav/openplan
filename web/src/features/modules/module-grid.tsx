@@ -129,7 +129,7 @@ export function ModuleGrid({
       module={module}
       structure={structure}
       views={list}
-      viewsFailed={views.isError ? { retry: () => void views.refetch() } : undefined}
+      viewsFailed={views.isError ? { error: views.error, retry: () => void views.refetch() } : undefined}
       saved={saved}
       readOnly={readOnly}
       canEditFormulas={canEditFormulas}
@@ -155,7 +155,7 @@ function ModuleGridSkeleton() {
 
 interface ViewSessionProps extends Omit<ModuleGridProps, "viewId" | "onOpenBlueprint"> {
   views: SavedView[]
-  viewsFailed?: { retry: () => void }
+  viewsFailed?: { error: unknown; retry: () => void }
   /** The view in use, or nothing for the module's own default pivot. */
   saved: SavedView | undefined
   /** The formulas typed in the bar and not saved, which are kept by the screen above, since this one is rebuilt for each view. */

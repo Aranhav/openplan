@@ -160,7 +160,7 @@ describe("page selectors", () => {
     await screen.findByRole("combobox", { name: /^Regions/ })
   })
 
-  it("offers to try again when the members cannot be read, and shows them once it can", async () => {
+  it("says why when the members cannot be read, offers to try again, and shows them once it can", async () => {
     const user = userEvent.setup()
     let failing = true
     server.use(
@@ -172,9 +172,10 @@ describe("page selectors", () => {
     )
     renderSelectors({ ...initial, pages: [{ dim: regions, key: null }] })
 
-    const retry = await screen.findByRole("button", { name: "Regions: retry" })
+    await user.click(await screen.findByRole("button", { name: "Regions: couldn't load" }))
+    expect(await screen.findByText("Busy.")).toBeVisible()
     failing = false
-    await user.click(retry)
+    await user.click(screen.getByRole("button", { name: "Retry" }))
 
     expect(await screen.findByRole("combobox", { name: /^Regions/ })).toBeVisible()
   })

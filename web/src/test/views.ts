@@ -33,6 +33,8 @@ export interface ViewStore {
   views: SavedView[]
   /** What was sent to change them, by what it did. */
   requests: { action: "create" | "update" | "delete"; id?: string; body?: unknown }[]
+  /** How many times the list was read. */
+  reads: number
 }
 
 let counter = 0
@@ -43,7 +45,7 @@ let counter = 0
  * a name that is taken.
  */
 export function serveViews(views: SavedView[] = []): ViewStore {
-  const store: ViewStore = { views, requests: [] }
+  const store: ViewStore = { views, requests: [], reads: 0 }
   const taken = (moduleId: string, name: string, except?: string) =>
     store.views.some(
       (view) =>
@@ -57,16 +59,17 @@ export function serveViews(views: SavedView[] = []): ViewStore {
     )
   }
   server.use(
-    http.get("/api/v1/models/:id/modules/:moduleId/views", ({ params }) =>
-      HttpResponse.json(
+    http.get("/api/v1/models/:id/modules/:moduleId/views", ({ params }) => {
+      store.reads += 1
+      return HttpResponse.json(
         store.views
           .filter((view) => view.module_id === params.moduleId)
           .toSorted(
             (a, b) =>
               Number(b.is_default) - Number(a.is_default) || a.name.localeCompare(b.name),
           ),
-      ),
-    ),
+      )
+    }),
     http.post("/api/v1/models/:id/modules/:moduleId/views", async ({ params, request }) => {
       const body = (await request.json()) as Schemas["CreateViewRequest"]
       store.requests.push({ action: "create", body })

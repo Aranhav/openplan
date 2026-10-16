@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { ViewDefinition, ViewDim, ViewQuery } from "@/features/grid/view-types"
 import type { components } from "@/lib/api/schema"
 import { queryKeys } from "@/lib/api/keys"
+import { problem } from "@/test/problem"
 import { makeModel, me, mockSession, renderApp, serveModels, workspace } from "@/test/app"
 import { formulaText, setFormula } from "@/test/formula"
 import { serveModuleStore } from "@/test/module-edits"
@@ -270,7 +271,7 @@ describe("which view the grid opens", () => {
     ).not.toBeInTheDocument()
   })
 
-  it("keeps showing the grid when the saved views cannot be read, and offers to read them again", async () => {
+  it("keeps showing the grid when the saved views cannot be read, says why, and offers to read them again", async () => {
     const user = userEvent.setup()
     openModule()
     let failing = true
@@ -287,7 +288,9 @@ describe("which view the grid opens", () => {
 
     const bar = await toolbar()
     failing = false
-    await user.click(await bar.findByRole("button", { name: "Saved views: retry" }))
+    await user.click(await bar.findByRole("button", { name: "Saved views: couldn't load" }))
+    expect(await screen.findByText("Busy.")).toBeVisible()
+    await user.click(screen.getByRole("button", { name: "Retry" }))
 
     expect(await bar.findByRole("combobox", { name: "Saved view" })).toBeVisible()
   })
@@ -547,6 +550,73 @@ describe("saved views", () => {
     await user.click((await toolbar()).getByRole("button", { name: "View actions" }))
 
     expect(await screen.findByRole("menuitem", { name: "Save as…" })).not.toHaveAttribute("aria-disabled")
+  })
+
+  it("saves a view that was cut down to what the module has as it is shown, which ends the notice", async () => {
+    const pruned = makeView({
+      id: "view-p",
+      module_id: revenueModule.id,
+      name: "Old",
+      pruned: true,
+      definition: standard,
+    })
+    const { store } = openModule({ views: [pruned], path: `${revenuePath}?view=view-p` })
+    const bar = await toolbar()
+    expect(bar.queryByText("Modified")).not.toBeInTheDocument()
+
+    const user = await viewAction("Save")
+
+    await waitFor(() =>
+      expect(store.requests).toEqual([
+        { action: "update", id: "view-p", body: { definition: standard } },
+      ]),
+    )
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith("View saved"))
+    await user.click(bar.getByRole("button", { name: "View actions" }))
+    await waitFor(() =>
+      expect(screen.getByRole("menuitem", { name: "Save" })).toHaveAttribute("aria-disabled", "true"),
+    )
+  })
+
+  it("says another view became the default, and reads the views again, when setting the default is refused", async () => {
+    const quarterly = makeView({ id: "view-q", module_id: revenueModule.id, name: "Quarterly" })
+    const detail = "Another view became the module's default at the same time. Try again."
+    const { store } = openModule({ views: [quarterly], path: `${revenuePath}?view=view-q` })
+    server.use(
+      http.patch("/api/v1/models/:id/views/:viewId", () =>
+        problem(409, "view.default_conflict", detail),
+      ),
+    )
+    await toolbar()
+    const reads = store.reads
+
+    await viewAction("Set as default")
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(detail))
+    await waitFor(() => expect(store.reads).toBeGreaterThan(reads))
+  })
+
+  it("says under Set as default that another view became the default, and reads the views again", async () => {
+    const detail = "Another view became the module's default at the same time. Try again."
+    const user = userEvent.setup()
+    const { store } = openModule()
+    server.use(
+      http.post("/api/v1/models/:id/modules/:moduleId/views", () =>
+        problem(409, "view.default_conflict", detail),
+      ),
+    )
+    await swap()
+    const reads = store.reads
+
+    await viewAction("Save as…")
+    await user.type(await screen.findByRole("textbox", { name: "Name" }), "Months down")
+    await user.click(screen.getByRole("checkbox", { name: "Set as default" }))
+    await user.click(screen.getByRole("button", { name: "Save view" }))
+
+    expect(await screen.findByText(detail)).toBeVisible()
+    expect(screen.getByRole("dialog", { name: "Save as a new view" })).toBeVisible()
+    await waitFor(() => expect(store.reads).toBeGreaterThan(reads))
+    expect(toast.error).not.toHaveBeenCalled()
   })
 
   it("deletes the view in use and falls back to the default, without a toast about a missing view", async () => {

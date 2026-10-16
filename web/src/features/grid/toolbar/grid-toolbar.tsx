@@ -36,8 +36,8 @@ interface GridToolbarProps {
   /** The members the pages show, as the grid's first block says. */
   shown: readonly PageMember[] | undefined
   views: readonly SavedView[]
-  /** The saved views could not be read. */
-  viewsFailed?: { retry: () => void }
+  /** The saved views could not be read, and why. */
+  viewsFailed?: { error: unknown; retry: () => void }
   /** The view in use, or nothing for the module's own default pivot. */
   saved: SavedView | undefined
   modified: boolean

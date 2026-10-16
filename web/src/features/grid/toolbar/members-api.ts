@@ -38,7 +38,7 @@ export function membersOptions(
  * The members of a dimension. Page selectors, the show/hide list and the row headers of the grid
  * share one read of each dimension.
  */
-export function useMembers(
+export function useDimensionMembers(
   modelId: string,
   moduleId: string,
   dim: ViewDim,

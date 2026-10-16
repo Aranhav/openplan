@@ -11,6 +11,7 @@ import { MODEL_ID, MODULE_ID } from "@/test/view-query"
 import { makeView, serveViews, simpleDefinition } from "@/test/views"
 import { spinning } from "@/test/spinning"
 import { HttpResponse, http } from "msw"
+import { ApiError } from "@/lib/api/client"
 import type { SavedView, ViewDefinition } from "../view-types"
 import { SavedViews } from "./saved-views"
 
@@ -32,7 +33,7 @@ interface Setup {
   saved?: SavedView
   modified?: boolean
   canSave?: boolean
-  failed?: { retry: () => void }
+  failed?: { error: unknown; retry: () => void }
 }
 
 function renderViews({ views = [], saved, modified = false, canSave = true, failed }: Setup = {}) {
@@ -168,18 +169,31 @@ describe("saving", () => {
     expect(screen.queryByRole("menuitem", { name: "Delete view…" })).not.toBeInTheDocument()
   })
 
+  it("offers to save a view that was cut down to what the module has, though nothing was changed", async () => {
+    const cut = makeView({ id: "view-cut", module_id: MODULE_ID, name: "Old", pruned: true })
+    const { store, onDiscard } = renderViews({ views: [cut], saved: cut })
+
+    await menu("Save")
+
+    await waitFor(() => expect(onDiscard).toHaveBeenCalledOnce())
+    expect(store.requests).toEqual([
+      { action: "update", id: "view-cut", body: { definition: changed } },
+    ])
+    expect(store.views[0].pruned).toBe(false)
+  })
+
   it("reports a refusal in a toast", async () => {
     renderViews({ views: [quarterly], saved: quarterly, modified: true })
     server.use(
       http.patch("/api/v1/models/:id/views/:viewId", () =>
-        problem(409, "view.default_conflict", "Another view became the default. Try again."),
+        problem(403, "auth.forbidden", "You may not change this view."),
       ),
     )
 
     await menu("Save")
 
     await waitFor(() =>
-      expect(toast.error).toHaveBeenCalledWith("Another view became the default. Try again."),
+      expect(toast.error).toHaveBeenCalledWith("You may not change this view."),
     )
   })
 })
@@ -226,6 +240,24 @@ describe("saving as a new view", () => {
 
     expect(await screen.findByText("A view with that name already exists.")).toBeVisible()
     expect(screen.getByRole("textbox", { name: "Name" })).toBeInvalid()
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+
+  it("says under Set as default that another view became the default, and stays open", async () => {
+    const { onSelect } = renderViews({ views: [quarterly], saved: quarterly, modified: true })
+    const detail = "Another view became the module's default at the same time. Try again."
+    server.use(
+      http.post("/api/v1/models/:id/modules/:moduleId/views", () =>
+        problem(409, "view.default_conflict", detail),
+      ),
+    )
+
+    await saveAs("Months down", true)
+
+    expect(await screen.findByText(detail)).toBeVisible()
+    expect(screen.getByRole("dialog", { name: "Save as a new view" })).toBeVisible()
+    expect(screen.getByRole("checkbox", { name: "Set as default" })).toBeInvalid()
+    expect(toast.error).not.toHaveBeenCalled()
     expect(onSelect).not.toHaveBeenCalled()
   })
 
@@ -276,6 +308,20 @@ describe("the default view", () => {
       { action: "update", id: "view-quarterly", body: { is_default: true } },
     ])
     expect(toast.success).toHaveBeenCalledWith("Quarterly review is now the default view")
+  })
+
+  it("says in a toast that another view became the default meanwhile", async () => {
+    renderViews({ views: [forecast, quarterly], saved: quarterly })
+    const detail = "Another view became the module's default at the same time. Try again."
+    server.use(
+      http.patch("/api/v1/models/:id/views/:viewId", () =>
+        problem(409, "view.default_conflict", detail),
+      ),
+    )
+
+    await menu("Set as default")
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(detail))
   })
 
   it("is not offered for the view that is the default already", async () => {
@@ -363,11 +409,14 @@ describe("someone who may not save views", () => {
 })
 
 describe("when the views cannot be read", () => {
-  it("offers to try again in place of the menu", async () => {
+  it("shows why, and offers to try again, in place of the menu", async () => {
     const retry = vi.fn()
-    renderViews({ failed: { retry } })
+    renderViews({ failed: { error: new ApiError(503, "server.busy", "The server is busy."), retry } })
+    const user = userEvent.setup()
 
-    await userEvent.setup().click(screen.getByRole("button", { name: "Saved views: retry" }))
+    await user.click(screen.getByRole("button", { name: "Saved views: couldn't load" }))
+    expect(await screen.findByText("The server is busy.")).toBeVisible()
+    await user.click(screen.getByRole("button", { name: "Retry" }))
 
     expect(retry).toHaveBeenCalledOnce()
     expect(screen.queryByRole("combobox", { name: "Saved view" })).not.toBeInTheDocument()
