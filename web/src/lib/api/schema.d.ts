@@ -1118,6 +1118,12 @@ export interface components {
             code?: string | null;
             format: components["schemas"]["FormatDto"];
             formula?: string | null;
+            /**
+             * @description What is wrong with the formula as the model last read it, such as a name it uses that
+             *     was deleted: the line item has no values until the formula is fixed. Empty when the
+             *     formula is fine or there is none.
+             */
+            formula_errors: components["schemas"]["FormulaProblem"][];
             /** Format: uuid */
             id: string;
             /** Format: uuid */
@@ -1358,7 +1364,8 @@ export interface components {
         /**
          * @description The structure document of a model: calendar, lists with their items, subsets, versions, time
          *     ranges, modules and line items, as the engine writes it, and the labels of the months. Months
-         *     and periods are indices from the start of the calendar.
+         *     and periods are indices from the start of the calendar. Each line item also carries the
+         *     problems of its formula.
          */
         StructureDto: {
             calendar: components["schemas"]["StructureCalendarDto"];

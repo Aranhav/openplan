@@ -497,9 +497,8 @@ pub(crate) async fn get_structure(
         ProdLock::Ignore,
     )
     .await?;
-    Ok(Json(StructureDto::from(
-        handle.snapshot().export_structure(),
-    )))
+    // The problems of the formulas are read from the same model as the document is.
+    Ok(Json(StructureDto::of(&handle.snapshot())))
 }
 
 #[utoipa::path(

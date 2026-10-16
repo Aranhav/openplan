@@ -4,20 +4,24 @@
 //! Every mirror serializes to exactly the JSON the engine's own serde implementation writes, so
 //! that the structure document, which the engine stores and the API serves, has one shape. The
 //! mirrors that requests also use (axes, formats, summary methods, time scales and versions
-//! scopes) read that JSON back as well.
+//! scopes) read that JSON back as well. The one thing the API adds to the document is what the
+//! model knows and the document does not hold: the problems of each line item's formula.
 
 use openplan_engine::{
-    AxisSpec, Calendar, Format, ItemDoc, LineItem, LineItemId, ListDoc, ListId, Module,
-    NegativeStyle, NumberUnit, StructureDoc, Subset, SubsetId, SummaryMethod, TimeLevel, TimeRange,
-    TimeRangeId, TimeScale, ValueType, Version, VersionId, VersionsScope,
+    AxisSpec, Calendar, Format, FormulaError, ItemDoc, LineItem, LineItemId, ListDoc, ListId,
+    Model, Module, NegativeStyle, NumberUnit, Subset, SubsetId, SummaryMethod, TimeLevel,
+    TimeRange, TimeRangeId, TimeScale, ValueType, Version, VersionId, VersionsScope,
 };
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
+use crate::error::FormulaProblem;
+
 /// The structure document of a model: calendar, lists with their items, subsets, versions, time
 /// ranges, modules and line items, as the engine writes it, and the labels of the months. Months
-/// and periods are indices from the start of the calendar.
+/// and periods are indices from the start of the calendar. Each line item also carries the
+/// problems of its formula.
 #[derive(Serialize, ToSchema)]
 pub struct StructureDto {
     /// The version of the document format; 1.
@@ -152,6 +156,10 @@ pub struct LineItemDto {
     ordinal: i32,
     format: FormatDto,
     formula: Option<String>,
+    /// What is wrong with the formula as the model last read it, such as a name it uses that
+    /// was deleted: the line item has no values until the formula is fixed. Empty when the
+    /// formula is fine or there is none.
+    formula_errors: Vec<FormulaProblem>,
     /// How cells roll up along a hierarchy.
     summary: SummaryMethodDto,
     /// How cells roll up through time, when that differs from `summary`.
@@ -529,8 +537,9 @@ impl From<&Module> for ModuleDto {
     }
 }
 
-impl From<&LineItem> for LineItemDto {
-    fn from(line_item: &LineItem) -> Self {
+impl LineItemDto {
+    /// A line item with the problems the model found in its formula.
+    pub fn new(line_item: &LineItem, problems: &[FormulaError]) -> Self {
         LineItemDto {
             id: line_item.id.0,
             module: line_item.module.0,
@@ -538,6 +547,7 @@ impl From<&LineItem> for LineItemDto {
             ordinal: line_item.ordinal,
             format: (&line_item.format).into(),
             formula: line_item.formula.clone(),
+            formula_errors: problems.iter().map(FormulaProblem::from).collect(),
             summary: (&line_item.summary).into(),
             time_summary: line_item.time_summary.as_ref().map(SummaryMethodDto::from),
             applies_to: line_item
@@ -625,8 +635,10 @@ impl From<&TimeRange> for StructureTimeRangeDto {
     }
 }
 
-impl From<StructureDoc> for StructureDto {
-    fn from(doc: StructureDoc) -> Self {
+impl StructureDto {
+    /// The structure of `model`, with the problems of each formula as the model last read them.
+    pub fn of(model: &Model) -> Self {
+        let doc = model.export_structure();
         let calendar = doc.calendar;
         StructureDto {
             format_version: doc.format_version,
@@ -639,7 +651,14 @@ impl From<StructureDoc> for StructureDto {
             versions: doc.versions.iter().map(Into::into).collect(),
             time_ranges: doc.time_ranges.iter().map(Into::into).collect(),
             modules: doc.modules.iter().map(Into::into).collect(),
-            line_items: doc.line_items.iter().map(Into::into).collect(),
+            line_items: doc
+                .line_items
+                .iter()
+                .map(|line_item| {
+                    let problems = model.line_item_errors(line_item.id).unwrap_or_default();
+                    LineItemDto::new(line_item, problems)
+                })
+                .collect(),
         }
     }
 }
@@ -887,37 +906,90 @@ mod tests {
         model
     }
 
-    /// The typed structure as JSON, without the labels of the months that the engine's document
-    /// does not have.
-    fn engine_shape(doc: StructureDoc) -> Value {
-        let mut typed = serde_json::to_value(StructureDto::from(doc)).unwrap();
+    /// The typed structure as JSON, without what the engine's document does not have: the labels
+    /// of the months and the problems of the formulas.
+    fn engine_shape(model: &Model) -> Value {
+        let mut typed = serde_json::to_value(StructureDto::of(model)).unwrap();
         typed.as_object_mut().unwrap().remove("month_labels");
+        for line_item in typed["line_items"].as_array_mut().unwrap() {
+            line_item.as_object_mut().unwrap().remove("formula_errors");
+        }
         typed
     }
 
     #[test]
     fn the_typed_structure_serializes_exactly_as_the_engine_document_does() {
         let model = rich_model();
-        let doc = model.export_structure();
-        let engine = serde_json::to_value(&doc).unwrap();
+        let engine = serde_json::to_value(model.export_structure()).unwrap();
 
-        assert_eq!(engine_shape(doc), engine);
+        assert_eq!(engine_shape(&model), engine);
         assert!(engine["lists"][1]["items"][0]["parent"].is_string());
         assert!(engine["line_items"].as_array().unwrap().len() > 20);
     }
 
     #[test]
     fn the_months_of_the_calendar_are_named_by_their_index() {
-        let doc = rich_model().export_structure();
-        let current = doc.calendar.current_month.unwrap() as usize;
+        let model = rich_model();
+        let current = model.export_structure().calendar.current_month.unwrap() as usize;
 
-        let labels = StructureDto::from(doc).month_labels;
+        let labels = StructureDto::of(&model).month_labels;
 
         assert_eq!(labels.len(), 36);
         assert_eq!(labels[0], "Apr 25");
         assert_eq!(labels[9], "Jan 26");
         assert_eq!(labels[35], "Mar 28");
         assert_eq!(labels[current], "Sep 25");
+    }
+
+    #[test]
+    fn a_formula_that_stopped_working_carries_its_problems_in_the_document() {
+        let mut model = Model::new(Calendar {
+            fiscal_year_start_month: 1,
+            first_year: 2026,
+            years: 1,
+            current_month: None,
+        });
+        let module = ModuleId::new();
+        let base = line_item(module, "Base", 0, Format::number());
+        let base_id = base.id;
+        let mut doubled = line_item(module, "Doubled", 1, Format::number());
+        doubled.formula = Some("Base * 2".to_string());
+        let doubled_id = doubled.id;
+        model
+            .apply_batch(vec![
+                Command::CreateModule {
+                    id: module,
+                    name: "Plan".to_string(),
+                    axes: Vec::new(),
+                    functional_area: String::new(),
+                },
+                Command::CreateLineItem(base),
+                Command::CreateLineItem(doubled),
+            ])
+            .unwrap();
+        let problems = |model: &Model, id: LineItemId| {
+            let typed = serde_json::to_value(StructureDto::of(model)).unwrap();
+            typed["line_items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|line_item| line_item["id"] == json!(id.0))
+                .unwrap()["formula_errors"]
+                .clone()
+        };
+        assert_eq!(problems(&model, doubled_id), json!([]));
+
+        model
+            .apply(Command::DeleteLineItem { id: base_id })
+            .unwrap();
+
+        let broken = problems(&model, doubled_id);
+        assert_eq!(broken.as_array().unwrap().len(), 1);
+        assert_eq!(broken[0]["code"], "formula.unknown_name");
+        assert_eq!(
+            (broken[0]["start"].as_u64(), broken[0]["end"].as_u64()),
+            (Some(0), Some(4))
+        );
     }
 
     #[test]
@@ -980,7 +1052,7 @@ mod tests {
         let list = model.structure().list_by_name("Countries").unwrap();
         let first: &Item = list.items().next().map(|(_, item)| item).unwrap();
 
-        let typed = engine_shape(model.export_structure());
+        let typed = engine_shape(&model);
 
         let countries = typed["lists"]
             .as_array()
@@ -1003,10 +1075,9 @@ mod tests {
             years: 1,
             current_month: None,
         });
-        let doc = model.export_structure();
-        let engine = serde_json::to_value(&doc).unwrap();
+        let engine = serde_json::to_value(model.export_structure()).unwrap();
 
-        let typed = engine_shape(doc);
+        let typed = engine_shape(&model);
 
         assert_eq!(typed, engine);
         assert_eq!(typed["calendar"]["current_month"], Value::Null);

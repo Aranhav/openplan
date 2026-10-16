@@ -810,7 +810,8 @@ pub(crate) async fn create_line_item(
             references.line_item("read_access_driver", line_item.read_access_driver);
             references.line_item("write_access_driver", line_item.write_access_driver);
             references.finish()?;
-            let answer = LineItemDto::from(&line_item);
+            // The formula was just accepted, so it has no problems.
+            let answer = LineItemDto::new(&line_item, &[]);
             Ok((vec![Command::CreateLineItem(line_item)], answer))
         })
         .await?;
@@ -913,9 +914,10 @@ pub(crate) async fn update_line_item(
             references.finish()?;
             let mut updated = current.clone();
             patch.clone().apply_to(&mut updated);
+            // The formula was just accepted, so it has no problems.
             Ok((
                 vec![Command::UpdateLineItem { id, patch }],
-                LineItemDto::from(&updated),
+                LineItemDto::new(&updated, &[]),
             ))
         })
         .await?;

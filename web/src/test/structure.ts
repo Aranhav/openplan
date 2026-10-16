@@ -22,6 +22,7 @@ export function makeLineItem(overrides: Partial<LineItemDto> = {}): LineItemDto 
     id: "0192f3a0-0000-7000-8000-000000000401",
     module: "0192f3a0-0000-7000-8000-000000000301",
     name: "Unit price",
+    formula_errors: [],
     notes: "",
     ordinal: 0,
     format: {

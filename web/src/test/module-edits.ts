@@ -125,6 +125,7 @@ export function serveModuleStore(structure: StructureDto): ModuleStore {
         id: nextId(),
         module: String(params.moduleId),
         name: body.name,
+        formula_errors: [],
         notes: body.notes ?? "",
         ordinal: body.ordinal ?? Math.max(-1, ...siblings.map((item) => item.ordinal)) + 1,
         format: body.format ?? {
