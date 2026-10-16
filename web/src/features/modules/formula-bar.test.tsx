@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from "@testing-library/react"
+import { fireEvent, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { HttpResponse, http } from "msw"
 import { useState } from "react"
@@ -43,6 +43,7 @@ function Screen({
       <button type="button" onClick={() => setSelected(revenueAmount.id)}>
         Select revenue
       </button>
+      <button type="button">Grid cell</button>
       <FormulaBar
         modelId={MODEL}
         lineItem={data.line_items.find((item) => item.id === selected)}
@@ -382,6 +383,76 @@ describe("the formula bar", () => {
     })
   })
 
+  describe("the keyboard focus when the user moves on while a save runs", () => {
+    async function startSaving(formula = "Units sold * 2") {
+      const typist = userEvent.setup()
+      const store = renderBar()
+      const release = store.hold()
+      const input = await editor()
+      setFormula(input, formula)
+      await typist.click(await screen.findByRole("button", { name: "Save" }))
+      await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toBeDisabled())
+      return { typist, store, release, input }
+    }
+
+    it("stays on the grid cell that was clicked, after a save", async () => {
+      const { typist, release, input } = await startSaving()
+      await typist.click(screen.getByRole("button", { name: "Grid cell" }))
+
+      release()
+
+      await waitFor(() => expect(toast.success).toHaveBeenCalled())
+      expect(screen.getByRole("button", { name: "Grid cell" })).toHaveFocus()
+      expect(input).not.toHaveFocus()
+    })
+
+    it("stays on the grid cell that was clicked, after a refusal, which also selects nothing", async () => {
+      const { typist, store, release, input } = await startSaving("1 + Revnue")
+      store.checkFormula = () => [
+        { code: "formula.unknown_name", message: "Unknown name 'Revnue'.", start: 4, end: 10 },
+      ]
+      await typist.click(screen.getByRole("button", { name: "Grid cell" }))
+
+      release()
+
+      expect(await screen.findByRole("alert")).toHaveTextContent("The formula has a problem.")
+      expect(screen.getByRole("button", { name: "Grid cell" })).toHaveFocus()
+      expect(input).not.toHaveFocus()
+      const { from, to } = formulaView(input).state.selection.main
+      expect([from, to]).toEqual([10, 10])
+    })
+
+    it("is not taken by the formula of another line item that was selected, with the focus nowhere", async () => {
+      const { release } = await startSaving()
+      // A click that selects without moving the focus, as a key does from a grid cell that goes.
+      fireEvent.click(screen.getByRole("button", { name: "Select units" }))
+      const units = await editor("Formula of Units sold")
+      expect(document.body).toHaveFocus()
+
+      release()
+
+      await waitFor(() => expect(toast.success).toHaveBeenCalled())
+      expect(units).not.toHaveFocus()
+      expect(document.body).toHaveFocus()
+    })
+
+    it("is back in the formula when it did not move, for a save started with Enter", async () => {
+      const typist = userEvent.setup()
+      const store = renderBar()
+      const release = store.hold()
+      const input = await editor()
+      setFormula(input, "Units sold * 2")
+      await typist.click(input)
+      await typist.keyboard("{Enter}")
+      await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toBeDisabled())
+
+      release()
+
+      await waitFor(() => expect(toast.success).toHaveBeenCalled())
+      expect(input).toHaveFocus()
+    })
+  })
+
   it("keeps what was typed for a line item while another is selected", async () => {
     const typist = userEvent.setup()
     renderBar()
@@ -404,7 +475,6 @@ describe("who may change a formula", () => {
 
     const input = await editor()
     expect(formulaText(input)).toBe("Units sold * Pricing.Unit price")
-    expect(input).toHaveAttribute("aria-readonly", "true")
     expect(input).toHaveAttribute("aria-readonly", "true")
     expect(within(screen.getByRole("group", { name: "Formula bar" })).queryByRole("button")).toBeNull()
   })

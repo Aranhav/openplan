@@ -50,6 +50,20 @@ export interface FormulaEditorProps {
 
 const NO_PROBLEMS: FormulaProblem[] = []
 
+/** What could not be had from the server just now. Checks, completions and the list of functions fail on their own. */
+interface Unavailable {
+  check: boolean
+  completions: boolean
+  functions: boolean
+}
+
+const AVAILABLE: Unavailable = { check: false, completions: false, functions: false }
+
+/** The flags with one of them set: the same object when it is set already, so that nothing renders for nothing. */
+function setting(what: keyof Unavailable, unavailable: boolean) {
+  return (now: Unavailable) => (now[what] === unavailable ? now : { ...now, [what]: unavailable })
+}
+
 /** Marks a change that comes from the `value` prop, which is not an edit to report. */
 const fromOutside = Annotation.define<boolean>()
 
@@ -108,10 +122,16 @@ export function FormulaEditor({
   // What the effects below read, so that a new function from the parent does not rebuild the editor.
   const handlers = useRef({ onChange, onSubmit, onCancel, known, readOnly })
   const [checked, setChecked] = useState<{ formula: string; problems: FormulaProblem[] }>()
-  // What could not be had from the server just now: a check, or the suggestions and signatures.
-  const [unavailable, setUnavailable] = useState({ check: false, suggestions: false })
-  // How many problems the last announcement said, so that a check is only announced when it
-  // finds a different number.
+  const [unavailable, setUnavailable] = useState(AVAILABLE)
+  const [wasReadOnly, setWasReadOnly] = useState(readOnly)
+  if (readOnly !== wasReadOnly) {
+    // A read-only editor asks nothing of the server, so what it could not give is no longer said.
+    setWasReadOnly(readOnly)
+    setUnavailable(AVAILABLE)
+  }
+  // How many problems the person has been told of, by an announcement or by the list opening
+  // with the editor, so that a check is only announced when it finds a different number. The
+  // problems marked from `known` (a refused save, a live change) count as told.
   const announced = useRef(known?.formula === value ? known.problems.length : 0)
   // The problems are those of the formula as it stands: what the server said of it already, or
   // what the last check said. They go from the list as the formula is edited, and come back once
@@ -237,13 +257,13 @@ export function FormulaEditor({
           : [
               signatureHelp(
                 () => fetchFunctions(queryClient),
-                (available) => setUnavailable((now) => ({ ...now, suggestions: !available })),
+                (available) => setUnavailable(setting("functions", !available)),
               ),
               ...(lineItemId
                 ? [
                     formulaAutocompletion(
                       (prefix) => fetchCompletions(queryClient, modelId, lineItemId, prefix),
-                      (available) => setUnavailable((now) => ({ ...now, suggestions: !available })),
+                      (available) => setUnavailable(setting("completions", !available)),
                     ),
                     formulaLinter({
                       check: (formula, signal) => checkFormula(modelId, lineItemId, formula, signal),
@@ -258,8 +278,10 @@ export function FormulaEditor({
                           })
                         }
                       },
-                      onAvailable: (available) =>
-                        setUnavailable((now) => ({ ...now, check: !available })),
+                      onKnown: (found) => {
+                        announced.current = found.length
+                      },
+                      onAvailable: (available) => setUnavailable(setting("check", !available)),
                     }),
                   ]
                 : []),
@@ -319,11 +341,12 @@ export function FormulaEditor({
           announce={said?.refused}
         />
       )}
-      {(unavailable.check || unavailable.suggestions) && (
+      {(unavailable.check || unavailable.completions || unavailable.functions) && (
         <p role="status" className="text-sm text-muted-foreground">
           {[
             unavailable.check && "The formula could not be checked just now.",
-            unavailable.suggestions && "Suggestions are not available just now.",
+            (unavailable.completions || unavailable.functions) &&
+              "Suggestions are not available just now.",
           ]
             .filter(Boolean)
             .join(" ")}

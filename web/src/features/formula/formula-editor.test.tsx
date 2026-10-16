@@ -4,10 +4,12 @@ import userEvent from "@testing-library/user-event"
 import { HttpResponse, http } from "msw"
 import { useState } from "react"
 import { describe, expect, it, vi } from "vitest"
+import { setFormula } from "@/test/formula"
 import { problem } from "@/test/problem"
 import { renderWithProviders } from "@/test/render"
 import { server } from "@/test/server"
 import { FormulaEditor, type FormulaEditorProps } from "./formula-editor"
+import type { KnownProblems } from "./lint"
 
 const MODEL = "model-1"
 const LINE_ITEM = "line-item-1"
@@ -217,6 +219,7 @@ describe("the problems of a formula", () => {
 
   it("lists the problems of the formula as it stands, and takes them off the page while it is edited", async () => {
     server.use(
+      http.get(`/api/v1/models/${MODEL}/formula/completions`, () => HttpResponse.json([])),
       http.post(`/api/v1/models/${MODEL}/formula/check`, async ({ request }) => {
         const { formula } = (await request.json()) as { formula: string }
         return HttpResponse.json({
@@ -245,7 +248,8 @@ describe("the problems of a formula", () => {
     expect(screen.queryByText("The formula has a problem.")).toBeNull()
     expect(input).not.toHaveAttribute("aria-invalid", "true")
     expect(await screen.findByText("Unknown name 'Rev'.")).toBeVisible()
-    expect(input).toHaveAttribute("aria-invalid", "true")
+    // The attribute follows the list from an effect, not in the render that shows the list.
+    await waitFor(() => expect(input).toHaveAttribute("aria-invalid", "true"))
     expect(input).toHaveAccessibleDescription(/The formula has a problem\./)
   })
 
@@ -635,6 +639,48 @@ describe("what a screen reader is told", () => {
     ])
   })
 
+  it("counts the problems of a refused save as told, so that fixing them is announced", async () => {
+    server.use(
+      http.get(`/api/v1/models/${MODEL}/formula/completions`, () => HttpResponse.json([])),
+      http.post(`/api/v1/models/${MODEL}/formula/check`, ACCEPTED),
+    )
+    const refusal: KnownProblems = {
+      formula: "Revnue",
+      refused: true,
+      problems: [{ code: "formula.unknown_name", message: "Unknown name 'Revnue'.", start: 0, end: 6 }],
+    }
+    function Refusing() {
+      const [value, setValue] = useState("Revnue")
+      const [known, setKnown] = useState<KnownProblems>({ formula: "Revnue", problems: [] })
+      return (
+        <>
+          <button type="button" onClick={() => setKnown(refusal)}>
+            Refuse it
+          </button>
+          <FormulaEditor
+            modelId={MODEL}
+            lineItemId={LINE_ITEM}
+            aria-label="Formula"
+            value={value}
+            onChange={setValue}
+            known={known}
+          />
+        </>
+      )
+    }
+    const announce = vi.spyOn(EditorView.announce, "of")
+    renderWithProviders(<Refusing />)
+    const input = await screen.findByRole("textbox", { name: "Formula" })
+    await userEvent.setup().click(screen.getByRole("button", { name: "Refuse it" }))
+    // The refusal is announced by the list of problems; the marks follow from `known`.
+    await screen.findByRole("alert")
+    await waitFor(() => expect(document.querySelector(".cm-lintRange-error")).not.toBeNull())
+
+    setFormula(input, "Revenue")
+
+    await waitFor(() => expect(announce).toHaveBeenCalledWith("Checked: no problems found."))
+  })
+
   it("is nothing for the problems that were there when the editor opened", async () => {
     const announce = vi.spyOn(EditorView.announce, "of")
     await renderEditor({
@@ -685,6 +731,68 @@ describe("when the server cannot be reached", () => {
     type(view, "Re")
 
     expect(await screen.findByText("Suggestions are not available just now.")).toBeVisible()
+  })
+
+  it("keeps saying signatures are not available when a completion is had after", async () => {
+    server.use(
+      http.get("/api/v1/formula/functions", () => problem(503, "server.busy", "The server is busy.")),
+      http.get(`/api/v1/models/${MODEL}/formula/completions`, () =>
+        HttpResponse.json([{ label: "Revenue", kind: "line_item", detail: "Number" }]),
+      ),
+      http.post(`/api/v1/models/${MODEL}/formula/check`, ACCEPTED),
+    )
+    const input = await renderEditor({ initial: "ROUND(" })
+    const view = viewOf(input)
+    view.focus()
+    act(() => view.dispatch({ selection: { anchor: 6 } }))
+    await screen.findByText("Suggestions are not available just now.")
+
+    type(view, "Re")
+    await screen.findAllByRole("option")
+    await wait(100)
+
+    expect(screen.getByText("Suggestions are not available just now.")).toBeVisible()
+  })
+
+  it("says nothing of what could not be had once the editor can no longer be changed", async () => {
+    server.use(
+      http.get(`/api/v1/models/${MODEL}/formula/completions`, () =>
+        problem(503, "server.busy", "The server is busy."),
+      ),
+      http.post(`/api/v1/models/${MODEL}/formula/check`, () =>
+        problem(503, "server.busy", "The server is busy."),
+      ),
+    )
+    function Locking() {
+      const [readOnly, setReadOnly] = useState(false)
+      return (
+        <>
+          <button type="button" onClick={() => setReadOnly(true)}>
+            Lock it
+          </button>
+          <FormulaEditor
+            modelId={MODEL}
+            lineItemId={LINE_ITEM}
+            aria-label="Formula"
+            value="a"
+            onChange={() => {}}
+            readOnly={readOnly}
+          />
+        </>
+      )
+    }
+    renderWithProviders(<Locking />)
+    const view = viewOf(await screen.findByRole("textbox", { name: "Formula" }))
+    view.focus()
+    type(view, "b")
+    await screen.findByText(/Suggestions are not available just now\./)
+    await screen.findByText(/The formula could not be checked just now\./)
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "Lock it" }))
+
+    await waitFor(() =>
+      expect(screen.queryByText(/not available just now|could not be checked/)).toBeNull(),
+    )
   })
 
   it("asks for the functions once, and not again at every key when that fails", async () => {

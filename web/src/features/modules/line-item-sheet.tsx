@@ -29,7 +29,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { useUpdateLineItem } from "@/features/structure/api"
 import { lineItemsOf } from "@/features/structure/modules"
 import type { LineItemDto, ModuleDto, StructureDto } from "@/features/structure/types"
-import { closeCompletionsOnEscape } from "@/features/formula/escape"
+import { closeEditorPopupOnEscape } from "@/features/formula/escape"
 import type { FormulaEditorHandle } from "@/features/formula/formula-editor"
 import type { KnownProblems } from "@/features/formula/lint"
 import { byteToUtf16 } from "@/features/formula/offsets"
@@ -87,8 +87,8 @@ export function LineItemSheet({
       <Sheet open={open} onOpenChange={dismiss}>
         <SheetContent
           onOpenAutoFocus={focusFirstField}
-          // Escape closes a list of completions of the formula before it closes the sheet.
-          onEscapeKeyDown={(event) => closeCompletionsOnEscape(event) && event.preventDefault()}
+          // Escape closes the formula's list of completions, or its panel of problems, before it closes the sheet.
+          onEscapeKeyDown={(event) => closeEditorPopupOnEscape(event) && event.preventDefault()}
           onCloseAutoFocus={onCloseAutoFocus}
           showCloseButton={!update.isPending}
           className="w-full gap-0 sm:max-w-xl"

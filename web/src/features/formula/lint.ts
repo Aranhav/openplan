@@ -73,6 +73,8 @@ interface FormulaLinterOptions {
   known: () => KnownProblems | undefined
   /** Told what is wrong with a formula after each check by the server. */
   onProblems: (formula: string, problems: FormulaProblem[]) => void
+  /** Told the problems that are marked from what is already known, which no check was needed for. */
+  onKnown: (problems: FormulaProblem[]) => void
   /** Told when a check could not be made, and when one could again. */
   onAvailable: (available: boolean) => void
 }
@@ -83,7 +85,13 @@ interface FormulaLinterOptions {
  * leaves the marks as they are. F8 goes to the next problem and Ctrl+Shift+M lists them, where a
  * suggestion is taken with its number: the way to them from the keyboard.
  */
-export function formulaLinter({ check, known, onProblems, onAvailable }: FormulaLinterOptions) {
+export function formulaLinter({
+  check,
+  known,
+  onProblems,
+  onKnown,
+  onAvailable,
+}: FormulaLinterOptions) {
   let running: AbortController | undefined
   const marks = linter(
     async (view) => {
@@ -95,6 +103,7 @@ export function formulaLinter({ check, known, onProblems, onAvailable }: Formula
         return problems.map((problem) => toDiagnostic(text, problem))
       }
       if (said && said.formula === text) {
+        onKnown(said.problems)
         return said.problems.map((problem) => toDiagnostic(text, problem))
       }
       if (text.trim() === "") {

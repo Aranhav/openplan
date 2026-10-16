@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from "@testing-library/react"
+import { fireEvent, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { HttpResponse, http } from "msw"
 import { toast } from "sonner"
@@ -885,6 +885,32 @@ describe("the formula", () => {
     expect(screen.queryByRole("option")).toBeNull()
     expect(screen.getByRole("dialog", { name: "Line item settings" })).toBeVisible()
     expect(screen.queryByRole("alertdialog")).toBeNull()
+  })
+
+  it("closes the list of problems on Escape before it closes the sheet", async () => {
+    const typist = userEvent.setup()
+    const { sheet } = await openSheet(typist, revenueAmount.id, {
+      prepare: (store) => {
+        store.formulaErrors[revenueAmount.id] = [problems[0]]
+      },
+    })
+    const formula = sheet.getByLabelText("Formula")
+    await waitFor(() => expect(document.querySelector(".cm-lintRange-error")).not.toBeNull())
+    formula.focus()
+    // user-event gives a key no key code, which CodeMirror reads.
+    fireEvent.keyDown(formula, { key: "M", keyCode: 77, ctrlKey: true, shiftKey: true })
+    const list = await screen.findByRole("listbox", { name: "Diagnostics" })
+    expect(list).toHaveFocus()
+
+    await typist.keyboard("{Escape}")
+
+    expect(document.querySelector(".cm-panel-lint")).toBeNull()
+    expect(screen.getByRole("dialog", { name: "Line item settings" })).toBeVisible()
+    expect(screen.queryByRole("alertdialog")).toBeNull()
+    expect(formula).toHaveFocus()
+
+    await typist.keyboard("{Escape}")
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
   })
 
   it("saves a formula the server accepts", async () => {

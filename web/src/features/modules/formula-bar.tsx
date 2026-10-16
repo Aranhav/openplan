@@ -1,5 +1,5 @@
 import { Loader2 } from "lucide-react"
-import { useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { toast } from "sonner"
 import { ProductionLock } from "@/components/production-lock"
 import { Button } from "@/components/ui/button"
@@ -47,6 +47,11 @@ export function FormulaBar({ modelId, lineItem, canEdit, locked }: FormulaBarPro
   // The formula waiting for a yes to clearing the line item's input values.
   const [confirming, setConfirming] = useState<string>()
   const editor = useRef<FormulaEditorHandle | null>(null)
+  // The line item the bar shows now, which a save that began for another one must not draw the focus to.
+  const shown = useRef(lineItem?.id)
+  useEffect(() => {
+    shown.current = lineItem?.id
+  })
   const readOnly = !canEdit || locked
 
   if (!lineItem) {
@@ -95,18 +100,29 @@ export function FormulaBar({ modelId, lineItem, canEdit, locked }: FormulaBarPro
       return
     }
     const { id } = lineItem
+    // The save takes a moment, in which the user may go on: to another line item, or to a cell of
+    // the grid. The formula takes the focus back only if they did not.
+    const focusAtStart = document.activeElement
+    const mayFocus = () => {
+      const now = document.activeElement
+      return shown.current === id && (now === focusAtStart || now === document.body || now === null)
+    }
     try {
       await update.mutateAsync({ lineItemId: id, body: { formula: text.trim() === "" ? null : text } })
       toast.success("Formula saved")
       // What was typed while the save ran is not what was saved, and stays to be saved.
       setDrafts((now) => (now[id] === text ? without(now, id) : now))
       setRefusal(undefined)
-      editor.current?.focus()
+      if (mayFocus()) {
+        editor.current?.focus()
+      }
     } catch (error) {
       if (error instanceof ApiError && error.formulaErrors.length > 0) {
         setRefusal({ lineItemId: id, formula: text, problems: error.formulaErrors })
         const [first] = error.formulaErrors
-        editor.current?.select(byteToUtf16(text, first.start), byteToUtf16(text, first.end))
+        if (mayFocus()) {
+          editor.current?.select(byteToUtf16(text, first.start), byteToUtf16(text, first.end))
+        }
       } else {
         toast.error(errorDetail(error))
       }
