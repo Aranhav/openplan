@@ -4,12 +4,14 @@ import { HttpResponse, http } from "msw"
 import { useState } from "react"
 import { toast } from "sonner"
 import { describe, expect, it, vi } from "vitest"
+import { TooltipProvider } from "@/components/ui/tooltip"
 import { useStructure } from "@/features/structure/api"
 import { formulaText, formulaView, setFormula } from "@/test/formula"
 import { serveModuleStore } from "@/test/module-edits"
 import { problem } from "@/test/problem"
 import { renderWithProviders } from "@/test/render"
 import { server } from "@/test/server"
+import { spinning } from "@/test/spinning"
 import { revenueAmount, structure, unitsSold } from "@/test/structure"
 import { FormulaBar } from "./formula-bar"
 
@@ -34,7 +36,7 @@ function Screen({
     return null
   }
   return (
-    <>
+    <TooltipProvider>
       <button type="button" onClick={() => setSelected(unitsSold.id)}>
         Select units
       </button>
@@ -47,7 +49,7 @@ function Screen({
         canEdit={canEdit}
         locked={locked}
       />
-    </>
+    </TooltipProvider>
   )
 }
 
@@ -58,11 +60,6 @@ function renderBar(props: Parameters<typeof Screen>[0] = {}) {
 }
 
 const editor = (name = "Formula of Revenue amount") => screen.findByRole("textbox", { name })
-
-/** Whether a button shows the spinner that says its request is running. */
-function spinning(button: HTMLElement) {
-  return button.querySelector("svg.animate-spin") !== null
-}
 
 describe("the formula bar", () => {
   it("shows fx, the name of the line item and its formula", async () => {
@@ -412,10 +409,23 @@ describe("who may change a formula", () => {
     expect(within(screen.getByRole("group", { name: "Formula bar" })).queryByRole("button")).toBeNull()
   })
 
-  it("switches the bar off in production mode", async () => {
+  it("switches the bar off in production mode, and says why when the editor is hovered", async () => {
     renderBar({ locked: true })
 
-    expect(await editor()).toHaveAttribute("aria-readonly", "true")
+    const input = await editor()
+    expect(input).toHaveAttribute("aria-readonly", "true")
+    await userEvent.hover(input.closest(".cm-editor")?.parentElement as HTMLElement)
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "This model is in production mode. Structural changes arrive through ALM sync.",
+    )
+  })
+
+  it("says nothing of production mode to someone who cannot change formulas in any mode", async () => {
+    renderBar({ canEdit: false })
+
+    const input = await editor()
+    await userEvent.hover(input.closest(".cm-editor") as HTMLElement)
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument()
   })
 
   it("says what an input line item holds to someone who cannot change it", async () => {

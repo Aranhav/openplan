@@ -1,6 +1,7 @@
 import { Loader2 } from "lucide-react"
 import { useRef, useState } from "react"
 import { toast } from "sonner"
+import { ProductionLock } from "@/components/production-lock"
 import { Button } from "@/components/ui/button"
 import { FormulaEditor, type FormulaEditorHandle } from "@/features/formula/formula-editor"
 import type { KnownProblems } from "@/features/formula/lint"
@@ -116,25 +117,27 @@ export function FormulaBar({ modelId, lineItem, canEdit, locked }: FormulaBarPro
 
   return (
     <Bar name={lineItem.name}>
-      <FormulaEditor
-        key={lineItem.id}
-        className="min-w-0 flex-1"
-        modelId={modelId}
-        lineItemId={lineItem.id}
-        aria-label={`Formula of ${lineItem.name}`}
-        placeholder={
-          readOnly
-            ? "No formula: this line item holds typed values."
-            : "Type a formula to calculate this line item."
-        }
-        value={value}
-        onChange={(text) => edit(lineItem.id, text)}
-        onSubmit={submit}
-        onCancel={cancel}
-        readOnly={readOnly}
-        known={known}
-        editorRef={editor}
-      />
+      <ProductionLock locked={locked} className="flex min-w-0 flex-1">
+        <FormulaEditor
+          key={lineItem.id}
+          className="min-w-0 flex-1"
+          modelId={modelId}
+          lineItemId={lineItem.id}
+          aria-label={`Formula of ${lineItem.name}`}
+          placeholder={
+            readOnly
+              ? "No formula: this line item holds typed values."
+              : "Type a formula to calculate this line item."
+          }
+          value={value}
+          onChange={(text) => edit(lineItem.id, text)}
+          onSubmit={submit}
+          onCancel={cancel}
+          readOnly={readOnly}
+          known={known}
+          editorRef={editor}
+        />
+      </ProductionLock>
       {dirty && !readOnly && (
         <div className="flex shrink-0 gap-2">
           <Button type="button" variant="outline" disabled={update.isPending} onClick={cancel}>
