@@ -41,7 +41,7 @@ import type { ViewDefinition, ViewDim } from "../view-types"
 import { dimLabel } from "./dim-labels"
 import { ZONES, type Zones, dropTarget } from "./pivot-drop"
 import { ToolbarPanel } from "./toolbar-panel"
-import { type ViewAction, type Zone, dimKey } from "./view-state"
+import { type ViewAction, type Zone, dimKey, reduceView } from "./view-state"
 
 const ZONE_NAMES: Record<Zone, string> = { rows: "Rows", columns: "Columns", pages: "Pages" }
 
@@ -106,17 +106,31 @@ export function PivotPopover({
       over ? `${labelOf(active.id)} is over ${labelOf(over.id)}.` : undefined,
     onDragEnd: ({ active, over }) => {
       const target = dropTarget(zones, String(active.id), over ? String(over.id) : undefined)
-      return target
+      const dim = all.find((candidate) => dimKey(candidate) === active.id)
+      if (!target || !dim) {
+        return `Dropped ${labelOf(active.id)}.`
+      }
+      return movesDim(dim, target.to, target.index)
         ? `Dropped ${labelOf(active.id)} in ${ZONE_NAMES[target.to]}, position ${target.index + 1}.`
-        : `Dropped ${labelOf(active.id)}.`
+        : `Dropped ${labelOf(active.id)}. It stays where it is.`
     },
     onDragCancel: ({ active }) => `Cancelled. ${labelOf(active.id)} has not moved.`,
   }
 
+  /** Whether the dimension ends up somewhere else: not when it is dropped where it is, or is the last of the rows. */
+  function movesDim(dim: ViewDim, to: Zone, index?: number) {
+    return reduceView(view, { type: "move", dim, to, index }) !== view
+  }
+
   function moveDim(dim: ViewDim, to: Zone, index?: number) {
+    const name = dimLabel(dim, module, structure)
+    if (!movesDim(dim, to, index)) {
+      setAnnouncement(`${name} stays where it is.`)
+      return
+    }
     moved.current = dimKey(dim)
     dispatch({ type: "move", dim, to, index })
-    setAnnouncement(`Moved ${dimLabel(dim, module, structure)} to ${ZONE_NAMES[to]}.`)
+    setAnnouncement(`Moved ${name} to ${ZONE_NAMES[to]}.`)
   }
 
   function onDragEnd({ active, over }: DragEndEvent) {
@@ -267,9 +281,10 @@ function PivotChip({
   menuRef,
   onMove,
 }: PivotChipProps) {
-  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } =
-    useSortable({ id: dimKey(dim) })
   const leavesRowsEmpty = zone === "rows" && onlyRow
+  // The one dimension of the rows stays there, so there is nothing to pick up.
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } =
+    useSortable({ id: dimKey(dim), disabled: leavesRowsEmpty })
   return (
     <li
       ref={setNodeRef}
@@ -287,6 +302,7 @@ function PivotChip({
         {...attributes}
         {...listeners}
         aria-label={`Drag ${name}`}
+        disabled={leavesRowsEmpty}
         className="cursor-grab touch-none text-muted-foreground hover:text-foreground active:cursor-grabbing"
       >
         <GripVertical />

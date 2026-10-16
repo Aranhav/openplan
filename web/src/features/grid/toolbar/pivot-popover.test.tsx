@@ -125,6 +125,13 @@ describe("the pivot popover", () => {
     expect(screen.getByText("One dimension stays on the rows.")).toBeVisible()
   })
 
+  it("lets the one dimension of the rows be moved by nobody: its grip is off", () => {
+    renderPivot()
+
+    expect(screen.getByRole("button", { name: "Drag Line items" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Drag Time (Month)" })).toBeEnabled()
+  })
+
   it("swaps the rows and the columns, and cannot when there are no columns", async () => {
     const user = userEvent.setup()
     const { state } = renderPivot()
