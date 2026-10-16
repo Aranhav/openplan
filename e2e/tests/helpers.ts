@@ -172,6 +172,83 @@ export async function createModuleViaApi(
   })
 }
 
+/** Creates a list with these items in a model through the API and returns its id. */
+export async function createListViaApi(
+  baseURL: string,
+  user: Pick<User, "email" | "password">,
+  modelId: string,
+  name: string,
+  items: string[],
+) {
+  return withApi(baseURL, user, async (api) => {
+    const list = await api.post<{ id: string }>(`/api/v1/models/${modelId}/lists`, { name })
+    await api.post(`/api/v1/models/${modelId}/lists/${list.id}/items`, {
+      items: items.map((item) => ({ name: item })),
+    })
+    return list.id
+  })
+}
+
+/** Creates a line item in a module through the API and returns its id. */
+export async function createLineItemViaApi(
+  baseURL: string,
+  user: Pick<User, "email" | "password">,
+  modelId: string,
+  moduleId: string,
+  lineItem: { name: string; formula?: string; format?: unknown },
+) {
+  return withApi(baseURL, user, async (api) => {
+    const created = await api.post<{ id: string }>(
+      `/api/v1/models/${modelId}/modules/${moduleId}/line-items`,
+      lineItem,
+    )
+    return created.id
+  })
+}
+
+/** Deletes a line item through the API, so that the formulas that used it have errors. */
+export async function deleteLineItemViaApi(
+  baseURL: string,
+  user: Pick<User, "email" | "password">,
+  modelId: string,
+  lineItemId: string,
+) {
+  await withApi(baseURL, user, (api) =>
+    api.delete(`/api/v1/models/${modelId}/line-items/${lineItemId}`),
+  )
+}
+
+/** Writes numbers into cells through the API: one token for each dimension of the line item. */
+export async function writeCellsViaApi(
+  baseURL: string,
+  user: Pick<User, "email" | "password">,
+  modelId: string,
+  edits: { line_item_id: string; coords: string[]; value: number }[],
+) {
+  await withApi(baseURL, user, (api) =>
+    api.post(`/api/v1/models/${modelId}/cells`, {
+      edits: edits.map(({ value, ...edit }) => ({ ...edit, value: { t: "number", v: value } })),
+    }),
+  )
+}
+
+/** The structure of a model through the API. */
+export async function structureViaApi(
+  baseURL: string,
+  user: Pick<User, "email" | "password">,
+  modelId: string,
+) {
+  return withApi(baseURL, user, (api) =>
+    api.get<{
+      calendar: { first_year: number; years: number }
+      month_labels: string[]
+      lists: { id: string; name: string; items: { id: string; name: string }[] }[]
+      modules: { id: string; name: string }[]
+      line_items: { id: string; name: string; module: string; ordinal: number }[]
+    }>(`/api/v1/models/${modelId}/structure`),
+  )
+}
+
 /** Creates an account through the API (as `admin`) and adds it to the admin's first workspace. */
 export async function createMemberViaApi(
   baseURL: string,
