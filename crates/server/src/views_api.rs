@@ -569,15 +569,16 @@ async fn clear_default(
     Ok(())
 }
 
-/// A clash with another view's name in the module is `model.name_taken`; a model that is gone
-/// while the view was saved is `not_found`.
+/// A clash with another view's name in the module is `structure.name_taken`, the code of the
+/// other names in a model's structure. A model that is gone while the view was saved is
+/// `not_found`.
 fn map_write_error(error: sqlx::Error) -> AppError {
     match error {
         sqlx::Error::Database(db_error)
             if db_error.is_unique_violation() && db_error.constraint() == Some(NAME_INDEX) =>
         {
             AppError::Conflict {
-                code: "model.name_taken",
+                code: "structure.name_taken",
                 detail: "A view with this name already exists in this module.".into(),
             }
         }
@@ -651,7 +652,7 @@ pub(crate) async fn list_views(
         (status = 401, description = "Not signed in (auth.unauthenticated)"),
         (status = 403, description = "Not a workspace builder (auth.forbidden)"),
         (status = 404, description = "No such model or module, or the caller is not a member of the model's workspace (not_found)"),
-        (status = 409, description = "A view of the module has that name (model.name_taken)"),
+        (status = 409, description = "A view of the module has that name (structure.name_taken)"),
         (status = 413, description = "The body is more than 2 MiB (payload_too_large)"),
         (status = 422, description = "The name is blank or longer than 80 characters, the module has 200 views already, a field of the definition is invalid or over its limit (validation)"),
     )
@@ -722,7 +723,7 @@ pub(crate) async fn create_view(
         (status = 401, description = "Not signed in (auth.unauthenticated)"),
         (status = 403, description = "Not a workspace builder (auth.forbidden)"),
         (status = 404, description = "No such view in the model, or the caller is not a member of the model's workspace (not_found)"),
-        (status = 409, description = "Another view of the module has that name (model.name_taken)"),
+        (status = 409, description = "Another view of the module has that name (structure.name_taken)"),
         (status = 413, description = "The body is more than 2 MiB (payload_too_large)"),
         (status = 422, description = "The name is blank or longer than 80 characters, or a field of the definition is invalid or over its limit (validation)"),
     )

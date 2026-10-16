@@ -154,7 +154,7 @@ async fn duplicate_name_409(pool: PgPool) {
             Some(json!({ "name": "base", "definition": definition() })),
         )
         .await;
-    assert_problem(&duplicate, StatusCode::CONFLICT, "model.name_taken");
+    assert_problem(&duplicate, StatusCode::CONFLICT, "structure.name_taken");
 
     let other = save(&mut admin, &model, &module, "Other").await;
     let renamed = admin
@@ -163,7 +163,7 @@ async fn duplicate_name_409(pool: PgPool) {
             Some(json!({ "name": "BASE" })),
         )
         .await;
-    assert_problem(&renamed, StatusCode::CONFLICT, "model.name_taken");
+    assert_problem(&renamed, StatusCode::CONFLICT, "structure.name_taken");
 }
 
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
@@ -271,6 +271,30 @@ async fn model_delete_cascades(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(remaining, 0);
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn module_delete_removes_its_views(pool: PgPool) {
+    let (mut admin, _, model) = plan(&pool).await;
+    let gone = create_module(&mut admin, &model, "Gone", vec![month()]).await;
+    let kept = create_module(&mut admin, &model, "Kept", vec![month()]).await;
+    save(&mut admin, &model, &gone, "Doomed").await;
+    let survivor = save(&mut admin, &model, &kept, "Survivor").await;
+
+    let deleted = admin
+        .delete(&url(&model, &format!("/modules/{gone}")))
+        .await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.text);
+
+    let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM views WHERE module_id = $1")
+        .bind(Uuid::parse_str(&gone).unwrap())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(remaining, 0);
+    let kept_views = list(&mut admin, &model, &kept).await;
+    assert_eq!(kept_views.len(), 1);
+    assert_eq!(kept_views[0]["id"], id_of(&survivor));
 }
 
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]

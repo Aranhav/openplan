@@ -682,7 +682,7 @@ pub(crate) async fn update_module(
         ("module_id" = Uuid, Path, description = "The module's id"),
     ),
     responses(
-        (status = 204, description = "The module and its line items were deleted"),
+        (status = 204, description = "The module, its line items and its saved views were deleted"),
         (status = 401, description = "Not signed in (auth.unauthenticated)"),
         (status = 403, description = "Not a workspace builder (auth.forbidden)"),
         (status = 404, description = "No such model or module, or the caller is not a member of the workspace (not_found)"),
@@ -709,6 +709,12 @@ pub(crate) async fn delete_module(
                 id: ModuleId(module_id),
             }],
         )
+        .await?;
+    // The views name their module by id and have no foreign key to it, so they go with it here,
+    // once the module is gone from the model.
+    sqlx::query("DELETE FROM views WHERE module_id = $1")
+        .bind(module_id)
+        .execute(&state.db)
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
