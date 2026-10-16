@@ -393,7 +393,9 @@ describe("the command palette inside a model", () => {
     await within(palette).findByRole("option", { name: /^Hiring plan/ })
 
     const options = within(palette).getAllByRole("option")
-    expect(options.slice(0, 2).map((option) => option.textContent)).toEqual([
+    expect(options.slice(0, 4).map((option) => option.textContent)).toEqual([
+      "Time",
+      "Versions",
       "Modules",
       "Model settings",
     ])

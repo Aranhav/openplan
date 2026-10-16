@@ -18,6 +18,8 @@ import { Route as AppAdminUsersRouteImport } from './routes/_app/admin/users'
 import { Route as AppMModelIdRouteRouteImport } from './routes/_app/m/$modelId/route'
 import { Route as AppMModelIdIndexRouteImport } from './routes/_app/m/$modelId/index'
 import { Route as AppMModelIdSettingsRouteImport } from './routes/_app/m/$modelId/settings'
+import { Route as AppMModelIdTimeRouteImport } from './routes/_app/m/$modelId/time'
+import { Route as AppMModelIdVersionsRouteImport } from './routes/_app/m/$modelId/versions'
 import { Route as AppWWorkspaceIdIndexRouteImport } from './routes/_app/w/$workspaceId/index'
 import { Route as AppWWorkspaceIdMembersRouteImport } from './routes/_app/w/$workspaceId/members'
 import { Route as AppMModelIdModulesIndexRouteImport } from './routes/_app/m/$modelId/modules/index'
@@ -67,6 +69,16 @@ const AppMModelIdSettingsRoute = AppMModelIdSettingsRouteImport.update({
   path: '/settings',
   getParentRoute: () => AppMModelIdRouteRoute,
 } as any)
+const AppMModelIdTimeRoute = AppMModelIdTimeRouteImport.update({
+  id: '/time',
+  path: '/time',
+  getParentRoute: () => AppMModelIdRouteRoute,
+} as any)
+const AppMModelIdVersionsRoute = AppMModelIdVersionsRouteImport.update({
+  id: '/versions',
+  path: '/versions',
+  getParentRoute: () => AppMModelIdRouteRoute,
+} as any)
 const AppWWorkspaceIdIndexRoute = AppWWorkspaceIdIndexRouteImport.update({
   id: '/w/$workspaceId/',
   path: '/w/$workspaceId/',
@@ -97,6 +109,8 @@ export interface FileRoutesByFullPath {
   '/m/$modelId': typeof AppMModelIdRouteRouteWithChildren
   '/admin/users': typeof AppAdminUsersRoute
   '/m/$modelId/settings': typeof AppMModelIdSettingsRoute
+  '/m/$modelId/time': typeof AppMModelIdTimeRoute
+  '/m/$modelId/versions': typeof AppMModelIdVersionsRoute
   '/w/$workspaceId/members': typeof AppWWorkspaceIdMembersRoute
   '/m/$modelId/': typeof AppMModelIdIndexRoute
   '/w/$workspaceId/': typeof AppWWorkspaceIdIndexRoute
@@ -110,6 +124,8 @@ export interface FileRoutesByTo {
   '/': typeof AppIndexRoute
   '/admin/users': typeof AppAdminUsersRoute
   '/m/$modelId/settings': typeof AppMModelIdSettingsRoute
+  '/m/$modelId/time': typeof AppMModelIdTimeRoute
+  '/m/$modelId/versions': typeof AppMModelIdVersionsRoute
   '/w/$workspaceId/members': typeof AppWWorkspaceIdMembersRoute
   '/m/$modelId': typeof AppMModelIdIndexRoute
   '/w/$workspaceId': typeof AppWWorkspaceIdIndexRoute
@@ -126,6 +142,8 @@ export interface FileRoutesById {
   '/_app/m/$modelId': typeof AppMModelIdRouteRouteWithChildren
   '/_app/admin/users': typeof AppAdminUsersRoute
   '/_app/m/$modelId/settings': typeof AppMModelIdSettingsRoute
+  '/_app/m/$modelId/time': typeof AppMModelIdTimeRoute
+  '/_app/m/$modelId/versions': typeof AppMModelIdVersionsRoute
   '/_app/w/$workspaceId/members': typeof AppWWorkspaceIdMembersRoute
   '/_app/m/$modelId/': typeof AppMModelIdIndexRoute
   '/_app/w/$workspaceId/': typeof AppWWorkspaceIdIndexRoute
@@ -142,6 +160,8 @@ export interface FileRouteTypes {
     | '/m/$modelId'
     | '/admin/users'
     | '/m/$modelId/settings'
+    | '/m/$modelId/time'
+    | '/m/$modelId/versions'
     | '/w/$workspaceId/members'
     | '/m/$modelId/'
     | '/w/$workspaceId/'
@@ -155,6 +175,8 @@ export interface FileRouteTypes {
     | '/'
     | '/admin/users'
     | '/m/$modelId/settings'
+    | '/m/$modelId/time'
+    | '/m/$modelId/versions'
     | '/w/$workspaceId/members'
     | '/m/$modelId'
     | '/w/$workspaceId'
@@ -170,6 +192,8 @@ export interface FileRouteTypes {
     | '/_app/m/$modelId'
     | '/_app/admin/users'
     | '/_app/m/$modelId/settings'
+    | '/_app/m/$modelId/time'
+    | '/_app/m/$modelId/versions'
     | '/_app/w/$workspaceId/members'
     | '/_app/m/$modelId/'
     | '/_app/w/$workspaceId/'
@@ -248,6 +272,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppMModelIdSettingsRouteImport
       parentRoute: typeof AppMModelIdRouteRoute
     }
+    '/_app/m/$modelId/time': {
+      id: '/_app/m/$modelId/time'
+      path: '/time'
+      fullPath: '/m/$modelId/time'
+      preLoaderRoute: typeof AppMModelIdTimeRouteImport
+      parentRoute: typeof AppMModelIdRouteRoute
+    }
+    '/_app/m/$modelId/versions': {
+      id: '/_app/m/$modelId/versions'
+      path: '/versions'
+      fullPath: '/m/$modelId/versions'
+      preLoaderRoute: typeof AppMModelIdVersionsRouteImport
+      parentRoute: typeof AppMModelIdRouteRoute
+    }
     '/_app/w/$workspaceId/': {
       id: '/_app/w/$workspaceId/'
       path: '/w/$workspaceId'
@@ -281,6 +319,8 @@ declare module '@tanstack/react-router' {
 
 interface AppMModelIdRouteRouteChildren {
   AppMModelIdSettingsRoute: typeof AppMModelIdSettingsRoute
+  AppMModelIdTimeRoute: typeof AppMModelIdTimeRoute
+  AppMModelIdVersionsRoute: typeof AppMModelIdVersionsRoute
   AppMModelIdIndexRoute: typeof AppMModelIdIndexRoute
   AppMModelIdModulesModuleIdRoute: typeof AppMModelIdModulesModuleIdRoute
   AppMModelIdModulesIndexRoute: typeof AppMModelIdModulesIndexRoute
@@ -288,6 +328,8 @@ interface AppMModelIdRouteRouteChildren {
 
 const AppMModelIdRouteRouteChildren: AppMModelIdRouteRouteChildren = {
   AppMModelIdSettingsRoute: AppMModelIdSettingsRoute,
+  AppMModelIdTimeRoute: AppMModelIdTimeRoute,
+  AppMModelIdVersionsRoute: AppMModelIdVersionsRoute,
   AppMModelIdIndexRoute: AppMModelIdIndexRoute,
   AppMModelIdModulesModuleIdRoute: AppMModelIdModulesModuleIdRoute,
   AppMModelIdModulesIndexRoute: AppMModelIdModulesIndexRoute,

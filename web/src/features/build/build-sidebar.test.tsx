@@ -64,6 +64,8 @@ describe("the build navigation", () => {
 
     const nav = await findLoadedNav()
     expect(nav.getAllByRole("link").map((link) => link.textContent)).toEqual([
+      "Time",
+      "Versions",
       "Modules",
       "Pricing",
       "Headcount",

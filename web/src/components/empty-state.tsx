@@ -14,8 +14,8 @@ interface EmptyStateProps {
   title: string
   description: string
   action?: ReactNode
-  /** The title is a heading: 1 when the state is the whole page, 2 below a `PageHeader`. */
-  headingLevel?: 1 | 2
+  /** The title is a heading: 1 when the state is the whole page, 2 below a `PageHeader`, 3 inside a titled card. */
+  headingLevel?: 1 | 2 | 3
 }
 
 export function EmptyState({
