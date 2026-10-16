@@ -1,4 +1,5 @@
 import { fileURLToPath } from "node:url"
+import AxeBuilder from "@axe-core/playwright"
 import { type Locator, type Page, expect, request } from "@playwright/test"
 
 export interface User {
@@ -92,15 +93,54 @@ export async function screenshot(
   }
 }
 
+interface AxeOptions {
+  /** Rules to leave out. */
+  except?: string[]
+  /** Checks only what this selector matches, which leaves out the rules about the page as a whole. */
+  within?: string
+}
+
+/**
+ * What axe finds wrong on the page as it is, one "rule: selector (why)" line for each place.
+ * Colour contrast is checked, since this is a real browser with the real stylesheet.
+ *
+ * A Radix modal menu hides the rest of the page from assistive technology while it is open, which
+ * makes the page as a whole fail rules that are about the page (no heading, content outside a
+ * landmark, a hidden element that has the focus). A menu is therefore checked by itself with
+ * `within`, which holds it to every rule there is.
+ */
+export async function axeViolations(page: Page, { except = [], within }: AxeOptions = {}) {
+  // A panel fades in: contrast is only the one the user reads once it has stopped.
+  await page.evaluate(() =>
+    Promise.all(
+      document
+        .getAnimations()
+        .filter((animation) => Number.isFinite(animation.effect?.getComputedTiming().endTime))
+        .map((animation) => animation.finished.catch(() => undefined)),
+    ),
+  )
+  let builder = new AxeBuilder({ page }).disableRules(except)
+  if (within) {
+    builder = builder.include(within)
+  }
+  const results = await builder.analyze()
+  return results.violations.flatMap(({ id, nodes }) =>
+    nodes.map(({ target, any, all, none }) => {
+      const why = [...any, ...all, ...none].map(({ message }) => message).join(" ")
+      return `${id}: ${target.join(" ")} (${why})`
+    }),
+  )
+}
+
 /** What the API-backed helpers below use: JSON in and out, and the CSRF header on writes. */
-interface ApiClient {
+export interface ApiClient {
   get<T>(path: string): Promise<T>
   post<T>(path: string, data: unknown): Promise<T>
   delete(path: string): Promise<void>
 }
 
 /** Runs `run` with an API client signed in as `user`, so a spec can arrange data without the UI. */
-async function withApi<T>(
+export async function withApi<T>(
   baseURL: string,
   user: Pick<User, "email" | "password">,
   run: (api: ApiClient) => Promise<T>,
