@@ -25,7 +25,7 @@ export class ApiError extends Error {
   code: string
   detail: string
   errors: FieldError[]
-  /** Seconds to wait before retrying, from the Retry-After header of a 429. */
+  /** Seconds to wait before retrying, from the Retry-After header of a 429 or a 503. */
   retryAfter?: number
   /** Every problem of a formula the server refused (`formula.*` codes), in full. */
   formulaErrors: FormulaProblem[]
@@ -53,7 +53,7 @@ export function errorDetail(error: unknown): string {
   return error instanceof ApiError ? error.detail : FALLBACK_DETAIL
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null
 }
 

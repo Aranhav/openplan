@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { queryKeys } from "./keys"
+import { LINE_ITEM_ERRORS, pivotOfKey, queryKeys } from "./keys"
 
 describe("queryKeys.query", () => {
   it("starts with the model's key, so invalidating a model reaches its queries", () => {
@@ -25,5 +25,15 @@ describe("queryKeys.structure", () => {
     expect(queryKeys.structure("m1").slice(0, queryKeys.query("m1").length)).not.toEqual(
       queryKeys.query("m1"),
     )
+  })
+})
+
+describe("pivotOfKey", () => {
+  it("finds the pivot of a view and the part that names another query", () => {
+    const pivot = { module: "mod", rows: [], columns: [] }
+
+    expect(pivotOfKey(queryKeys.query("m1", pivot, { rowBlock: 0, colBlock: 0 }))).toBe(pivot)
+    expect(pivotOfKey(queryKeys.query("m1", LINE_ITEM_ERRORS, "mod"))).toBe(LINE_ITEM_ERRORS)
+    expect(pivotOfKey(queryKeys.query("m1"))).toBeUndefined()
   })
 })

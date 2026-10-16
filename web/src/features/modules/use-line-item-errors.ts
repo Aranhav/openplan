@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query"
 import { queryView } from "@/features/grid/query-api"
 import type { FormulaError, QueryResult } from "@/features/grid/view-types"
 import type { ModuleDto } from "@/features/structure/types"
-import { queryKeys } from "@/lib/api/keys"
+import { LINE_ITEM_ERRORS, queryKeys } from "@/lib/api/keys"
 import { defaultPivot } from "./default-view"
 
 const NO_ERRORS = new Map<string, FormulaError[]>()
@@ -25,7 +25,7 @@ export function useLineItemErrors(modelId: string, module: ModuleDto, enabled: b
   const { data } = useQuery({
     enabled,
     // Under the key of every query of the model, so that a change to the structure reads it again.
-    queryKey: queryKeys.query(modelId, "line-item-errors", module.id),
+    queryKey: queryKeys.query(modelId, LINE_ITEM_ERRORS, module.id),
     queryFn: ({ signal }) =>
       queryView(
         modelId,

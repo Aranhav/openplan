@@ -20,6 +20,23 @@ export const queryKeys = {
   users: ["users"],
 } as const
 
+/** What a model's deletion is run under, so that what follows the model can tell it was deleted. */
+export const mutationKeys = {
+  deleteModel: ["delete-model"],
+} as const
+
+/** The part of a query key that tells the formula errors of a module from the pivot of a view. */
+export const LINE_ITEM_ERRORS = "line-item-errors"
+
+/**
+ * The pivot a view's key holds: `queryKeys.query(modelId, pivot, block)` puts it right after the
+ * model's `query` key. It is not an object for another query of the model, such as the formula
+ * errors of a module.
+ */
+export function pivotOfKey(queryKey: readonly unknown[]): unknown {
+  return queryKey[queryKeys.query("").length]
+}
+
 /** Matches the members list of every workspace, for a change that shows on all of them. */
 export function isMembersKey(queryKey: readonly unknown[]) {
   return queryKey[0] === "workspaces" && queryKey[2] === "members"

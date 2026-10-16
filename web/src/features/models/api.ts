@@ -1,6 +1,6 @@
 import { skipToken, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { ApiError, api, unwrap } from "@/lib/api/client"
-import { queryKeys } from "@/lib/api/keys"
+import { mutationKeys, queryKeys } from "@/lib/api/keys"
 import type { components } from "@/lib/api/schema"
 
 type CreateModelRequest = components["schemas"]["CreateModelRequest"]
@@ -58,6 +58,7 @@ export function useUpdateModel(id: string) {
 export function useDeleteModel() {
   const queryClient = useQueryClient()
   return useMutation({
+    mutationKey: mutationKeys.deleteModel,
     mutationFn: ({ id }: Pick<ModelDto, "id" | "workspace_id">) =>
       unwrap(api.DELETE("/models/{id}", { params: { path: { id } } })),
     onSuccess: (_, { id, workspace_id }) => {

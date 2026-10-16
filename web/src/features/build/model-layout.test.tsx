@@ -1,4 +1,5 @@
 import { act, screen, waitFor, within } from "@testing-library/react"
+import { HttpResponse, http } from "msw"
 import { describe, expect, it } from "vitest"
 import {
   makeModel,
@@ -9,9 +10,25 @@ import {
   workspace,
 } from "@/test/app"
 import { FakeWebSocket } from "@/test/live"
+import { server } from "@/test/server"
 import { structure } from "@/test/structure"
 
 const model = makeModel({ name: "Revenue plan" })
+
+/** Answers the requests for a ticket, and notes whose they were. */
+function serveTickets() {
+  const asked: string[] = []
+  server.use(
+    http.post("/api/v1/models/:id/live/ticket", ({ params }) => {
+      asked.push(String(params.id))
+      return HttpResponse.json({
+        ticket: "ticket",
+        url: `ws://localhost/api/v1/models/${String(params.id)}/live`,
+      })
+    }),
+  )
+  return asked
+}
 
 function openApp(path: string) {
   mockSession()
@@ -90,13 +107,40 @@ describe("following the model live", () => {
     expect(FakeWebSocket.last.closedWith).toBe(1000)
   })
 
-  it("follows no model that is gone", async () => {
+  it("asks for no ticket and opens no socket for a model that is gone", async () => {
+    const tickets = serveTickets()
     mockSession()
     serveModels([])
     renderApp(`/m/${model.id}/modules`)
 
     await screen.findByRole("heading", { level: 1, name: "Model not found" })
 
-    expect(FakeWebSocket.sockets.every((socket) => socket.closedWith !== undefined)).toBe(true)
+    expect(tickets).toHaveLength(0)
+    expect(FakeWebSocket.sockets).toHaveLength(0)
+  })
+
+  it("waits until the model is known before it follows it", async () => {
+    const tickets = serveTickets()
+    let release = () => {}
+    const held = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    mockSession()
+    serveModels([model])
+    server.use(
+      http.get("/api/v1/models/:id", async () => {
+        await held
+        return HttpResponse.json(model)
+      }),
+    )
+    serveStructure(structure)
+    renderApp(`/m/${model.id}/modules`)
+    await screen.findByRole("heading", { level: 1, name: "Modules" })
+
+    expect(tickets).toHaveLength(0)
+    release()
+
+    await waitFor(() => expect(FakeWebSocket.sockets).toHaveLength(1))
+    expect(tickets).toEqual([model.id])
   })
 })
