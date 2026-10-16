@@ -70,6 +70,16 @@ describe("the items of a list with a parent list", () => {
     expect(table.getByRole("button", { name: "Rename France" })).toBeVisible()
   })
 
+  it("have a header whose name holds the words it shows", async () => {
+    openList()
+
+    const table = await findTable()
+    const group = table.getByRole("button", { name: "EMEA, 2 items" })
+    // WCAG 2.5.3: what is read out starts with what is on the button (axe's label-content-name-mismatch).
+    expect(group.textContent).toBe("EMEA 2")
+    expect(group.getAttribute("aria-label")?.replace(/[^\w ]/g, "")).toContain(group.textContent)
+  })
+
   it("name their parent in a column", async () => {
     openList()
 

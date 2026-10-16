@@ -178,6 +178,8 @@ export function ItemsTable({
                         className={cn("transition-transform", !row.collapsed && "rotate-90")}
                       />
                       <span className="truncate">{row.parent.name}</span>
+                      {/* The space keeps the text of the button, "EMEA 2", in its name. */}
+                      {" "}
                       <Badge variant="secondary">{row.count.toLocaleString("en")}</Badge>
                     </Button>
                   </TableCell>
