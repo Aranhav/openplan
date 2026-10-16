@@ -16,10 +16,7 @@ import {
 import { useStructure } from "@/features/structure/api"
 import { axisLabel } from "@/features/structure/labels"
 import { groupModules } from "@/features/structure/modules"
-import type { components } from "@/lib/api/schema"
-
-type Structure = components["schemas"]["StructureDto"]
-type ModuleDto = components["schemas"]["ModuleDto"]
+import type { ModuleDto, StructureDto } from "@/features/structure/types"
 
 export function ModulesPage({ modelId }: { modelId: string }) {
   const structure = useStructure(modelId)
@@ -39,7 +36,7 @@ export function ModulesPage({ modelId }: { modelId: string }) {
   )
 }
 
-function Modules({ modelId, structure }: { modelId: string; structure: Structure }) {
+function Modules({ modelId, structure }: { modelId: string; structure: StructureDto }) {
   if (structure.modules.length === 0) {
     return (
       <EmptyState
@@ -74,7 +71,7 @@ interface ModulesTableProps {
   name: string
   modules: ModuleDto[]
   modelId: string
-  structure: Structure
+  structure: StructureDto
 }
 
 function ModulesTable({ name, modules, modelId, structure }: ModulesTableProps) {

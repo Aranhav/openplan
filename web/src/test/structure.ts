@@ -1,8 +1,4 @@
-import type { components } from "@/lib/api/schema"
-
-export type StructureDto = components["schemas"]["StructureDto"]
-export type ModuleDto = components["schemas"]["ModuleDto"]
-export type LineItemDto = components["schemas"]["LineItemDto"]
+import type { LineItemDto, ModuleDto, StructureDto } from "@/features/structure/types"
 
 export const regionsId = "0192f3a0-0000-7000-8000-000000000101"
 export const productsId = "0192f3a0-0000-7000-8000-000000000102"

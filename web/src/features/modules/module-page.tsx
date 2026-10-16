@@ -16,11 +16,8 @@ import {
 } from "@/components/ui/table"
 import { useStructure } from "@/features/structure/api"
 import { axisLabel, formatLabel } from "@/features/structure/labels"
+import type { ModuleDto, StructureDto } from "@/features/structure/types"
 import { useDocumentTitle } from "@/hooks/use-document-title"
-import type { components } from "@/lib/api/schema"
-
-type Structure = components["schemas"]["StructureDto"]
-type ModuleDto = components["schemas"]["ModuleDto"]
 
 interface ModulePageProps {
   modelId: string
@@ -89,7 +86,7 @@ function ModuleNotFound({ modelId }: { modelId: string }) {
 
 interface ModuleDetailsProps {
   module: ModuleDto
-  structure: Structure
+  structure: StructureDto
   selected?: string
 }
 

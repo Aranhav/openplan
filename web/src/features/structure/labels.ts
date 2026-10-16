@@ -1,8 +1,8 @@
 /** The words the screens use for the parts of a structure: formats, dimensions, summaries and months. */
 import type { components } from "@/lib/api/schema"
+import type { StructureDto } from "./types"
 
 type Schemas = components["schemas"]
-type Structure = Schemas["StructureDto"]
 
 const TIME_LEVEL_LABELS: Record<Schemas["TimeLevelDto"], string> = {
   month: "Month",
@@ -46,7 +46,7 @@ function numberLabel(unit: Schemas["NumberUnitDto"]) {
 }
 
 /** "Number", "Currency (USD)", "Percent", "Boolean", "Text", "Date", "List: Regions" or "Time period: Month". */
-export function formatLabel(format: Schemas["FormatDto"], structure: Structure) {
+export function formatLabel(format: Schemas["FormatDto"], structure: StructureDto) {
   switch (format.type) {
     case "number":
       return numberLabel(format.unit)
@@ -66,7 +66,7 @@ export function formatLabel(format: Schemas["FormatDto"], structure: Structure) 
 }
 
 /** A dimension of a module: the name of its list or subset, "Time (Month)" or "Versions". */
-export function axisLabel(axis: Schemas["AxisDto"], structure: Structure) {
+export function axisLabel(axis: Schemas["AxisDto"], structure: StructureDto) {
   switch (axis.kind) {
     case "list":
       return structure.lists.find((list) => list.id === axis.list)?.name ?? "List"
@@ -82,7 +82,7 @@ export function axisLabel(axis: Schemas["AxisDto"], structure: Structure) {
   }
 }
 
-export function dimsLabel(axes: Schemas["AxisDto"][], structure: Structure) {
+export function dimsLabel(axes: Schemas["AxisDto"][], structure: StructureDto) {
   return axes.length === 0 ? "None" : axes.map((axis) => axisLabel(axis, structure)).join(", ")
 }
 
@@ -97,7 +97,7 @@ export function timeScaleLabel(scale: Schemas["TimeScaleDto"]) {
   return scale === "none" ? "None" : timeLevelLabel(scale.level)
 }
 
-export function versionsLabel(scope: Schemas["VersionsScopeDto"], structure: Structure) {
+export function versionsLabel(scope: Schemas["VersionsScopeDto"], structure: StructureDto) {
   if (scope === "module") {
     return MODULE_DEFAULT
   }

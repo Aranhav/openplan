@@ -19,11 +19,9 @@ import {
 import { useModel } from "@/features/models/api"
 import { useStructure } from "@/features/structure/api"
 import { type ModuleGroups, groupModules } from "@/features/structure/modules"
+import type { ModuleDto } from "@/features/structure/types"
 import { ApiError } from "@/lib/api/client"
-import type { components } from "@/lib/api/schema"
 import { BUILD_GROUPS, type BuildPage } from "./build-nav"
-
-type ModuleDto = components["schemas"]["ModuleDto"]
 
 interface BuildSidebarProps {
   modelId: string

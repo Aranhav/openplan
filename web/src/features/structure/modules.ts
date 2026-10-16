@@ -1,6 +1,4 @@
-import type { components } from "@/lib/api/schema"
-
-type ModuleDto = components["schemas"]["ModuleDto"]
+import type { ModuleDto } from "./types"
 
 export interface ModuleGroups {
   /** The modules that are in no functional area. */

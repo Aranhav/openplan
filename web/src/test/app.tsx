@@ -8,7 +8,8 @@ import { createAppRouter } from "@/router"
 import { problem } from "./problem"
 import { createTestQueryClient } from "./render"
 import { server } from "./server"
-import { type StructureDto, makeStructure } from "./structure"
+import type { StructureDto } from "@/features/structure/types"
+import { makeStructure } from "./structure"
 
 type MeResponse = components["schemas"]["MeResponse"]
 type ModelDto = components["schemas"]["ModelDto"]
