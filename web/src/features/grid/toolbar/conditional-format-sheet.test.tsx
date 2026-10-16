@@ -31,7 +31,14 @@ const margin = makeLineItem({
     negative: "minus",
   },
 })
-const model = makeStructure({ ...structure, line_items: [unitsSold, revenueAmount, margin] })
+const notes = makeLineItem({
+  id: "0192f3a0-0000-7000-8000-000000000405",
+  module: revenueModule.id,
+  name: "Notes",
+  ordinal: 3,
+  format: { type: "text" },
+})
+const model = makeStructure({ ...structure, line_items: [unitsSold, revenueAmount, margin, notes] })
 
 const initial: ViewDefinition = {
   rows: [{ kind: "line_items" }],
@@ -189,13 +196,80 @@ describe("the conditional formatting sheet", () => {
     expect(screen.queryByRole("textbox", { name: "Value of rule 1" })).not.toBeInTheDocument()
   })
 
-  it("says that a percentage is a fraction when the rule is for one", async () => {
-    renderSheet({
+  it("takes the number of a rule for percentages in percent points, as a cell does", async () => {
+    const user = userEvent.setup()
+    const { state } = renderSheet({
       ...initial,
-      conditional_formats: [{ ...healthy, line_item_ids: [margin.id] }],
+      conditional_formats: [{ ...healthy, line_item_ids: [margin.id], op: "lt", value: 0.05, value2: null }],
     })
 
-    expect(await screen.findByText("Percentages are compared as fractions: 0.05 is 5%.")).toBeVisible()
+    const value = await screen.findByRole("textbox", { name: "Value of rule 1" })
+    expect(value).toHaveValue("5")
+    expect(screen.queryByText(/compared as stored/)).not.toBeInTheDocument()
+    await user.clear(value)
+    await user.type(value, "7.5%")
+    await user.click(screen.getByRole("button", { name: "Apply rules" }))
+
+    expect(state.view.conditional_formats?.[0].value).toBe(0.075)
+  })
+
+  it("says that a number is compared as stored when the line items are not all percentages", async () => {
+    renderSheet({
+      ...initial,
+      conditional_formats: [{ ...healthy, line_item_ids: [margin.id, unitsSold.id], op: "lt", value: 0.05 }],
+    })
+
+    expect(
+      await screen.findByText(
+        "These line items are not all percentages, so a number is compared as stored: 0.05 is 5%.",
+      ),
+    ).toBeVisible()
+    expect(screen.getByRole("textbox", { name: "Value of rule 1" })).toHaveValue("0.05")
+  })
+
+  it("offers is blank only for line items that can be blank", async () => {
+    const user = userEvent.setup()
+    renderSheet({ ...initial, conditional_formats: [losses] })
+
+    await user.click(await screen.findByRole("combobox", { name: /Condition of rule 1/ }))
+    expect(await screen.findByRole("option", { name: "is blank" })).toHaveAttribute("aria-disabled", "true")
+    await user.keyboard("{Escape}")
+
+    await user.click(screen.getByRole("button", { name: /^Line items of rule 1/ }))
+    await user.click(await screen.findByRole("checkbox", { name: "Notes" }))
+    await user.keyboard("{Escape}")
+    await user.click(screen.getByRole("combobox", { name: /Condition of rule 1/ }))
+    expect(await screen.findByRole("option", { name: "is blank" })).not.toHaveAttribute("aria-disabled")
+  })
+
+  it("refuses a rule that is blank for numbers, which it was before the line items changed", async () => {
+    const user = userEvent.setup()
+    const { state } = renderSheet({
+      ...initial,
+      conditional_formats: [{ ...losses, op: "blank" }],
+    })
+
+    await user.click(await screen.findByRole("button", { name: "Apply rules" }))
+
+    expect(await screen.findByText(/A number is never blank/)).toBeVisible()
+    expect(state.actions).toEqual([])
+  })
+
+  it("gives the checkboxes of the line items ids without spaces, one set for each rule", async () => {
+    const user = userEvent.setup()
+    renderSheet({ ...initial, conditional_formats: [losses, healthy] })
+
+    await user.click(await screen.findByRole("button", { name: /^Line items of rule 2/ }))
+    const popover = await screen.findByRole("dialog", { name: "Line items of rule 2" })
+    const ids = within(popover)
+      .getAllByRole("checkbox")
+      .map((checkbox) => checkbox.getAttribute("id"))
+
+    expect(ids).toHaveLength(5)
+    for (const id of ids) {
+      expect(id).not.toMatch(/\s/)
+    }
+    expect(new Set(ids).size).toBe(5)
   })
 
   it("keeps a colour: choosing the chosen one again does not clear it", async () => {

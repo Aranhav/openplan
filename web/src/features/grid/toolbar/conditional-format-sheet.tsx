@@ -1,6 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { ArrowDown, ArrowUp, ChevronsUpDown, Plus, Trash2 } from "lucide-react"
-import { useEffect, useState } from "react"
+import { useEffect, useId, useState } from "react"
 import { type UseFormReturn, useFieldArray, useForm, useWatch } from "react-hook-form"
 import { z } from "zod"
 import { DiscardChangesDialog } from "@/components/discard-changes-dialog"
@@ -48,9 +48,12 @@ import {
   FORMAT_OP_LABELS,
   MAX_RULES,
   type RuleRow,
+  canBeBlank,
+  mixesPercent,
   newRule,
   ruleProblems,
   ruleRows,
+  scopeOf,
   toFormats,
   valueCount,
 } from "./format-rules"
@@ -65,27 +68,34 @@ const SWATCH: Record<FormatColor, string> = {
   muted: "bg-neutral-500",
 }
 
-const schema = z.object({
-  rules: z
-    .array(
-      z.object({
-        name: z.string().trim().min(1, "Name is required.").max(80, "Name must be at most 80 characters."),
-        line_item_ids: z.array(z.string()),
-        op: z.enum(FORMAT_OPS as [FormatOp, ...FormatOp[]]),
-        value: z.string(),
-        value2: z.string(),
-        color: z.enum(FORMAT_COLORS as [FormatColor, ...FormatColor[]]),
-        bold: z.boolean(),
+/** The rules of the form, with what is wrong with each by the line items it is for. */
+function schemaFor(lineItems: readonly LineItemDto[]) {
+  return z.object({
+    rules: z
+      .array(
+        z.object({
+          name: z
+            .string()
+            .trim()
+            .min(1, "Name is required.")
+            .max(80, "Name must be at most 80 characters."),
+          line_item_ids: z.array(z.string()),
+          op: z.enum(FORMAT_OPS as [FormatOp, ...FormatOp[]]),
+          value: z.string(),
+          value2: z.string(),
+          color: z.enum(FORMAT_COLORS as [FormatColor, ...FormatColor[]]),
+          bold: z.boolean(),
+        }),
+      )
+      .superRefine((rules, ctx) => {
+        rules.forEach((rule, index) => {
+          for (const [field, message] of Object.entries(ruleProblems(rule, lineItems))) {
+            ctx.addIssue({ code: "custom", path: [index, field], message })
+          }
+        })
       }),
-    )
-    .superRefine((rules, ctx) => {
-      rules.forEach((rule, index) => {
-        for (const [field, message] of Object.entries(ruleProblems(rule))) {
-          ctx.addIssue({ code: "custom", path: [index, field], message })
-        }
-      })
-    }),
-})
+  })
+}
 
 interface FormValues {
   rules: RuleRow[]
@@ -162,8 +172,8 @@ interface RulesFormProps {
 // A separate component, so the rules start from the view's each time the sheet opens.
 function RulesForm({ lineItems, formats, dirtyRef, onApply, onCancel }: RulesFormProps) {
   const form = useForm<FormValues>({
-    resolver: zodResolver(schema),
-    defaultValues: { rules: ruleRows(formats) },
+    resolver: zodResolver(schemaFor(lineItems)),
+    defaultValues: { rules: ruleRows(formats, lineItems) },
   })
   const { fields, append, remove, move } = useFieldArray({ control: form.control, name: "rules" })
   const [announcement, setAnnouncement] = useState("")
@@ -186,7 +196,7 @@ function RulesForm({ lineItems, formats, dirtyRef, onApply, onCancel }: RulesFor
     <Form {...form}>
       <form
         noValidate
-        onSubmit={form.handleSubmit((values) => onApply(toFormats(values.rules)))}
+        onSubmit={form.handleSubmit((values) => onApply(toFormats(values.rules, lineItems)))}
         className="flex min-h-0 flex-1 flex-col"
       >
         <div className="flex flex-1 flex-col gap-3 overflow-y-auto px-4 py-4">
@@ -249,13 +259,8 @@ function RuleCard({ form, index, count, lineItems, onMove, onRemove }: RuleCardP
   const rule = useWatch({ control: form.control, name: `rules.${index}` })
   const number = index + 1
   const values = valueCount(rule.op)
-  const scope =
-    rule.line_item_ids.length === 0
-      ? lineItems.filter((item) => item.format.type === "number")
-      : lineItems.filter((item) => rule.line_item_ids.includes(item.id))
-  const hasPercent = scope.some(
-    (item) => item.format.type === "number" && item.format.unit.type === "percent",
-  )
+  const mixed = mixesPercent(scopeOf(rule.line_item_ids, lineItems))
+  const blankPossible = canBeBlank(rule.line_item_ids, lineItems)
 
   return (
     <li className="flex flex-col gap-3 rounded-lg border p-3">
@@ -336,7 +341,8 @@ function RuleCard({ form, index, count, lineItems, onMove, onRemove }: RuleCardP
                 </FormControl>
                 <SelectContent>
                   {FORMAT_OPS.map((op) => (
-                    <SelectItem key={op} value={op}>
+                    // A number is never blank: the condition waits for a line item that can be.
+                    <SelectItem key={op} value={op} disabled={op === "blank" && !blankPossible}>
                       {FORMAT_OP_LABELS[op]}
                     </SelectItem>
                   ))}
@@ -377,9 +383,9 @@ function RuleCard({ form, index, count, lineItems, onMove, onRemove }: RuleCardP
           />
         )}
       </div>
-      {hasPercent && values >= 1 && (
+      {mixed && values >= 1 && (
         <p className="-mt-1 text-xs text-muted-foreground">
-          Percentages are compared as fractions: 0.05 is 5%.
+          These line items are not all percentages, so a number is compared as stored: 0.05 is 5%.
         </p>
       )}
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -448,6 +454,8 @@ interface LineItemsPickerProps {
 
 /** Chooses the line items a rule is for; none chosen is every line item with a number. */
 function LineItemsPicker({ label, lineItems, value, onChange }: LineItemsPickerProps) {
+  // Ids that are made for this picker: the label has spaces, which an id may not have.
+  const idBase = useId()
   const chosen = lineItems.filter((item) => value.includes(item.id))
   const summary =
     chosen.length === 0
@@ -477,22 +485,22 @@ function LineItemsPicker({ label, lineItems, value, onChange }: LineItemsPickerP
           <ul className="flex flex-col">
             <li className="flex items-center gap-2 rounded-sm px-1 py-1.5 hover:bg-accent">
               <Checkbox
-                id={`${label}-all`}
+                id={`${idBase}-all`}
                 checked={value.length === 0}
                 onCheckedChange={(checked) => checked === true && onChange([])}
               />
-              <Label htmlFor={`${label}-all`} className="flex-1">
+              <Label htmlFor={`${idBase}-all`} className="flex-1">
                 All number line items
               </Label>
             </li>
             {lineItems.map((item) => (
               <li key={item.id} className="flex items-center gap-2 rounded-sm px-1 py-1.5 hover:bg-accent">
                 <Checkbox
-                  id={`${label}-${item.id}`}
+                  id={`${idBase}-${item.id}`}
                   checked={value.includes(item.id)}
                   onCheckedChange={(checked) => toggle(item.id, checked === true)}
                 />
-                <Label htmlFor={`${label}-${item.id}`} className="min-w-0 flex-1 truncate">
+                <Label htmlFor={`${idBase}-${item.id}`} className="min-w-0 flex-1 truncate">
                   {item.name}
                 </Label>
               </li>
