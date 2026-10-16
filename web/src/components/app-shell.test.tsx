@@ -232,7 +232,7 @@ describe("the header", () => {
       "href",
       `/m/${model.id}/modules`,
     )
-    expect(within(crumbs).getByRole("link", { name: "Revenue plan" })).toBeInTheDocument()
+    expect(await within(crumbs).findByRole("link", { name: "Revenue plan" })).toBeInTheDocument()
   })
 
   it("folds the crumbs above a model's screen into a menu on a narrow header and truncates them on a wide one", async () => {
@@ -251,9 +251,8 @@ describe("the header", () => {
       expect(crumb.closest("li")?.className).toMatch(/\bhidden\b.*\bxl:inline-flex\b/)
       expect(crumb.className).toMatch(/\btruncate\b/)
     }
-    expect(crumbs.getByText("Revenue", { selector: "[aria-current=page]" }).className).toMatch(
-      /\btruncate\b/,
-    )
+    const current = await crumbs.findByText("Revenue", { selector: "[aria-current=page]" })
+    expect(current.className).toMatch(/\btruncate\b/)
     const separators = document.querySelectorAll("[data-slot=breadcrumb-separator]")
     expect([...separators].map((separator) => separator.className)).toEqual([
       expect.stringMatching(/\bxl:hidden\b/),
@@ -270,6 +269,7 @@ describe("the header", () => {
     const { router } = renderApp(`/m/${model.id}/modules/${revenueModule.id}`)
 
     const crumbs = within(await screen.findByRole("navigation", { name: "breadcrumb" }))
+    await crumbs.findByRole("link", { name: "Revenue plan" })
     await typist.click(await crumbs.findByRole("button", { name: "Show the path to this page" }))
     const items = within(await screen.findByRole("menu")).getAllByRole("menuitem")
     expect(items.map((item) => item.textContent)).toEqual(["Acme Corp", "Revenue plan", "Modules"])
@@ -348,7 +348,7 @@ describe("the header", () => {
       "title",
       "Revenue",
     )
-    expect(crumbs.getByRole("link", { name: "Revenue plan" })).toHaveAttribute(
+    expect(await crumbs.findByRole("link", { name: "Revenue plan" })).toHaveAttribute(
       "title",
       "Revenue plan",
     )
