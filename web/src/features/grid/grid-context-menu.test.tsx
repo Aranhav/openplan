@@ -533,6 +533,29 @@ describe("collapsing from a cell", () => {
       ])
     })
 
+    it("is the cell's menu again when the next one opens without a right click, as a long press does", async () => {
+      const { grid } = await renderHierarchy()
+      await openMenu(headerOf(grid, "rowheader", "EMEA"))
+      expect(screen.getAllByRole("menuitem").map((entry) => entry.textContent)).toEqual([
+        "Collapse EMEA",
+      ])
+      await userEvent.keyboard("{Escape}")
+      await waitFor(() => expect(screen.queryByRole("menu")).not.toBeInTheDocument())
+
+      // Radix opens a menu on a touch that is held, with no contextmenu event to set a target.
+      fireEvent.pointerDown(cellAt(grid, 2, 1), {
+        pointerType: "touch",
+        button: 0,
+        clientX: 100,
+        clientY: 100,
+      })
+
+      await screen.findByRole("menu", undefined, { timeout: 2000 })
+      expect(item(/^Copy/)).toBeInTheDocument()
+      expect(item(/^Paste/)).toBeInTheDocument()
+      expect(item(/^Fill down/)).toBeInTheDocument()
+    })
+
     it("leaves a header with nothing to offer, such as a row header without children, to the browser", async () => {
       const { grid } = await renderHierarchy()
 

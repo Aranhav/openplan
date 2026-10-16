@@ -167,6 +167,9 @@ export function useCellMenu({
     onPaste: () => void editing.pasteFromClipboard(),
     onFillDown: () => void editing.fillDown(),
     onCloseAutoFocus: (event: Event) => {
+      // The menu is gone, and the next one is a cell's unless a header's right click says
+      // otherwise: a long press on a touch screen opens it without a right click to say so.
+      setTarget({ kind: "cell" })
       // The keyboard goes back to the grid, unless a form for the width takes it from here.
       event.preventDefault()
       if (widthRequested.current) {
