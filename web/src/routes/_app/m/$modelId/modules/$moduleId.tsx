@@ -12,6 +12,19 @@ export const Route = createFileRoute("/_app/m/$modelId/modules/$moduleId")({
 
 function ModuleRoute() {
   const { modelId, moduleId } = Route.useParams()
-  const { li } = Route.useSearch()
-  return <ModulePage modelId={modelId} moduleId={moduleId} selectedLineItemId={li} />
+  const { tab, li } = Route.useSearch()
+  const navigate = Route.useNavigate()
+  return (
+    <ModulePage
+      modelId={modelId}
+      moduleId={moduleId}
+      tab={tab ?? "grid"}
+      selectedLineItemId={li}
+      onTabChange={(next) => void navigate({ search: (previous) => ({ ...previous, tab: next }) })}
+      // Moving the selection is not a step to go back over.
+      onSelectLineItem={(id) =>
+        void navigate({ search: (previous) => ({ ...previous, li: id }), replace: true })
+      }
+    />
+  )
 }

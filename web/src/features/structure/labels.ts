@@ -86,8 +86,13 @@ export function dimsLabel(axes: Schemas["AxisDto"][], structure: StructureDto) {
   return axes.length === 0 ? "None" : axes.map((axis) => axisLabel(axis, structure)).join(", ")
 }
 
+/** The name of a summary method on its own: "Sum", "Opening balance". */
+export function summaryMethodLabel(method: Schemas["SummaryMethodDto"]["method"]) {
+  return SUMMARY_LABELS[method]
+}
+
 export function summaryLabel(method: Schemas["SummaryMethodDto"]) {
-  return SUMMARY_LABELS[method.method]
+  return summaryMethodLabel(method.method)
 }
 
 export function timeScaleLabel(scale: Schemas["TimeScaleDto"]) {

@@ -1,41 +1,51 @@
-import { Link } from "@tanstack/react-router"
-import { ArrowLeft, Folder, Grid3x3, Rows3 } from "lucide-react"
+import { Link, useNavigate } from "@tanstack/react-router"
+import { ArrowLeft, Folder, Grid3x3, Settings } from "lucide-react"
+import { useState } from "react"
+import { toast } from "sonner"
 import { EmptyState } from "@/components/empty-state"
 import { ErrorState } from "@/components/error-state"
 import { PageHeader } from "@/components/page-header"
+import { ProductionLock, ProductionNotice } from "@/components/production-lock"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table"
-import { useStructure } from "@/features/structure/api"
-import { axisLabel, formatLabel } from "@/features/structure/labels"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { useStructure, useUpdateModule } from "@/features/structure/api"
+import { axisLabel } from "@/features/structure/labels"
 import type { ModuleDto, StructureDto } from "@/features/structure/types"
+import { canEditCells } from "@/features/workspaces/roles"
+import { useCurrentWorkspace } from "@/hooks/use-current-workspace"
 import { useDocumentTitle } from "@/hooks/use-document-title"
+import { useRestoreFocus } from "@/hooks/use-restore-focus"
+import { useStructureAccess } from "@/hooks/use-structure-access"
+import { Blueprint } from "./blueprint"
+import { ModuleGrid } from "./module-grid"
+import { ModuleSettingsSheet } from "./module-settings-sheet"
+import { ModuleTitle } from "./module-title"
+
+type ModuleTab = "grid" | "blueprint"
 
 interface ModulePageProps {
   modelId: string
   moduleId: string
-  /** The line item to mark, from the address. */
+  tab: ModuleTab
+  onTabChange: (tab: ModuleTab) => void
+  /** The selected line item of the Blueprint, from the address. */
   selectedLineItemId?: string
+  onSelectLineItem: (id: string | undefined) => void
 }
 
-export function ModulePage({ modelId, moduleId, selectedLineItemId }: ModulePageProps) {
+export function ModulePage({ modelId, moduleId, ...rest }: ModulePageProps) {
   const structure = useStructure(modelId)
-  const module = structure.data?.modules.find((candidate) => candidate.id === moduleId)
+  const { isLoading } = useStructureAccess(modelId)
+  // The module waits for the user's role too, so the controls of a builder do not appear late.
+  const loaded = isLoading ? undefined : structure.data
+  const module = loaded?.modules.find((candidate) => candidate.id === moduleId)
 
-  if (module && structure.data) {
-    return (
-      <ModuleDetails module={module} structure={structure.data} selected={selectedLineItemId} />
-    )
+  if (module && loaded) {
+    return <ModuleScreen modelId={modelId} module={module} structure={loaded} {...rest} />
   }
-  if (structure.data) {
+  if (loaded && !structure.isFetching) {
     return <ModuleNotFound modelId={modelId} />
   }
   if (structure.isError) {
@@ -46,6 +56,7 @@ export function ModulePage({ modelId, moduleId, selectedLineItemId }: ModulePage
       </>
     )
   }
+  // The structure is on its way, or the module just left it and the page is about to leave too.
   return (
     <>
       <PageHeader title="Module" />
@@ -84,23 +95,45 @@ function ModuleNotFound({ modelId }: { modelId: string }) {
   )
 }
 
-interface ModuleDetailsProps {
+interface ModuleScreenProps extends Omit<ModulePageProps, "moduleId"> {
   module: ModuleDto
   structure: StructureDto
-  selected?: string
 }
 
-function ModuleDetails({ module, structure, selected }: ModuleDetailsProps) {
-  const lineItems = structure.line_items
-    .filter((item) => item.module === module.id)
-    .sort((a, b) => a.ordinal - b.ordinal)
+function ModuleScreen({
+  modelId,
+  module,
+  structure,
+  tab,
+  onTabChange,
+  selectedLineItemId,
+  onSelectLineItem,
+}: ModuleScreenProps) {
+  useDocumentTitle(`${module.name} · OpenPlan`)
+  const navigate = useNavigate()
+  const { canEdit, locked } = useStructureAccess(modelId)
+  const { workspace } = useCurrentWorkspace()
+  const updateModule = useUpdateModule(modelId)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const { ref: settingsRef, onCloseAutoFocus: restoreFocus } = useRestoreFocus<HTMLButtonElement>()
 
   return (
     <>
-      <PageHeader
-        title={module.name}
-        description={
-          <div className="flex flex-wrap items-center gap-1.5">
+      <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex min-w-0 flex-col gap-1">
+          <ModuleTitle
+            name={module.name}
+            locked={locked}
+            onRename={
+              canEdit
+                ? async (name) => {
+                    await updateModule.mutateAsync({ moduleId: module.id, body: { name } })
+                    toast.success("Module renamed")
+                  }
+                : undefined
+            }
+          />
+          <div className="flex flex-wrap items-center gap-1.5 text-sm text-muted-foreground">
             {module.functional_area && (
               <span className="inline-flex items-center gap-1">
                 <Folder className="size-3.5" />
@@ -114,48 +147,65 @@ function ModuleDetails({ module, structure, selected }: ModuleDetailsProps) {
               </Badge>
             ))}
           </div>
-        }
-      />
-      {lineItems.length === 0 ? (
-        <EmptyState
-          icon={Rows3}
-          title="No line items yet"
-          description="Line items are the rows of a module."
-        />
-      ) : (
-        <div className="rounded-lg border">
-          <Table aria-label="Line items">
-            <TableHeader>
-              <TableRow>
-                <TableHead className="pl-4">Name</TableHead>
-                <TableHead>Format</TableHead>
-                <TableHead className="pr-4">Formula</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {lineItems.map((item) => {
-                const isSelected = item.id === selected
-                return (
-                  <TableRow
-                    key={item.id}
-                    data-state={isSelected ? "selected" : undefined}
-                    aria-current={isSelected ? "true" : undefined}
-                  >
-                    <TableCell className="pl-4 font-medium">{item.name}</TableCell>
-                    <TableCell>{formatLabel(item.format, structure)}</TableCell>
-                    <TableCell className="max-w-96 truncate pr-4" title={item.formula ?? undefined}>
-                      {item.formula ? (
-                        <code className="font-mono text-xs">{item.formula}</code>
-                      ) : (
-                        <span className="text-muted-foreground">Input</span>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                )
-              })}
-            </TableBody>
-          </Table>
         </div>
+        {canEdit && (
+          <div className="flex shrink-0 items-center gap-2">
+            <ProductionLock locked={locked}>
+              <Button
+                ref={settingsRef}
+                variant="outline"
+                disabled={locked}
+                onClick={() => setSettingsOpen(true)}
+              >
+                <Settings />
+                Module settings
+              </Button>
+            </ProductionLock>
+          </div>
+        )}
+      </div>
+      {locked && (
+        <div className="mb-4">
+          <ProductionNotice />
+        </div>
+      )}
+      <Tabs value={tab} onValueChange={(value) => onTabChange(value as ModuleTab)}>
+        <TabsList>
+          <TabsTrigger value="grid">Grid</TabsTrigger>
+          <TabsTrigger value="blueprint">Blueprint</TabsTrigger>
+        </TabsList>
+        <TabsContent value="grid" className="mt-2">
+          <ModuleGrid
+            modelId={modelId}
+            module={module}
+            structure={structure}
+            readOnly={workspace === undefined || !canEditCells(workspace.role)}
+            onOpenBlueprint={() => onTabChange("blueprint")}
+          />
+        </TabsContent>
+        <TabsContent value="blueprint" className="mt-2">
+          <Blueprint
+            modelId={modelId}
+            module={module}
+            structure={structure}
+            selectedId={selectedLineItemId}
+            onSelect={onSelectLineItem}
+            canEdit={canEdit}
+            locked={locked}
+          />
+        </TabsContent>
+      </Tabs>
+      {canEdit && (
+        <ModuleSettingsSheet
+          modelId={modelId}
+          structure={structure}
+          module={module}
+          open={settingsOpen}
+          onOpenChange={setSettingsOpen}
+          locked={locked}
+          onDeleted={() => void navigate({ to: "/m/$modelId/modules", params: { modelId } })}
+          onCloseAutoFocus={restoreFocus}
+        />
       )}
     </>
   )

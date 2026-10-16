@@ -1,4 +1,4 @@
-import type { ModuleDto } from "./types"
+import type { LineItemDto, ModuleDto, StructureDto } from "./types"
 
 export interface ModuleGroups {
   /** The modules that are in no functional area. */
@@ -23,4 +23,20 @@ export function groupModules(modules: readonly ModuleDto[]): ModuleGroups {
     .map(([name, grouped]) => ({ name, modules: grouped }))
     .sort((x, y) => x.name.localeCompare(y.name, undefined, { sensitivity: "base" }))
   return { ungrouped, areas }
+}
+
+/** The line items of a module in the order the Blueprint and the grid list them. */
+export function lineItemsOf(structure: StructureDto, moduleId: string): LineItemDto[] {
+  return structure.line_items
+    .filter((item) => item.module === moduleId)
+    .sort((a, b) => a.ordinal - b.ordinal)
+}
+
+/** How many line items each module has, by the module's id. */
+export function lineItemCounts(structure: StructureDto): Map<string, number> {
+  const counts = new Map<string, number>()
+  for (const item of structure.line_items) {
+    counts.set(item.module, (counts.get(item.module) ?? 0) + 1)
+  }
+  return counts
 }

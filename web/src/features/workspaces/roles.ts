@@ -17,6 +17,11 @@ export function canEditModels(role: WorkspaceRole): boolean {
   return role === "builder" || role === "admin"
 }
 
+/** Planners, builders and admins enter values in a model's cells; viewers only read them. */
+export function canEditCells(role: WorkspaceRole): boolean {
+  return role !== "viewer"
+}
+
 /** Admins manage a workspace's members. */
 export function canManageMembers(role: WorkspaceRole): boolean {
   return role === "admin"

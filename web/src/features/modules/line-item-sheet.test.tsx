@@ -1,0 +1,652 @@
+import { screen, waitFor, within } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
+import { toast } from "sonner"
+import { describe, expect, it, vi } from "vitest"
+import type { StructureDto } from "@/features/structure/types"
+import type { components } from "@/lib/api/schema"
+import { makeModel, me, mockSession, renderApp, serveModels, workspace } from "@/test/app"
+import { serveModuleStore } from "@/test/module-edits"
+import {
+  actualId,
+  forecastId,
+  makeLineItem,
+  makeModule,
+  makeStructure,
+  productsId,
+  regionsId,
+  revenueAmount,
+  revenueModule,
+  structure,
+  unitsSold,
+} from "@/test/structure"
+
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
+
+// Each test draws the whole app and drives it through msw, which is slow while the suite runs at once.
+vi.setConfig({ testTimeout: 20_000 })
+
+const model = makeModel({ name: "Revenue plan" })
+const PRODUCTION_MESSAGE =
+  "This model is in production mode. Structural changes arrive through ALM sync."
+
+const margin = makeLineItem({
+  id: "0192f3a0-0000-7000-8000-000000000404",
+  module: revenueModule.id,
+  name: "Margin",
+  ordinal: 2,
+  format: {
+    type: "number",
+    decimals: 1,
+    thousands_sep: true,
+    unit: { type: "percent" },
+    negative: "minus",
+  },
+})
+const withLineItems = makeStructure({
+  ...structure,
+  versions: [
+    { id: actualId, name: "Actual", is_actual: true, is_current: false },
+    { id: forecastId, name: "Forecast", is_actual: false, is_current: true },
+  ],
+  line_items: [unitsSold, revenueAmount, margin],
+})
+const blueprint = `/m/${model.id}/modules/${revenueModule.id}?tab=blueprint`
+
+type Typist = ReturnType<typeof userEvent.setup>
+
+async function openSheet(
+  typist: Typist,
+  lineItem = unitsSold.id,
+  {
+    modelStructure = withLineItems,
+    role = "admin",
+    mode = "dev",
+  }: {
+    modelStructure?: StructureDto
+    role?: components["schemas"]["WorkspaceRole"]
+    mode?: "dev" | "prod"
+  } = {},
+) {
+  mockSession({ me: { ...me, workspaces: [{ ...workspace, role }] } })
+  serveModels([{ ...model, mode }])
+  const store = serveModuleStore(modelStructure)
+  const app = renderApp(`${blueprint}&li=${lineItem}`)
+  const table = await within(await screen.findByRole("main")).findByRole("grid", {
+    name: "Line items",
+  })
+  table.focus()
+  await typist.keyboard("{Enter}")
+  const sheet = within(await screen.findByRole("dialog", { name: "Line item settings" }))
+  return { ...app, store, table, sheet }
+}
+
+async function choose(typist: Typist, combobox: HTMLElement, option: string) {
+  await typist.click(combobox)
+  await typist.click(await screen.findByRole("option", { name: option }))
+}
+
+async function save(typist: Typist, sheet: ReturnType<typeof within>) {
+  await typist.click(sheet.getByRole("button", { name: "Save changes" }))
+}
+
+describe("the settings of a line item", () => {
+  it("shows the line item as it is", async () => {
+    const typist = userEvent.setup()
+    const { sheet } = await openSheet(typist, revenueAmount.id)
+
+    expect(sheet.getByLabelText("Name")).toHaveValue("Revenue amount")
+    expect(sheet.getByLabelText("Code")).toHaveValue("")
+    expect(sheet.getByRole("combobox", { name: "Format type" })).toHaveTextContent("Number")
+    expect(sheet.getByLabelText("Decimals")).toHaveValue(2)
+    expect(sheet.getByRole("combobox", { name: "Unit" })).toHaveTextContent("Currency")
+    expect(sheet.getByLabelText("Currency code")).toHaveValue("USD")
+    expect(sheet.getByRole("switch", { name: "Thousands separator" })).toBeChecked()
+    expect(sheet.getByRole("radio", { name: "Parentheses" })).toBeChecked()
+    expect(sheet.getByLabelText("Formula")).toHaveValue("Units sold * Pricing.Unit price")
+    expect(sheet.getByRole("combobox", { name: "Summary" })).toHaveTextContent("Sum")
+    expect(sheet.getByRole("combobox", { name: "Time summary" })).toHaveTextContent(
+      "Same as summary",
+    )
+    expect(
+      within(sheet.getByRole("radiogroup", { name: "Applies to" })).getByRole("radio", {
+        name: /Module default/,
+      }),
+    ).toBeChecked()
+    expect(sheet.getByRole("combobox", { name: "Time scale" })).toHaveTextContent("Module default")
+    expect(sheet.getByLabelText("Notes")).toHaveValue("")
+    expect(sheet.getByRole("button", { name: "Save changes" })).toBeDisabled()
+  })
+
+  it("names the line item and its module", async () => {
+    const typist = userEvent.setup()
+    await openSheet(typist)
+
+    expect(screen.getByText("Units sold", { selector: "span.font-medium" })).toBeVisible()
+    expect(screen.getByRole("dialog", { name: "Line item settings" })).toHaveTextContent(
+      "Units sold in Revenue.",
+    )
+  })
+
+  it("saves a new name, code and notes, sending only those", async () => {
+    const typist = userEvent.setup()
+    const { store, sheet } = await openSheet(typist)
+
+    await typist.clear(sheet.getByLabelText("Name"))
+    await typist.type(sheet.getByLabelText("Name"), "Units")
+    await typist.type(sheet.getByLabelText("Code"), "U1")
+    await typist.type(sheet.getByLabelText("Notes"), "Per month")
+    await save(typist, sheet)
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+    expect(store.requests).toEqual([
+      {
+        action: "update line item",
+        id: unitsSold.id,
+        body: { name: "Units", code: "U1", notes: "Per month" },
+      },
+    ])
+    expect(toast.success).toHaveBeenCalledWith("Line item saved")
+  })
+
+  it("brings focus back to the table once it is saved", async () => {
+    const typist = userEvent.setup()
+    const { table, sheet } = await openSheet(typist)
+
+    await typist.type(sheet.getByLabelText("Notes"), "x")
+    await save(typist, sheet)
+
+    await waitFor(() => expect(table).toHaveFocus())
+  })
+
+  it("shows a name that is taken under the name", async () => {
+    const typist = userEvent.setup()
+    const { sheet } = await openSheet(typist)
+
+    await typist.clear(sheet.getByLabelText("Name"))
+    await typist.type(sheet.getByLabelText("Name"), "Margin")
+    await save(typist, sheet)
+
+    expect(await sheet.findByText("That name is already in use.")).toBeVisible()
+    expect(sheet.getByLabelText("Name")).toHaveFocus()
+  })
+
+  it("asks for a name", async () => {
+    const typist = userEvent.setup()
+    const { store, sheet } = await openSheet(typist)
+
+    await typist.clear(sheet.getByLabelText("Name"))
+    await save(typist, sheet)
+
+    expect(await sheet.findByText("Name is required.")).toBeVisible()
+    expect(store.requests).toEqual([])
+  })
+
+  it("leaves the sheet open and the button busy while it saves", async () => {
+    const typist = userEvent.setup()
+    const { sheet } = await openSheet(typist)
+
+    await typist.type(sheet.getByLabelText("Notes"), "x")
+    await save(typist, sheet)
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+  })
+})
+
+describe("the number format", () => {
+  it("changes the decimals, thousands separator, unit and negatives, and previews them", async () => {
+    const typist = userEvent.setup()
+    const { store, sheet } = await openSheet(typist)
+    expect(sheet.getByText("1,235")).toBeVisible()
+
+    await typist.clear(sheet.getByLabelText("Decimals"))
+    await typist.type(sheet.getByLabelText("Decimals"), "2")
+    await choose(typist, sheet.getByRole("combobox", { name: "Unit" }), "Currency")
+    await typist.type(sheet.getByLabelText("Currency code"), "eur")
+    await typist.click(sheet.getByRole("radio", { name: "Parentheses" }))
+    await typist.click(sheet.getByRole("switch", { name: "Thousands separator" }))
+
+    expect(sheet.getByLabelText("Currency code")).toHaveValue("EUR")
+    expect(sheet.getByText(/^Shown as/)).toHaveTextContent("Shown as €1234.57 and (€1234.57).")
+    await save(typist, sheet)
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+    expect(store.requests[0].body).toEqual({
+      format: {
+        type: "number",
+        decimals: 2,
+        thousands_sep: false,
+        unit: { type: "currency", code: "EUR" },
+        negative: "parens",
+      },
+    })
+  })
+
+  it("shows a percentage in the preview", async () => {
+    const typist = userEvent.setup()
+    const { sheet } = await openSheet(typist, margin.id)
+
+    expect(sheet.getByRole("combobox", { name: "Unit" })).toHaveTextContent("Percent")
+    expect(sheet.getByText(/^Shown as/)).toHaveTextContent("Shown as 12.3% and -12.3%.")
+  })
+
+  it("asks for decimals from 0 to 10", async () => {
+    const typist = userEvent.setup()
+    const { store, sheet } = await openSheet(typist)
+
+    await typist.clear(sheet.getByLabelText("Decimals"))
+    await typist.type(sheet.getByLabelText("Decimals"), "11")
+    await save(typist, sheet)
+
+    expect(await sheet.findByText("Decimals must be between 0 and 10.")).toBeVisible()
+    expect(store.requests).toEqual([])
+  })
+
+  it("asks for three letters for a currency", async () => {
+    const typist = userEvent.setup()
+    const { sheet } = await openSheet(typist)
+
+    await choose(typist, sheet.getByRole("combobox", { name: "Unit" }), "Currency")
+    await typist.type(sheet.getByLabelText("Currency code"), "us")
+    await save(typist, sheet)
+
+    expect(
+      await sheet.findByText("Currency code must be three uppercase letters, such as USD."),
+    ).toBeVisible()
+  })
+
+  it("has no currency code to fill in for another unit", async () => {
+    const typist = userEvent.setup()
+    const { sheet } = await openSheet(typist)
+
+    expect(sheet.queryByLabelText("Currency code")).toBeNull()
+    await choose(typist, sheet.getByRole("combobox", { name: "Unit" }), "Currency")
+    expect(sheet.getByLabelText("Currency code")).toBeVisible()
+    await choose(typist, sheet.getByRole("combobox", { name: "Unit" }), "None")
+    expect(sheet.queryByLabelText("Currency code")).toBeNull()
+  })
+})
+
+describe("the other formats", () => {
+  it("chooses the list of a list format", async () => {
+    const typist = userEvent.setup()
+    const { store, sheet } = await openSheet(typist)
+
+    await choose(typist, sheet.getByRole("combobox", { name: "Format type" }), "List")
+    expect(sheet.queryByLabelText("Decimals")).toBeNull()
+    await typist.click(sheet.getByRole("button", { name: "Save changes" }))
+    expect(await sheet.findByText("Choose a list.")).toBeVisible()
+    await choose(typist, sheet.getByRole("combobox", { name: "List" }), "Products")
+    await typist.click(sheet.getByRole("button", { name: "Save changes" }))
+    await typist.click(
+      await within(await screen.findByRole("alertdialog")).findByRole("button", {
+        name: "Save and clear values",
+      }),
+    )
+
+    await waitFor(() =>
+      expect(store.requests[0].body).toMatchObject({
+        format: { type: "list", list: productsId },
+        // Numbers are summed, lists are not.
+        summary: { method: "none" },
+      }),
+    )
+  })
+
+  it("chooses the level of a time period format", async () => {
+    const typist = userEvent.setup()
+    const { sheet } = await openSheet(typist)
+
+    await choose(typist, sheet.getByRole("combobox", { name: "Format type" }), "Time period")
+    await choose(typist, sheet.getByRole("combobox", { name: "Period level" }), "Quarter")
+
+    expect(sheet.getByRole("combobox", { name: "Period level" })).toHaveTextContent("Quarter")
+  })
+
+  it("offers only None as the summary of text, and Any and All for a boolean", async () => {
+    const typist = userEvent.setup()
+    const { sheet } = await openSheet(typist)
+
+    await choose(typist, sheet.getByRole("combobox", { name: "Format type" }), "Text")
+    expect(sheet.getByRole("combobox", { name: "Summary" })).toHaveTextContent("None")
+    expect(sheet.getByRole("combobox", { name: "Summary" })).toBeDisabled()
+    await choose(typist, sheet.getByRole("combobox", { name: "Format type" }), "Boolean")
+    await typist.click(sheet.getByRole("combobox", { name: "Summary" }))
+
+    const options = (await screen.findAllByRole("option")).map((option) => option.textContent)
+    expect(options).toEqual(expect.arrayContaining(["Any", "All", "None"]))
+    expect(options).not.toContain("Sum")
+  })
+})
+
+describe("the summary", () => {
+  it("takes a ratio of two other number line items of the module", async () => {
+    const typist = userEvent.setup()
+    const { store, sheet } = await openSheet(typist, margin.id)
+
+    await choose(typist, sheet.getByRole("combobox", { name: "Summary" }), "Ratio")
+    await typist.click(sheet.getByRole("combobox", { name: "Numerator" }))
+    // Not itself, and only the number line items.
+    expect((await screen.findAllByRole("option")).map((option) => option.textContent)).toEqual([
+      "Units sold",
+      "Revenue amount",
+    ])
+    await typist.click(screen.getByRole("option", { name: "Revenue amount" }))
+    await choose(typist, sheet.getByRole("combobox", { name: "Denominator" }), "Units sold")
+    await save(typist, sheet)
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+    expect(store.requests[0].body).toEqual({
+      summary: { method: "ratio", numerator: revenueAmount.id, denominator: unitsSold.id },
+    })
+  })
+
+  it("asks for both parts of a ratio", async () => {
+    const typist = userEvent.setup()
+    const { store, sheet } = await openSheet(typist, margin.id)
+
+    await choose(typist, sheet.getByRole("combobox", { name: "Summary" }), "Ratio")
+    await save(typist, sheet)
+
+    expect(await sheet.findByText("Choose the numerator.")).toBeVisible()
+    expect(sheet.getByText("Choose the denominator.")).toBeVisible()
+    expect(store.requests).toEqual([])
+  })
+
+  it("shows a ratio the line item already has", async () => {
+    const typist = userEvent.setup()
+    const ratio = makeLineItem({
+      ...margin,
+      summary: { method: "ratio", numerator: unitsSold.id, denominator: revenueAmount.id },
+    })
+    const { sheet } = await openSheet(typist, margin.id, {
+      modelStructure: makeStructure({
+        ...withLineItems,
+        line_items: [unitsSold, revenueAmount, ratio],
+      }),
+    })
+
+    expect(sheet.getByRole("combobox", { name: "Summary" })).toHaveTextContent("Ratio")
+    expect(sheet.getByRole("combobox", { name: "Numerator" })).toHaveTextContent("Units sold")
+    expect(sheet.getByRole("combobox", { name: "Denominator" })).toHaveTextContent("Revenue amount")
+  })
+
+  it("sets a time summary, and goes back to the same as the summary", async () => {
+    const typist = userEvent.setup()
+    const { store, sheet } = await openSheet(typist)
+
+    await choose(typist, sheet.getByRole("combobox", { name: "Time summary" }), "Closing balance")
+    await save(typist, sheet)
+    await waitFor(() => expect(store.requests).toHaveLength(1))
+
+    expect(store.requests[0].body).toEqual({ time_summary: { method: "closing" } })
+  })
+
+  it("has no time summary to choose for a module without Time", async () => {
+    const typist = userEvent.setup()
+    const noTime = makeModule({ ...revenueModule, axes: [{ kind: "list", list: regionsId }] })
+    const { sheet } = await openSheet(typist, unitsSold.id, {
+      modelStructure: makeStructure({
+        ...withLineItems,
+        modules: [noTime],
+      }),
+    })
+
+    expect(sheet.getByRole("combobox", { name: "Time summary" })).toBeDisabled()
+    expect(sheet.getByRole("combobox", { name: "Time scale" })).toBeDisabled()
+    expect(sheet.getAllByText("This module has no Time dimension.")).toHaveLength(2)
+    expect(sheet.getByText("This module has no Versions dimension.")).toBeVisible()
+  })
+})
+
+describe("the dimensions", () => {
+  it("applies to the module's lists by default, and to chosen ones in an order of their own", async () => {
+    const typist = userEvent.setup()
+    const { store, sheet } = await openSheet(typist)
+    expect(sheet.getByText("Regions, Products")).toBeVisible()
+
+    await typist.click(sheet.getByRole("radio", { name: /Chosen lists and subsets/ }))
+    // Starts from the module's own lists.
+    const order = sheet.getByRole("list", { name: "Order of dimensions" })
+    expect(
+      within(order)
+        .getAllByRole("listitem")
+        .map((item) => item.textContent),
+    ).toEqual(["1Regions", "2Products"])
+    await typist.click(sheet.getByRole("checkbox", { name: /Regions/ }))
+    await save(typist, sheet)
+    await typist.click(
+      await within(await screen.findByRole("alertdialog")).findByRole("button", {
+        name: "Save and clear values",
+      }),
+    )
+
+    await waitFor(() =>
+      expect(store.requests[0].body).toEqual({ applies_to: [{ kind: "list", list: productsId }] }),
+    )
+  })
+
+  it("chooses a time scale of the module's level or coarser", async () => {
+    const typist = userEvent.setup()
+    const { store, sheet } = await openSheet(typist)
+
+    await typist.click(sheet.getByRole("combobox", { name: "Time scale" }))
+    expect((await screen.findAllByRole("option")).map((option) => option.textContent)).toEqual([
+      "Module default",
+      "None",
+      "Month",
+      "Quarter",
+      "Half year",
+      "Year",
+      "Total",
+    ])
+    await typist.click(screen.getByRole("option", { name: "Year" }))
+    await save(typist, sheet)
+    await typist.click(
+      await within(await screen.findByRole("alertdialog")).findByRole("button", {
+        name: "Save and clear values",
+      }),
+    )
+
+    await waitFor(() => expect(store.requests[0].body).toEqual({ time_scale: { level: "year" } }))
+  })
+
+  it("chooses the versions the line item has values for", async () => {
+    const typist = userEvent.setup()
+    const { store, sheet } = await openSheet(typist)
+
+    await typist.click(sheet.getByRole("radio", { name: "Chosen versions" }))
+    await save(typist, sheet)
+    expect(await sheet.findByText("Choose at least one version.")).toBeVisible()
+    await typist.click(sheet.getByRole("checkbox", { name: "Forecast" }))
+    await save(typist, sheet)
+    await typist.click(
+      await within(await screen.findByRole("alertdialog")).findByRole("button", {
+        name: "Save and clear values",
+      }),
+    )
+
+    await waitFor(() =>
+      expect(store.requests[0].body).toEqual({ versions: { only: [forecastId] } }),
+    )
+  })
+})
+
+describe("clearing input values", () => {
+  it("asks before it changes the format type of an input line item", async () => {
+    const typist = userEvent.setup()
+    const { store, sheet } = await openSheet(typist)
+
+    await choose(typist, sheet.getByRole("combobox", { name: "Format type" }), "Text")
+    await save(typist, sheet)
+
+    const confirm = within(await screen.findByRole("alertdialog", { name: "Clear input values?" }))
+    expect(confirm.getByText("This clears the line item's input values.")).toBeVisible()
+    expect(store.requests).toEqual([])
+    await typist.click(confirm.getByRole("button", { name: "Cancel" }))
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull())
+    expect(store.requests).toEqual([])
+    expect(screen.getByRole("dialog", { name: "Line item settings" })).toBeVisible()
+    expect(sheet.getByRole("button", { name: "Save changes" })).toHaveFocus()
+
+    await save(typist, sheet)
+    await typist.click(
+      await within(await screen.findByRole("alertdialog")).findByRole("button", {
+        name: "Save and clear values",
+      }),
+    )
+    await waitFor(() => expect(store.requests).toHaveLength(1))
+    expect(store.requests[0].body).toMatchObject({ format: { type: "text" } })
+  })
+
+  it("asks before an input line item is given a formula", async () => {
+    const typist = userEvent.setup()
+    const { sheet } = await openSheet(typist)
+
+    await typist.type(sheet.getByLabelText("Formula"), "1 + 1")
+    await save(typist, sheet)
+
+    expect(await screen.findByRole("alertdialog", { name: "Clear input values?" })).toBeVisible()
+  })
+
+  it("does not ask for a change that keeps the values", async () => {
+    const typist = userEvent.setup()
+    const { store, sheet } = await openSheet(typist)
+
+    await choose(typist, sheet.getByRole("combobox", { name: "Summary" }), "Average")
+    await save(typist, sheet)
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+    expect(store.requests[0].body).toEqual({ summary: { method: "average" } })
+  })
+
+  it("does not ask for a calculated line item, which holds no values of its own", async () => {
+    const typist = userEvent.setup()
+    const { store, sheet } = await openSheet(typist, revenueAmount.id)
+
+    await choose(typist, sheet.getByRole("combobox", { name: "Format type" }), "Text")
+    await save(typist, sheet)
+
+    await waitFor(() => expect(store.requests).toHaveLength(1))
+    expect(screen.queryByRole("alertdialog")).toBeNull()
+  })
+})
+
+describe("the formula", () => {
+  const problems = [
+    {
+      code: "formula.unknown_name",
+      message: "Unknown name 'Revnue'",
+      start: 4,
+      end: 10,
+      suggestion: "Revenue",
+    },
+    { code: "formula.arity", message: "SUM takes 1 argument", start: 13, end: 20 },
+  ]
+
+  it("is typed in a monospace field", async () => {
+    const typist = userEvent.setup()
+    const { sheet } = await openSheet(typist, revenueAmount.id)
+
+    expect(sheet.getByLabelText("Formula")).toHaveClass("font-mono")
+  })
+
+  it("lists every problem the server finds under the formula, and selects the first", async () => {
+    const typist = userEvent.setup()
+    const { store, sheet } = await openSheet(typist, revenueAmount.id)
+    store.checkFormula = () => problems
+
+    const formula = sheet.getByLabelText<HTMLTextAreaElement>("Formula")
+    await typist.clear(formula)
+    await typist.type(formula, "1 + Revnue + SUM(1, 2)")
+    await save(typist, sheet)
+
+    const alert = within(await sheet.findByRole("alert"))
+    expect(alert.getByText("The formula has 2 problems.")).toBeVisible()
+    expect(alert.getByText(/Unknown name 'Revnue'/)).toBeVisible()
+    expect(alert.getByText("Revenue")).toBeVisible()
+    expect(alert.getByText(/SUM takes 1 argument/)).toBeVisible()
+    expect(formula).toHaveAttribute("aria-invalid", "true")
+    expect(formula).toHaveFocus()
+    expect([formula.selectionStart, formula.selectionEnd]).toEqual([4, 10])
+    expect(screen.getByRole("dialog", { name: "Line item settings" })).toBeVisible()
+  })
+
+  it("finds the problem by bytes, in a formula with letters of more than one", async () => {
+    const typist = userEvent.setup()
+    const { store, sheet } = await openSheet(typist, revenueAmount.id)
+    // "Umsätze" is 8 bytes and 7 characters; the problem is the name after it.
+    store.checkFormula = () => [
+      { code: "formula.unknown_name", message: "Unknown name", start: 11, end: 15 },
+    ]
+
+    const formula = sheet.getByLabelText<HTMLTextAreaElement>("Formula")
+    await typist.clear(formula)
+    await typist.type(formula, "Umsätze + Cost")
+    await save(typist, sheet)
+
+    await sheet.findByRole("alert")
+    expect([formula.selectionStart, formula.selectionEnd]).toEqual([10, 14])
+  })
+
+  it("takes the problems away once the formula is edited", async () => {
+    const typist = userEvent.setup()
+    const { store, sheet } = await openSheet(typist, revenueAmount.id)
+    store.checkFormula = () => problems
+
+    await typist.type(sheet.getByLabelText("Formula"), " + 1")
+    await save(typist, sheet)
+    await sheet.findByRole("alert")
+    await typist.type(sheet.getByLabelText("Formula"), "2")
+
+    expect(sheet.queryByRole("alert")).toBeNull()
+    expect(sheet.getByLabelText("Formula")).not.toHaveAttribute("aria-invalid", "true")
+  })
+
+  it("saves a formula the server accepts", async () => {
+    const typist = userEvent.setup()
+    const { store, sheet } = await openSheet(typist, revenueAmount.id)
+
+    await typist.clear(sheet.getByLabelText("Formula"))
+    await typist.type(sheet.getByLabelText("Formula"), "Units sold * 2")
+    await save(typist, sheet)
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+    expect(store.requests[0].body).toEqual({ formula: "Units sold * 2" })
+  })
+
+  it("makes a line item an input again when the formula is emptied", async () => {
+    const typist = userEvent.setup()
+    const { store, sheet } = await openSheet(typist, revenueAmount.id)
+
+    await typist.clear(sheet.getByLabelText("Formula"))
+    await save(typist, sheet)
+
+    await waitFor(() => expect(store.requests[0].body).toEqual({ formula: null }))
+  })
+})
+
+describe("who may change the settings", () => {
+  it("shows a viewer the settings, none of them to change", async () => {
+    const typist = userEvent.setup()
+    const { sheet } = await openSheet(typist, revenueAmount.id, { role: "viewer" })
+
+    expect(sheet.getByLabelText("Name")).toBeDisabled()
+    expect(sheet.getByRole("combobox", { name: "Format type" })).toBeDisabled()
+    expect(sheet.getByRole("combobox", { name: "Summary" })).toBeDisabled()
+    expect(sheet.getByLabelText("Formula")).toHaveAttribute("readonly")
+    expect(sheet.getByLabelText("Formula")).toHaveValue("Units sold * Pricing.Unit price")
+    expect(sheet.queryByRole("button", { name: "Save changes" })).toBeNull()
+    expect(screen.getByRole("dialog")).toHaveTextContent(
+      "Only workspace builders and admins can change it.",
+    )
+  })
+
+  it("switches the form off in production mode, and says why", async () => {
+    const typist = userEvent.setup()
+    const { sheet } = await openSheet(typist, unitsSold.id, { mode: "prod" })
+
+    expect(sheet.getByLabelText("Name")).toBeDisabled()
+    expect(sheet.getByRole("button", { name: "Save changes" })).toBeDisabled()
+    expect(sheet.getByText(PRODUCTION_MESSAGE)).toBeVisible()
+  })
+})
