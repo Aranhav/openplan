@@ -393,6 +393,24 @@ describe("the folders of the build navigation", () => {
     expect(nav.getByRole("link", { name: "Modules" })).toHaveAttribute("data-active", "false")
   })
 
+  it("lights no Modules in the sheet of a phone whose saved sidebar is collapsed", async () => {
+    document.cookie = "sidebar_state=false; path=/"
+    const desktopWidth = window.innerWidth
+    window.innerWidth = 375
+    try {
+      const typist = userEvent.setup()
+      openApp(`/m/${model.id}/modules/${costsModule.id}`)
+      await typist.click(await screen.findByRole("button", { name: "Toggle Sidebar" }))
+      const sheet = within(await screen.findByRole("dialog", { name: "Sidebar" }))
+      await sheet.findByRole("link", { name: "Costs" })
+
+      expect(sheet.getByRole("link", { name: "Costs" })).toHaveAttribute("data-active", "true")
+      expect(sheet.getByRole("link", { name: "Modules" })).toHaveAttribute("data-active", "false")
+    } finally {
+      window.innerWidth = desktopWidth
+    }
+  })
+
   it("names a folder in full where its name is cut short", async () => {
     openApp()
     const nav = await findLoadedNav()
