@@ -50,11 +50,6 @@ export function numberAt(text: string, at: number, afterDot: boolean) {
   return beforeDot ? undefined : number
 }
 
-/** Whether all of `text` is a number. */
-export function isNumber(text: string) {
-  return matchAt(NUMBER, text, 0) === text
-}
-
 /** The end of the text or quoted name that opens at `from`, and whether it closes. */
 function endOfQuoted(text: string, from: number) {
   const quote = text[from]

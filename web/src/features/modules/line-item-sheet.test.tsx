@@ -830,6 +830,44 @@ describe("the formula", () => {
     expect(sheet.queryByText(/The formula has/)).toBeNull()
   })
 
+  it("asks the server to check once for a formula typed with pauses of less than 300 ms", async () => {
+    const typist = userEvent.setup()
+    const { sheet } = await openSheet(typist, revenueAmount.id)
+    const asked: string[] = []
+    // After the store, which accepts every formula.
+    server.use(
+      http.post("/api/v1/models/:id/formula/check", async ({ request }) => {
+        asked.push(((await request.json()) as { formula: string }).formula)
+        return HttpResponse.json({ ok: true, type: { type: "number" } })
+      }),
+    )
+    const formula = sheet.getByLabelText("Formula")
+    formula.focus()
+
+    for (const text of ["Units sold * 2", "Units sold * 20", "Units sold * 200", "Units sold * 2000"]) {
+      setFormula(formula, text)
+      await new Promise((resolve) => setTimeout(resolve, 40))
+    }
+    await new Promise((resolve) => setTimeout(resolve, 600))
+
+    expect(asked).toEqual(["Units sold * 2000"])
+  })
+
+  it("marks the problems of the saved formula in the formula", async () => {
+    const typist = userEvent.setup()
+    const { sheet } = await openSheet(typist, revenueAmount.id, {
+      prepare: (store) => {
+        store.formulaErrors[revenueAmount.id] = [problems[0]]
+      },
+    })
+
+    await sheet.findByText("The formula has a problem.")
+
+    await waitFor(() =>
+      expect(document.querySelector(".cm-lintRange-error")).not.toBeNull(),
+    )
+  })
+
   it("closes the list of completions on Escape before it closes the sheet", async () => {
     const typist = userEvent.setup()
     const { sheet } = await openSheet(typist, revenueAmount.id)
@@ -885,7 +923,7 @@ describe("who may change the settings", () => {
     expect(sheet.getByLabelText("Name")).toBeDisabled()
     expect(sheet.getByRole("combobox", { name: "Format type" })).toBeDisabled()
     expect(sheet.getByRole("combobox", { name: "Summary" })).toBeDisabled()
-    expect(sheet.getByLabelText("Formula")).toHaveAttribute("contenteditable", "false")
+    expect(sheet.getByLabelText("Formula")).toHaveAttribute("aria-readonly", "true")
     expect(formulaText(sheet.getByLabelText("Formula"))).toBe("Units sold * Pricing.Unit price")
     expect(sheet.queryByRole("button", { name: "Save changes" })).toBeNull()
     expect(screen.getByRole("dialog")).toHaveTextContent(

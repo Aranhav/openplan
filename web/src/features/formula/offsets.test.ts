@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { byteToUtf16, formulaSpan, utf16ToByte } from "./offsets"
+import { byteToUtf16, formulaSpan } from "./offsets"
 
 describe("byteToUtf16", () => {
   it("is the identity on ASCII", () => {
@@ -28,28 +28,6 @@ describe("byteToUtf16", () => {
 
   it("rounds an offset inside a character up to its end", () => {
     expect(byteToUtf16("ä", 1)).toBe(1)
-  })
-})
-
-describe("utf16ToByte", () => {
-  it("is the inverse of byteToUtf16 at character boundaries", () => {
-    const text = 'Umsätze + "🙂" & x'
-    let index = 0
-    for (const character of text) {
-      expect(byteToUtf16(text, utf16ToByte(text, index))).toBe(index)
-      index += character.length
-    }
-    expect(byteToUtf16(text, utf16ToByte(text, text.length))).toBe(text.length)
-  })
-
-  it("measures bytes", () => {
-    expect(utf16ToByte("Umsätze", 7)).toBe(8)
-    expect(utf16ToByte("🙂x", 2)).toBe(4)
-    expect(utf16ToByte("abc", 99)).toBe(3)
-  })
-
-  it("counts a character that the index falls inside as a whole", () => {
-    expect(utf16ToByte("🙂", 1)).toBe(4)
   })
 })
 

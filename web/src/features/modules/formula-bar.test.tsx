@@ -1,6 +1,6 @@
 import { screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { http } from "msw"
+import { HttpResponse, http } from "msw"
 import { useState } from "react"
 import { toast } from "sonner"
 import { describe, expect, it, vi } from "vitest"
@@ -237,6 +237,11 @@ describe("the formula bar", () => {
     expect([from, to]).toEqual([4, 10])
     expect(screen.getByRole("button", { name: "Save" })).toBeEnabled()
     expect(toast.error).not.toHaveBeenCalled()
+    // The formula is marked where the problems are, as the list says.
+    await waitFor(() => {
+      const marked = [...document.querySelectorAll(".cm-lintRange-error")].map((mark) => mark.textContent)
+      expect(marked).toEqual(["Revnue", "SUM(1, "])
+    })
   })
 
   it("says in a toast when the save fails for another reason", async () => {
@@ -262,7 +267,7 @@ describe("the formula bar", () => {
       {
         code: "formula.unknown_name",
         message: "Unknown name 'Pricing.Unit price'.",
-        start: 14,
+        start: 13,
         end: 31,
         suggestion: null,
       },
@@ -273,6 +278,111 @@ describe("the formula bar", () => {
     expect(await screen.findByText("The formula has a problem.")).toBeVisible()
     expect(input).toHaveAttribute("aria-invalid", "true")
     expect(screen.queryByRole("alert")).toBeNull()
+    await waitFor(() =>
+      expect(document.querySelector(".cm-lintRange-error")).toHaveTextContent("Pricing.Unit price"),
+    )
+  })
+
+  it("asks the server to check once for a formula typed with pauses of less than 300 ms", async () => {
+    const asked: string[] = []
+    renderBar()
+    server.use(
+      http.post("/api/v1/models/:id/formula/check", async ({ request }) => {
+        asked.push(((await request.json()) as { formula: string }).formula)
+        return HttpResponse.json({ ok: true, type: { type: "number" } })
+      }),
+    )
+    const input = await editor()
+    input.focus()
+
+    for (const text of ["Units sold * 2", "Units sold * 20", "Units sold * 200", "Units sold * 2000"]) {
+      setFormula(input, text)
+      await new Promise((resolve) => setTimeout(resolve, 40))
+    }
+    await new Promise((resolve) => setTimeout(resolve, 600))
+
+    expect(asked).toEqual(["Units sold * 2000"])
+  })
+
+  it("keeps what was typed while the save runs, which was not what was saved", async () => {
+    const typist = userEvent.setup()
+    const store = renderBar()
+    const release = store.hold()
+    const input = await editor()
+    setFormula(input, "Units sold * 2")
+    await typist.click(await screen.findByRole("button", { name: "Save" }))
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toBeDisabled())
+
+    setFormula(input, "Units sold * 3")
+    release()
+    await waitFor(() => expect(toast.success).toHaveBeenCalled())
+
+    expect(store.requests[0].body).toEqual({ formula: "Units sold * 2" })
+    expect(formulaText(input)).toBe("Units sold * 3")
+    expect(await screen.findByRole("button", { name: "Save" })).toBeEnabled()
+  })
+
+  describe("the keyboard focus", () => {
+    it("is in the formula after the question about clearing values is answered with Cancel", async () => {
+      const typist = userEvent.setup()
+      renderBar({ initial: unitsSold.id })
+      const input = await editor("Formula of Units sold")
+      setFormula(input, "1 + 1")
+      await typist.click(input)
+      await typist.keyboard("{Enter}")
+      const confirm = await screen.findByRole("alertdialog")
+
+      await typist.click(within(confirm).getByRole("button", { name: "Cancel" }))
+
+      await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull())
+      expect(input).toHaveFocus()
+    })
+
+    it("is in the formula after the question is answered with Escape", async () => {
+      const typist = userEvent.setup()
+      renderBar({ initial: unitsSold.id })
+      const input = await editor("Formula of Units sold")
+      setFormula(input, "1 + 1")
+      await typist.click(input)
+      await typist.keyboard("{Enter}")
+      await screen.findByRole("alertdialog")
+
+      await typist.keyboard("{Escape}")
+
+      await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull())
+      expect(input).toHaveFocus()
+    })
+
+    it("is in the formula after the question is confirmed", async () => {
+      const typist = userEvent.setup()
+      renderBar({ initial: unitsSold.id })
+      const input = await editor("Formula of Units sold")
+      setFormula(input, "1 + 1")
+      await typist.click(await screen.findByRole("button", { name: "Save" }))
+      const confirm = await screen.findByRole("alertdialog")
+
+      await typist.click(within(confirm).getByRole("button", { name: "Save and clear values" }))
+
+      await waitFor(() => expect(toast.success).toHaveBeenCalled())
+      await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull())
+      expect(input).toHaveFocus()
+    })
+
+    it("is in the formula after Save and after Cancel, whose buttons go", async () => {
+      const typist = userEvent.setup()
+      renderBar()
+      const input = await editor()
+
+      setFormula(input, "Units sold * 2")
+      await typist.click(await screen.findByRole("button", { name: "Cancel" }))
+      expect(input).toHaveFocus()
+
+      setFormula(input, "Units sold * 3")
+      await typist.click(await screen.findByRole("button", { name: "Save" }))
+      await waitFor(() => expect(toast.success).toHaveBeenCalled())
+      await waitFor(() => expect(screen.queryByRole("button", { name: "Save" })).toBeNull())
+      expect(input).toHaveFocus()
+    })
   })
 
   it("keeps what was typed for a line item while another is selected", async () => {
@@ -297,7 +407,7 @@ describe("who may change a formula", () => {
 
     const input = await editor()
     expect(formulaText(input)).toBe("Units sold * Pricing.Unit price")
-    expect(input).toHaveAttribute("contenteditable", "false")
+    expect(input).toHaveAttribute("aria-readonly", "true")
     expect(input).toHaveAttribute("aria-readonly", "true")
     expect(within(screen.getByRole("group", { name: "Formula bar" })).queryByRole("button")).toBeNull()
   })
@@ -305,7 +415,7 @@ describe("who may change a formula", () => {
   it("switches the bar off in production mode", async () => {
     renderBar({ locked: true })
 
-    expect(await editor()).toHaveAttribute("contenteditable", "false")
+    expect(await editor()).toHaveAttribute("aria-readonly", "true")
   })
 
   it("says what an input line item holds to someone who cannot change it", async () => {

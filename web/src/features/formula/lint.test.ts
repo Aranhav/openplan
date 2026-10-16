@@ -56,6 +56,15 @@ describe("toDiagnostic", () => {
     expect(text.slice(diagnostic.from, diagnostic.to)).toBe("*")
   })
 
+  it("underlines a whole character beside the problem, never half of a pair of UTF-16 units", () => {
+    const text = '"🙂'
+    const atTheEnd = toDiagnostic(text, problem({ code: "formula.syntax", start: 5, end: 5 }))
+    expect(text.slice(atTheEnd.from, atTheEnd.to)).toBe("🙂")
+
+    const atTheStart = toDiagnostic("🙂 + 1", problem({ start: 0, end: 0 }))
+    expect("🙂 + 1".slice(atTheStart.from, atTheStart.to)).toBe("🙂")
+  })
+
   it("underlines the first character of a formula whose problem is at the very start", () => {
     const diagnostic = toDiagnostic("*", problem({ start: 0, end: 0 }))
     expect([diagnostic.from, diagnostic.to]).toEqual([0, 1])

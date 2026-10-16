@@ -1,6 +1,6 @@
 /**
  * The server locates a problem by byte offsets into the UTF-8 formula; the editor counts UTF-16
- * units, as strings do. These convert between the two.
+ * units, as strings do. This converts the one to the other.
  */
 
 /** How many bytes a code point takes in UTF-8; a lone surrogate is replaced by U+FFFD, three bytes. */
@@ -26,20 +26,6 @@ export function byteToUtf16(text: string, byteOffset: number) {
     index += character.length
   }
   return index
-}
-
-/** The byte offset in `text` of an index in UTF-16 units; an index inside a surrogate pair counts the whole pair. */
-export function utf16ToByte(text: string, index: number) {
-  let bytes = 0
-  let units = 0
-  for (const character of text) {
-    if (units >= index) {
-      break
-    }
-    bytes += utf8Length(character.codePointAt(0) ?? 0)
-    units += character.length
-  }
-  return bytes
 }
 
 /** The text between two byte offsets of a formula, which is the part a problem is about. */

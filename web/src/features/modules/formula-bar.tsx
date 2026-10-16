@@ -50,7 +50,7 @@ export function FormulaBar({ modelId, lineItem, canEdit, locked }: FormulaBarPro
 
   if (!lineItem) {
     return (
-      <Bar label="fx">
+      <Bar>
         <p className="py-1.5 text-sm text-muted-foreground">
           Select a line item to see its formula.
         </p>
@@ -74,6 +74,8 @@ export function FormulaBar({ modelId, lineItem, canEdit, locked }: FormulaBarPro
   function cancel() {
     setDrafts((now) => without(now, lineItem?.id ?? ""))
     setRefusal(undefined)
+    // The Cancel button goes with the change, and the focus would go with it.
+    editor.current?.focus()
   }
 
   function submit() {
@@ -95,8 +97,10 @@ export function FormulaBar({ modelId, lineItem, canEdit, locked }: FormulaBarPro
     try {
       await update.mutateAsync({ lineItemId: id, body: { formula: text.trim() === "" ? null : text } })
       toast.success("Formula saved")
-      setDrafts((now) => without(now, id))
+      // What was typed while the save ran is not what was saved, and stays to be saved.
+      setDrafts((now) => (now[id] === text ? without(now, id) : now))
       setRefusal(undefined)
+      editor.current?.focus()
     } catch (error) {
       if (error instanceof ApiError && error.formulaErrors.length > 0) {
         setRefusal({ lineItemId: id, formula: text, problems: error.formulaErrors })
@@ -111,7 +115,7 @@ export function FormulaBar({ modelId, lineItem, canEdit, locked }: FormulaBarPro
   }
 
   return (
-    <Bar label="fx" name={lineItem.name}>
+    <Bar name={lineItem.name}>
       <FormulaEditor
         key={lineItem.id}
         className="min-w-0 flex-1"
@@ -148,20 +152,17 @@ export function FormulaBar({ modelId, lineItem, canEdit, locked }: FormulaBarPro
         pending={update.isPending}
         onConfirm={() => confirming !== undefined && void save(confirming)}
         onOpenChange={(next) => !next && setConfirming(undefined)}
+        // The dialog was not opened from a trigger that it could give the focus back to.
+        onCloseAutoFocus={(event) => {
+          event.preventDefault()
+          editor.current?.focus()
+        }}
       />
     </Bar>
   )
 }
 
-function Bar({
-  label,
-  name,
-  children,
-}: {
-  label: string
-  name?: string
-  children: React.ReactNode
-}) {
+function Bar({ name, children }: { name?: string; children: React.ReactNode }) {
   return (
     <div
       role="group"
@@ -170,7 +171,7 @@ function Bar({
     >
       <div className="flex shrink-0 items-center gap-2 sm:h-9">
         <span aria-hidden className="w-6 text-center font-mono text-sm font-semibold italic text-muted-foreground">
-          {label}
+          fx
         </span>
         {name && (
           <span className="max-w-48 truncate text-sm font-medium" title={name}>

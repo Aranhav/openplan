@@ -1,6 +1,7 @@
 import { CircleAlert } from "lucide-react"
 import type { FormulaProblem } from "@/lib/api/client"
 import { problemMessage } from "./lint"
+import { problemCountText } from "./problem-text"
 import { formulaSpan } from "./offsets"
 
 interface FormulaProblemsProps {
@@ -20,11 +21,7 @@ export function FormulaProblems({ id, problems, formula, announce }: FormulaProb
       role={announce ? "alert" : undefined}
       className="flex flex-col gap-2 text-sm text-destructive"
     >
-      <p className="font-medium">
-        {problems.length === 1
-          ? "The formula has a problem."
-          : `The formula has ${problems.length} problems.`}
-      </p>
+      <p className="font-medium">{problemCountText(problems.length)}</p>
       <ul className="flex flex-col gap-2">
         {problems.map((problem, index) => {
           const span = formulaSpan(formula, problem.start, problem.end)

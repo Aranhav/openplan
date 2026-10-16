@@ -1,40 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { completionRange, quoteName } from "./completion"
-
-describe("quoteName", () => {
-  it("leaves a name of letters, digits, spaces and _ % # ? as it is", () => {
-    expect(quoteName("Margin %")).toBe("Margin %")
-    expect(quoteName("Unit count")).toBe("Unit count")
-    expect(quoteName("Umsätze")).toBe("Umsätze")
-    expect(quoteName("Qty_2? #1")).toBe("Qty_2? #1")
-    expect(quoteName("2024 Plan")).toBe("2024 Plan")
-  })
-
-  it("quotes a name with any other character", () => {
-    expect(quoteName("Profit & Loss")).toBe("'Profit & Loss'")
-    expect(quoteName("Q1.Sales")).toBe("'Q1.Sales'")
-    expect(quoteName("Cost (net)")).toBe("'Cost (net)'")
-  })
-
-  it("quotes a name with a keyword in it, since the keyword would end the name", () => {
-    expect(quoteName("IF Flag")).toBe("'IF Flag'")
-    expect(quoteName("Profit and Loss")).toBe("'Profit and Loss'")
-    expect(quoteName("True")).toBe("'True'")
-    expect(quoteName("Android")).toBe("Android")
-  })
-
-  it("doubles a quote inside a name", () => {
-    expect(quoteName("O'Brien")).toBe("'O''Brien'")
-  })
-
-  it("quotes a name the engine would not read back as one name", () => {
-    expect(quoteName("2024")).toBe("'2024'")
-    expect(quoteName("1e6")).toBe("'1e6'")
-    expect(quoteName("Two  spaces")).toBe("'Two  spaces'")
-    expect(quoteName(" Padded")).toBe("' Padded'")
-    expect(quoteName("")).toBe("''")
-  })
-})
+import { completionRange } from "./completion"
 
 describe("completionRange", () => {
   /** The range for the text before a cursor marked `|`. */

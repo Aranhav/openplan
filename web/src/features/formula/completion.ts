@@ -7,26 +7,10 @@ import {
 import type { EditorView } from "@codemirror/view"
 import type { Completion } from "./api"
 import { kindIcon } from "./kind-icons"
-import { KEYWORDS, isNumber, scan } from "./scan"
+import { scan } from "./scan"
 
 /** How long the editor waits after a key before it asks the server what to offer, in milliseconds. */
 export const COMPLETION_DELAY_MS = 150
-
-const PLAIN_NAME = /^[\p{L}\p{N}\p{M}_%# ?]+$/u
-
-/**
- * `name` as it is written in a formula: as it is when the engine reads it back as the same single
- * name, else in single quotes with any quote inside doubled. A name reads back when it holds only
- * letters, digits, single spaces and `_ % # ?`, none of its words is a keyword (which would end
- * the name), and it is not a number.
- */
-export function quoteName(name: string) {
-  const reads =
-    PLAIN_NAME.test(name) &&
-    name.split(" ").every((word) => word !== "" && !KEYWORDS.has(word.toUpperCase())) &&
-    !isNumber(name)
-  return reads ? name : `'${name.replaceAll("'", "''")}'`
-}
 
 /** The tokens that run together into the name being typed: words, quoted names and the dots between. */
 const NAME_PARTS = new Set(["word", "quoted", "dot"])
@@ -83,7 +67,10 @@ function toOption({ label, kind, detail }: Completion): EditorCompletion {
 }
 
 /** What the server offers after the name being typed; its own order and matching stand. */
-function completionSource(fetch: (prefix: string) => Promise<Completion[]>): CompletionSource {
+function completionSource(
+  fetch: (prefix: string) => Promise<Completion[]>,
+  onAvailable: (available: boolean) => void,
+): CompletionSource {
   return async (context) => {
     const range = completionRange(context.state.doc.toString(), context.pos, context.explicit)
     if (!range) {
@@ -93,8 +80,10 @@ function completionSource(fetch: (prefix: string) => Promise<Completion[]>): Com
     try {
       found = await fetch(range.prefix)
     } catch {
+      onAvailable(false)
       return null
     }
+    onAvailable(true)
     if (context.aborted || found.length === 0) {
       return null
     }
@@ -103,9 +92,12 @@ function completionSource(fetch: (prefix: string) => Promise<Completion[]>): Com
 }
 
 /** Completions from the server in a list that is announced by assistive technology and reached with the keyboard. */
-export function formulaAutocompletion(fetch: (prefix: string) => Promise<Completion[]>) {
+export function formulaAutocompletion(
+  fetch: (prefix: string) => Promise<Completion[]>,
+  onAvailable: (available: boolean) => void,
+) {
   return autocompletion({
-    override: [completionSource(fetch)],
+    override: [completionSource(fetch, onAvailable)],
     activateOnTypingDelay: COMPLETION_DELAY_MS,
     icons: false,
     addToOptions: [{ render: (completion) => kindIcon(completion.type ?? ""), position: 20 }],

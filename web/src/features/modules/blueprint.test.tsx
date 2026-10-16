@@ -349,7 +349,7 @@ describe("the formula bar", () => {
 
     const formula = await bar.findByRole("textbox", { name: "Formula of Revenue amount" })
     expect(formulaText(formula)).toBe("Units sold * Pricing.Unit price")
-    expect(formula).toHaveAttribute("contenteditable", "false")
+    expect(formula).toHaveAttribute("aria-readonly", "true")
   })
 
   it("is switched off in production mode", async () => {
@@ -357,8 +357,8 @@ describe("the formula bar", () => {
     const bar = await findBar()
 
     expect(await bar.findByRole("textbox", { name: "Formula of Revenue amount" })).toHaveAttribute(
-      "contenteditable",
-      "false",
+      "aria-readonly",
+      "true",
     )
   })
 })
@@ -975,7 +975,7 @@ describe("who may change the line items", () => {
 
     const sheet = within(await screen.findByRole("dialog", { name: "Line item settings" }))
     expect(sheet.getByLabelText("Name")).toBeDisabled()
-    expect(sheet.getByLabelText("Formula")).toHaveAttribute("contenteditable", "false")
+    expect(sheet.getByLabelText("Formula")).toHaveAttribute("aria-readonly", "true")
     expect(sheet.queryByRole("button", { name: "Save changes" })).toBeNull()
     expect(sheet.getAllByRole("button", { name: "Close" }).length).toBeGreaterThan(0)
   })

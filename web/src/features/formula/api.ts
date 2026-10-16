@@ -30,12 +30,18 @@ export function fetchCompletions(
   })
 }
 
-/** The built-in functions, which the server says once. */
+/**
+ * The built-in functions, which the server says once. A failed read is tried again as the query
+ * client says (`fetchQuery` would not retry at all, unless it is told to).
+ */
 export function fetchFunctions(queryClient: QueryClient) {
+  const { retry, retryDelay } = queryClient.getDefaultOptions().queries ?? {}
   return queryClient.fetchQuery({
     queryKey: queryKeys.formulaFunctions,
     queryFn: () => unwrap(api.GET("/formula/functions")),
     staleTime: Infinity,
+    retry,
+    retryDelay,
   })
 }
 

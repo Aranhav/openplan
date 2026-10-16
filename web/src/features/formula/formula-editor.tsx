@@ -1,8 +1,8 @@
 import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete"
 import { defaultKeymap, history, historyKeymap, insertNewline } from "@codemirror/commands"
 import { bracketMatching } from "@codemirror/language"
-import { forceLinting } from "@codemirror/lint"
 import { Annotation, Compartment, EditorState, Prec } from "@codemirror/state"
+import { forceLinting } from "@codemirror/lint"
 import { EditorView, keymap, placeholder as placeholderExtension } from "@codemirror/view"
 import { useQueryClient } from "@tanstack/react-query"
 import { type Ref, useEffect, useId, useImperativeHandle, useRef, useState } from "react"
@@ -12,7 +12,8 @@ import { checkFormula, fetchCompletions, fetchFunctions } from "./api"
 import { formulaAutocompletion } from "./completion"
 import { FormulaProblems } from "./formula-problems"
 import { formulaLanguage } from "./language"
-import { type KnownProblems, formulaLinter } from "./lint"
+import { type KnownProblems, formulaLinter, refreshLint } from "./lint"
+import { checkResultText } from "./problem-text"
 import { signatureHelp } from "./signature"
 import { formulaHighlight, formulaTheme } from "./theme"
 
@@ -33,7 +34,7 @@ export interface FormulaEditorProps {
   onSubmit?: () => void
   /** Escape, when it has no list of completions to close. */
   onCancel?: () => void
-  /** The formula can be read but not changed, and the editor takes no focus. */
+  /** The formula can be read, selected and copied but not changed. */
   readOnly?: boolean
   /** What the server has already said is wrong with a formula (the saved one, or the one it refused). */
   known?: KnownProblems
@@ -105,8 +106,13 @@ export function FormulaEditor({
   const [editable] = useState(() => new Compartment())
   const [labels] = useState(() => new Compartment())
   // What the effects below read, so that a new function from the parent does not rebuild the editor.
-  const handlers = useRef({ onChange, onSubmit, onCancel, known })
+  const handlers = useRef({ onChange, onSubmit, onCancel, known, readOnly })
   const [checked, setChecked] = useState<{ formula: string; problems: FormulaProblem[] }>()
+  // What could not be had from the server just now: a check, or the suggestions and signatures.
+  const [unavailable, setUnavailable] = useState({ check: false, suggestions: false })
+  // How many problems the last announcement said, so that a check is only announced when it
+  // finds a different number.
+  const announced = useRef(known?.formula === value ? known.problems.length : 0)
   // The problems are those of the formula as it stands: what the server said of it already, or
   // what the last check said. They go from the list as the formula is edited, and come back once
   // it has been checked again. Nothing in the list depends on where the focus is, since a list
@@ -117,7 +123,7 @@ export function FormulaEditor({
   const listed = problems.length > 0
 
   useEffect(() => {
-    handlers.current = { onChange, onSubmit, onCancel, known }
+    handlers.current = { onChange, onSubmit, onCancel, known, readOnly }
   })
 
   useEffect(() => {
@@ -135,16 +141,24 @@ export function FormulaEditor({
               {
                 key: "Enter",
                 run: () => {
-                  handlers.current.onSubmit?.()
-                  return handlers.current.onSubmit !== undefined
+                  const { onSubmit: submit, readOnly: locked } = handlers.current
+                  if (!submit || locked) {
+                    return false
+                  }
+                  submit()
+                  return true
                 },
                 shift: insertNewline,
               },
               {
                 key: "Escape",
                 run: () => {
-                  handlers.current.onCancel?.()
-                  return handlers.current.onCancel !== undefined
+                  const { onCancel: cancel, readOnly: locked } = handlers.current
+                  if (!cancel || locked) {
+                    return false
+                  }
+                  cancel()
+                  return true
                 },
               },
             ]),
@@ -190,8 +204,8 @@ export function FormulaEditor({
   useEffect(() => {
     view.current?.dispatch({
       effects: [
+        // Read-only, not uneditable: the formula can be reached with the keyboard and copied.
         editable.reconfigure([
-          EditorView.editable.of(!readOnly),
           EditorState.readOnly.of(readOnly),
           placeholder ? placeholderExtension(placeholder) : [],
         ]),
@@ -221,16 +235,31 @@ export function FormulaEditor({
         readOnly
           ? []
           : [
-              signatureHelp(() => fetchFunctions(queryClient)),
+              signatureHelp(
+                () => fetchFunctions(queryClient),
+                (available) => setUnavailable((now) => ({ ...now, suggestions: !available })),
+              ),
               ...(lineItemId
                 ? [
-                    formulaAutocompletion((prefix) =>
-                      fetchCompletions(queryClient, modelId, lineItemId, prefix),
+                    formulaAutocompletion(
+                      (prefix) => fetchCompletions(queryClient, modelId, lineItemId, prefix),
+                      (available) => setUnavailable((now) => ({ ...now, suggestions: !available })),
                     ),
                     formulaLinter({
                       check: (formula, signal) => checkFormula(modelId, lineItemId, formula, signal),
                       known: () => handlers.current.known,
-                      onProblems: (formula, found) => setChecked({ formula, problems: found }),
+                      onProblems: (formula, found) => {
+                        setChecked({ formula, problems: found })
+                        // A screen reader is told what a check finds, once, as the focus stays in the editor.
+                        if (found.length !== announced.current) {
+                          announced.current = found.length
+                          view.current?.dispatch({
+                            effects: EditorView.announce.of(checkResultText(found.length)),
+                          })
+                        }
+                      },
+                      onAvailable: (available) =>
+                        setUnavailable((now) => ({ ...now, check: !available })),
                     }),
                   ]
                 : []),
@@ -239,11 +268,23 @@ export function FormulaEditor({
     })
   }, [queryClient, modelId, lineItemId, readOnly, features])
 
+  // What is known about the formula changed (a refusal, or the saved formula went wrong): the
+  // marks follow. It is the content that is watched, not the object, which a parent makes anew at
+  // every render. For the formula that is in the editor they follow at once, since the linter
+  // then marks what is known and asks nothing; for another one (it is being typed) they follow
+  // once typing pauses, like any check, so that the delay of a check holds.
+  const knownFormula = known?.formula
+  const knownRefused = known?.refused
+  const knownProblems = known?.problems
   useEffect(() => {
-    if (view.current) {
-      forceLinting(view.current)
+    const editor = view.current
+    if (editor) {
+      editor.dispatch({ effects: refreshLint.of(null) })
+      if (editor.state.doc.toString() === knownFormula) {
+        forceLinting(editor)
+      }
     }
-  }, [known])
+  }, [knownFormula, knownRefused, knownProblems])
 
   // A save the server refused is explained under the formula, which may be below the fold.
   const refused = said?.refused === true
@@ -277,6 +318,16 @@ export function FormulaEditor({
           formula={value}
           announce={said?.refused}
         />
+      )}
+      {(unavailable.check || unavailable.suggestions) && (
+        <p role="status" className="text-sm text-muted-foreground">
+          {[
+            unavailable.check && "The formula could not be checked just now.",
+            unavailable.suggestions && "Suggestions are not available just now.",
+          ]
+            .filter(Boolean)
+            .join(" ")}
+        </p>
       )}
     </div>
   )

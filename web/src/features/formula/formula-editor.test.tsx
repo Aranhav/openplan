@@ -1,9 +1,10 @@
 import { EditorView } from "@codemirror/view"
-import { act, screen, waitFor } from "@testing-library/react"
+import { act, fireEvent, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { HttpResponse, http } from "msw"
 import { useState } from "react"
 import { describe, expect, it, vi } from "vitest"
+import { problem } from "@/test/problem"
 import { renderWithProviders } from "@/test/render"
 import { server } from "@/test/server"
 import { FormulaEditor, type FormulaEditorProps } from "./formula-editor"
@@ -35,9 +36,20 @@ function type(view: EditorView, text: string) {
 /** The list of completions ignores keys for a moment after it opens, so that a key typed on is not taken for a choice. */
 const waitForTheListToAcceptKeys = () => new Promise((resolve) => setTimeout(resolve, 100))
 
+/** A moment of real time, for what the editor waits for before it asks the server. */
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+const ACCEPTED = () => HttpResponse.json({ ok: true, type: { type: "number" } })
+
 /** An editor whose value is kept by the test, as a form keeps it. */
-function Harness(props: Partial<FormulaEditorProps> & { initial?: string }) {
-  const { initial = "", onChange, ...rest } = props
+function Harness(
+  props: Partial<FormulaEditorProps> & {
+    initial?: string
+    /** Hands the editor a new `known` object at every render, as a parent that builds it in its body does. */
+    freshKnown?: boolean
+  },
+) {
+  const { initial = "", onChange, freshKnown, ...rest } = props
   const [value, setValue] = useState(initial)
   return (
     <FormulaEditor
@@ -45,6 +57,7 @@ function Harness(props: Partial<FormulaEditorProps> & { initial?: string }) {
       lineItemId={LINE_ITEM}
       aria-label="Formula"
       {...rest}
+      known={freshKnown ? { formula: "saved", problems: [] } : rest.known}
       value={value}
       onChange={(next) => {
         setValue(next)
@@ -100,22 +113,31 @@ describe("the keys", () => {
 })
 
 describe("a formula that cannot be changed", () => {
-  it("is shown, takes no focus and takes no typing", async () => {
+  it("is shown, can be reached and selected with the keyboard, and takes no typing", async () => {
     const onChange = vi.fn()
-    const input = await renderEditor({ initial: "Revenue * 2", readOnly: true, onChange })
+    const onSubmit = vi.fn()
+    const input = await renderEditor({ initial: "Revenue * 2", readOnly: true, onChange, onSubmit })
+    const user = userEvent.setup()
 
     expect(input).toHaveTextContent("Revenue * 2")
-    expect(input).toHaveAttribute("contenteditable", "false")
     expect(input).toHaveAttribute("aria-readonly", "true")
-    const user = userEvent.setup()
-    await user.type(input, "xyz")
+    await user.tab()
+    expect(input).toHaveFocus()
+    await user.keyboard("{Control>}a{/Control}")
+    const { from, to } = viewOf(input).state.selection.main
+    expect([from, to]).toEqual([0, 11])
+    await user.keyboard("xyz{Enter}{Backspace}")
+
     expect(onChange).not.toHaveBeenCalled()
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(input).toHaveTextContent("Revenue * 2")
   })
 
   it("never asks the server anything", async () => {
     // A request without a handler fails the test.
     const input = await renderEditor({ initial: "ROUND(1", readOnly: true })
-    await new Promise((resolve) => setTimeout(resolve, 400))
+    input.focus()
+    await wait(400)
     expect(input).toHaveTextContent("ROUND(1")
   })
 })
@@ -446,5 +468,245 @@ describe("the signature of a function", () => {
 
     view.dispatch({ changes: { from: 6, insert: "1)" }, selection: { anchor: 8 } })
     await waitFor(() => expect(screen.queryByText("Rounds a number to a number of decimals.")).toBeNull())
+  })
+})
+
+describe("how often the server is asked", () => {
+  it("is asked once for a formula typed with pauses of less than 300 ms, even by a parent that makes `known` anew at every render", async () => {
+    const asked: string[] = []
+    server.use(
+      http.post(`/api/v1/models/${MODEL}/formula/check`, async ({ request }) => {
+        asked.push(((await request.json()) as { formula: string }).formula)
+        return ACCEPTED()
+      }),
+    )
+    const input = await renderEditor({ freshKnown: true })
+    const view = viewOf(input)
+    view.focus()
+
+    for (const text of ["1", " +", " ", "2"]) {
+      type(view, text)
+      await wait(40)
+    }
+    await wait(600)
+
+    expect(asked).toEqual(["1 + 2"])
+  })
+
+  it("is asked once for what completes a prefix typed with pauses of less than 150 ms", async () => {
+    const asked: string[] = []
+    server.use(
+      http.get(`/api/v1/models/${MODEL}/formula/completions`, ({ request }) => {
+        asked.push(new URL(request.url).searchParams.get("prefix") ?? "")
+        return HttpResponse.json([{ label: "Revenue", kind: "line_item", detail: "Number" }])
+      }),
+      http.post(`/api/v1/models/${MODEL}/formula/check`, ACCEPTED),
+    )
+    const input = await renderEditor()
+    const view = viewOf(input)
+    view.focus()
+
+    type(view, "R")
+    await wait(50)
+    type(view, "e")
+    await screen.findAllByRole("option")
+
+    expect(asked).toEqual(["Re"])
+  })
+})
+
+describe("the marks in the formula", () => {
+  const unknown = {
+    code: "formula.unknown_name",
+    message: "Unknown name 'Revnue'.",
+    start: 0,
+    end: 6,
+    suggestion: null,
+  }
+
+  /** An editor whose parent learns of a problem with the saved formula while it is idle. */
+  function Learning() {
+    const [problems, setProblems] = useState<(typeof unknown)[]>([])
+    return (
+      <>
+        <button type="button" onClick={() => setProblems([unknown])}>
+          Break it
+        </button>
+        <FormulaEditor
+          modelId={MODEL}
+          lineItemId={LINE_ITEM}
+          aria-label="Formula"
+          value="Revnue"
+          onChange={() => {}}
+          known={{ formula: "Revnue", problems }}
+        />
+      </>
+    )
+  }
+
+  it("follow what is known of the formula while the editor is idle", async () => {
+    renderWithProviders(<Learning />)
+    await screen.findByRole("textbox", { name: "Formula" })
+    await wait(400)
+    expect(document.querySelector(".cm-lintRange-error")).toBeNull()
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "Break it" }))
+
+    await waitFor(() =>
+      expect(document.querySelector(".cm-lintRange-error")).toHaveTextContent("Revnue"),
+    )
+  })
+
+  it("are reached from the keyboard: F8 selects the next one, and Ctrl+Shift+M lists them with the fix", async () => {
+    const input = await renderEditor({
+      initial: "Revnue * 2",
+      known: {
+        formula: "Revnue * 2",
+        problems: [{ ...unknown, message: "Unknown name 'Revnue'.", suggestion: "Revenue" }],
+      },
+    })
+    await waitFor(() => expect(document.querySelector(".cm-lintRange-error")).not.toBeNull())
+    const view = viewOf(input)
+    const user = userEvent.setup()
+    await user.click(input)
+    act(() => view.dispatch({ selection: { anchor: view.state.doc.length } }))
+
+    await user.keyboard("{F8}")
+    const { from, to } = view.state.selection.main
+    expect(view.state.sliceDoc(from, to)).toBe("Revnue")
+
+    // user-event gives a key no key code, which CodeMirror and its panel read.
+    fireEvent.keyDown(input, { key: "M", keyCode: 77, ctrlKey: true, shiftKey: true })
+    await waitFor(() =>
+      expect(document.querySelector(".cm-panel-lint")).toHaveTextContent("Unknown name 'Revnue'."),
+    )
+    // The fix is taken with the letter that is underlined in its name.
+    fireEvent.keyDown(screen.getByRole("listbox", { name: "Diagnostics" }), { key: "u", keyCode: 85 })
+
+    expect(view.state.doc.toString()).toBe("Revenue * 2")
+  })
+})
+
+describe("what a screen reader is told", () => {
+  it("is the number of problems a check finds, once for each time it changes", async () => {
+    let found = 1
+    server.use(
+      http.get(`/api/v1/models/${MODEL}/formula/completions`, () => HttpResponse.json([])),
+      http.post(`/api/v1/models/${MODEL}/formula/check`, () =>
+        HttpResponse.json(
+          found === 0
+            ? { ok: true, type: { type: "number" } }
+            : {
+                ok: false,
+                errors: Array.from({ length: found }, (_, index) => ({
+                  code: "formula.unknown_name",
+                  message: `Unknown name ${index}.`,
+                  start: 0,
+                  end: 1,
+                })),
+              },
+        ),
+      ),
+    )
+    const announce = vi.spyOn(EditorView.announce, "of")
+    const input = await renderEditor()
+    const view = viewOf(input)
+    view.focus()
+    const said = () => announce.mock.calls.map(([text]) => text)
+
+    type(view, "a")
+    await waitFor(() => expect(said()).toEqual(["Checked: 1 problem found."]))
+    // The next check finds one problem again, which was said.
+    type(view, "b")
+    await screen.findByText("Unknown name 0.")
+    await wait(500)
+    expect(said()).toEqual(["Checked: 1 problem found."])
+    found = 2
+    type(view, "c")
+    await waitFor(() => expect(said()).toHaveLength(2))
+    found = 0
+    type(view, "d")
+    await waitFor(() => expect(said()).toHaveLength(3))
+
+    expect(said()).toEqual([
+      "Checked: 1 problem found.",
+      "Checked: 2 problems found.",
+      "Checked: no problems found.",
+    ])
+  })
+
+  it("is nothing for the problems that were there when the editor opened", async () => {
+    const announce = vi.spyOn(EditorView.announce, "of")
+    await renderEditor({
+      initial: "Revnue",
+      known: {
+        formula: "Revnue",
+        problems: [
+          { code: "formula.unknown_name", message: "Unknown name 'Revnue'.", start: 0, end: 6 },
+        ],
+      },
+    })
+    await wait(500)
+
+    expect(announce).not.toHaveBeenCalled()
+  })
+})
+
+describe("when the server cannot be reached", () => {
+  it("says a check could not be made, and no longer when one can", async () => {
+    let up = false
+    server.use(
+      http.post(`/api/v1/models/${MODEL}/formula/check`, () =>
+        up ? ACCEPTED() : problem(503, "server.busy", "The server is busy."),
+      ),
+    )
+    const input = await renderEditor()
+    const view = viewOf(input)
+
+    type(view, "1")
+    expect(await screen.findByText("The formula could not be checked just now.")).toBeVisible()
+    up = true
+    type(view, "2")
+
+    await waitFor(() => expect(screen.queryByText(/could not be checked/)).toBeNull())
+  })
+
+  it("says suggestions are not available when the completions fail", async () => {
+    server.use(
+      http.get(`/api/v1/models/${MODEL}/formula/completions`, () =>
+        problem(503, "server.busy", "The server is busy."),
+      ),
+      http.post(`/api/v1/models/${MODEL}/formula/check`, ACCEPTED),
+    )
+    const input = await renderEditor()
+    const view = viewOf(input)
+    view.focus()
+
+    type(view, "Re")
+
+    expect(await screen.findByText("Suggestions are not available just now.")).toBeVisible()
+  })
+
+  it("asks for the functions once, and not again at every key when that fails", async () => {
+    let asked = 0
+    server.use(
+      http.get("/api/v1/formula/functions", () => {
+        asked += 1
+        return problem(503, "server.busy", "The server is busy.")
+      }),
+      http.post(`/api/v1/models/${MODEL}/formula/check`, ACCEPTED),
+    )
+    const input = await renderEditor({ initial: "ROUND(" })
+    const view = viewOf(input)
+    view.focus()
+    act(() => view.dispatch({ selection: { anchor: 6 } }))
+    await screen.findByText("Suggestions are not available just now.")
+
+    for (const text of ["1", ",", " 2"]) {
+      type(view, text)
+      await wait(30)
+    }
+
+    expect(asked).toBe(1)
   })
 })

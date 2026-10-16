@@ -306,7 +306,7 @@ describe("the formula bar in the grid tab", () => {
     const content = await page()
 
     const formula = await content.findByRole("textbox", { name: "Formula of Units sold" })
-    expect(formula).toHaveAttribute("contenteditable", "false")
+    expect(formula).toHaveAttribute("aria-readonly", "true")
   })
 })
 

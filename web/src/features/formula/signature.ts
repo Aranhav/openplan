@@ -129,11 +129,19 @@ const signatureField = StateField.define<Signature>({
   provide: (field) => showTooltip.from(field, (value) => value.tooltip),
 })
 
-/** Reads the functions once the cursor first enters a call, and says the signature of each call entered. */
-function signaturePlugin(load: () => Promise<FormulaFunction[]>) {
+/**
+ * Reads the functions once the cursor first enters a call, and says the signature of each call
+ * entered. A read that failed (after the retries `load` makes) is not made again by this editor:
+ * `onAvailable` says so, and asking at every key would only add to a server in trouble.
+ */
+function signaturePlugin(
+  load: () => Promise<FormulaFunction[]>,
+  onAvailable: (available: boolean) => void,
+) {
   return ViewPlugin.fromClass(
     class {
       requested = false
+      failed = false
       announced: FormulaFunction | undefined
       destroyed = false
 
@@ -145,7 +153,7 @@ function signaturePlugin(load: () => Promise<FormulaFunction[]>) {
 
       update(update: { state: EditorState }) {
         const { functions, def } = update.state.field(signatureField)
-        if (!this.requested && !functions) {
+        if (!this.requested && !this.failed && !functions) {
           const { main } = update.state.selection
           if (update.state.field(signatureField).focused && enclosingCall(update.state.doc.toString(), main.head)) {
             this.requested = true
@@ -153,12 +161,17 @@ function signaturePlugin(load: () => Promise<FormulaFunction[]>) {
               (list) => {
                 this.requested = false
                 if (!this.destroyed) {
+                  onAvailable(true)
                   const index = new Map(list.map((item) => [item.name.toUpperCase(), item]))
                   this.view.dispatch({ effects: setFunctions.of(index) })
                 }
               },
               () => {
                 this.requested = false
+                this.failed = true
+                if (!this.destroyed) {
+                  onAvailable(false)
+                }
               },
             )
           }
@@ -184,10 +197,13 @@ function signaturePlugin(load: () => Promise<FormulaFunction[]>) {
 }
 
 /** A tooltip above the function being called, with an example, what it does and how many arguments it takes. */
-export function signatureHelp(load: () => Promise<FormulaFunction[]>) {
+export function signatureHelp(
+  load: () => Promise<FormulaFunction[]>,
+  onAvailable: (available: boolean) => void,
+) {
   return [
     signatureField,
-    signaturePlugin(load),
+    signaturePlugin(load, onAvailable),
     EditorView.focusChangeEffect.of((_, focusing) => setFocused.of(focusing)),
   ]
 }

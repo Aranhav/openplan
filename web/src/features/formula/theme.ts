@@ -107,6 +107,19 @@ export const formulaTheme = EditorView.theme({
     padding: "0 0.5rem",
     marginLeft: "0.5rem",
   },
+  ".cm-panels": {
+    backgroundColor: "var(--popover)",
+    color: "var(--popover-foreground)",
+    fontFamily: "var(--font-sans, system-ui, sans-serif)",
+    fontSize: "0.8125rem",
+  },
+  ".cm-panels.cm-panels-bottom": { borderTop: "1px solid var(--border)" },
+  ".cm-panel.cm-panel-lint ul [aria-selected]": {
+    backgroundColor: "var(--accent)",
+    color: "var(--accent-foreground)",
+  },
+  ".cm-panel.cm-panel-lint ul li": { padding: "0.25rem 0.5rem" },
+  ".cm-panel.cm-panel-lint button[name=close]": { color: "var(--muted-foreground)" },
   ".cm-formulaSignature": {
     padding: "0.5rem 0.75rem",
     maxWidth: "24rem",
