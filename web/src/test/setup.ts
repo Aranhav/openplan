@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom/vitest"
 import { cleanup, configure } from "@testing-library/react"
-import { afterAll, afterEach, beforeAll, beforeEach, vi } from "vitest"
-import { FakeWebSocket } from "./live"
+import { afterAll, afterEach, beforeAll, beforeEach } from "vitest"
+import { FakeWebSocket, ticketHandler } from "./live"
 import { server } from "./server"
 
 // Node's Request rejects relative URLs; browsers resolve them against the page.
@@ -48,15 +48,29 @@ configure({ asyncUtilTimeout: 3000 })
 // Requests no test mocked fail loudly instead of reaching a real network.
 beforeAll(() => server.listen({ onUnhandledFrame: "error" }))
 
-// Live updates open a WebSocket; none of the tests may reach a network, so the page gets a fake.
-// It goes in after msw has listened, which puts a wrapper of its own in the place of the socket.
+// A model's screens follow it over a WebSocket, which is opened with a ticket. No test may reach a
+// network, so each gets a fake socket and an answer to the ticket (new each time, so that the
+// numbers of the tickets do not depend on the tests before it). The socket goes in after msw has
+// listened, which puts a wrapper of its own in its place; only the socket is put back afterwards.
+let nativeWebSocket = globalThis.WebSocket
+
+function useWebSocket(socket: typeof WebSocket) {
+  Object.defineProperty(globalThis, "WebSocket", {
+    value: socket,
+    configurable: true,
+    writable: true,
+  })
+}
+
 beforeEach(() => {
-  vi.stubGlobal("WebSocket", FakeWebSocket)
+  nativeWebSocket = globalThis.WebSocket
+  useWebSocket(FakeWebSocket as unknown as typeof WebSocket)
+  server.use(ticketHandler())
 })
 
 afterEach(() => {
   cleanup()
-  vi.unstubAllGlobals()
+  useWebSocket(nativeWebSocket)
   server.resetHandlers()
   FakeWebSocket.sockets = []
   window.localStorage.clear()

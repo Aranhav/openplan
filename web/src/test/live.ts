@@ -1,6 +1,6 @@
 import { HttpResponse, http } from "msw"
 
-/** The ticket answer every test gets unless it brings its own handler: a new one for each ask. */
+/** The ticket answer each test gets unless it brings its own handler: a new one for each ask. */
 export function ticketHandler() {
   let issued = 0
   return http.post("/api/v1/models/:id/live/ticket", ({ params }) => {
@@ -19,10 +19,14 @@ interface CloseEventInit {
   code: number
 }
 
+/** The address a model's live socket is opened at: the one the ticket answer gives, and a ticket. */
+const LIVE_ADDRESS = /\/api\/v1\/models\/[^/?]+\/live\?ticket=[^&]+$/
+
 /**
  * A WebSocket that opens no connection. The setup file installs it for every test, so none reaches
  * a network; a test that follows a socket finds it in `FakeWebSocket.sockets` and plays the
- * server: `receive` sends it a message, `drop` ends it.
+ * server: `receive` sends it a message, `drop` ends it. It refuses any address but a model's live
+ * socket, as a test that opens another would have been told by msw, so that stays loud.
  */
 export class FakeWebSocket {
   /** Every socket opened since the last test, oldest first. */
@@ -36,6 +40,9 @@ export class FakeWebSocket {
 
   constructor(url: string | URL) {
     this.url = String(url)
+    if (!LIVE_ADDRESS.test(this.url)) {
+      throw new SyntaxError(`A test opened a WebSocket that nothing handles: ${this.url}`)
+    }
     FakeWebSocket.sockets.push(this)
   }
 
