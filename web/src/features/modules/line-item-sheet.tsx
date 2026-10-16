@@ -3,6 +3,7 @@ import { Loader2 } from "lucide-react"
 import { type ReactNode, type RefObject, useRef, useState } from "react"
 import { useForm } from "react-hook-form"
 import { toast } from "sonner"
+import { DiscardChangesDialog } from "@/components/discard-changes-dialog"
 import { ProductionLock, ProductionNotice } from "@/components/production-lock"
 import { Button } from "@/components/ui/button"
 import {
@@ -32,11 +33,11 @@ import { closeCompletionsOnEscape } from "@/features/formula/escape"
 import type { FormulaEditorHandle } from "@/features/formula/formula-editor"
 import type { KnownProblems } from "@/features/formula/lint"
 import { byteToUtf16 } from "@/features/formula/offsets"
+import { useSheetDismiss } from "@/hooks/use-sheet-dismiss"
 import { ApiError, type FormulaProblem } from "@/lib/api/client"
-import { closeUnlessBusy } from "@/lib/close-unless-busy"
 import { NAME_TAKEN_FIELD_ERRORS, reportFormError } from "@/lib/form-errors"
+import { focusFirstField } from "@/lib/sheet-focus"
 import { ClearValuesDialog } from "./clear-values-dialog"
-import { DiscardChangesDialog } from "./discard-changes-dialog"
 import { FormulaField } from "./formula-field"
 import {
   type LineItemValues,
@@ -48,7 +49,6 @@ import {
 import { LineItemFormatFields } from "./line-item-format-fields"
 import { LineItemScopeFields } from "./line-item-scope-fields"
 import { LineItemSummaryFields } from "./line-item-summary-fields"
-import { focusFirstField } from "./sheet-focus"
 import { useSheetForm } from "./use-sheet-form"
 
 interface LineItemSheetProps {
@@ -79,22 +79,12 @@ export function LineItemSheet({
   onCloseAutoFocus,
 }: LineItemSheetProps) {
   const update = useUpdateLineItem(modelId)
-  // Whether the form has edits that dismissing the sheet would lose; the form says.
-  const dirty = useRef(false)
-  const [discarding, setDiscarding] = useState(false)
-
-  // Escape, a click outside and the close button end up here; the Cancel button does not ask.
-  function dismiss(next: boolean) {
-    if (!next && dirty.current) {
-      setDiscarding(true)
-    } else {
-      onOpenChange(next)
-    }
-  }
+  // Escape, a click outside and the close button ask before they lose edits; Cancel does not.
+  const { dirtyRef, dismiss, discard } = useSheetDismiss(onOpenChange, update.isPending)
 
   return (
     <>
-      <Sheet open={open} onOpenChange={(next) => closeUnlessBusy(update.isPending, dismiss)(next)}>
+      <Sheet open={open} onOpenChange={dismiss}>
         <SheetContent
           onOpenAutoFocus={focusFirstField}
           // Escape closes a list of completions of the formula before it closes the sheet.
@@ -119,19 +109,14 @@ export function LineItemSheet({
             lineItem={lineItem}
             canEdit={canEdit}
             locked={locked}
-            dirty={dirty}
+            dirty={dirtyRef}
             onClose={() => onOpenChange(false)}
           />
         </SheetContent>
       </Sheet>
       <DiscardChangesDialog
-        open={discarding}
         description="Your changes to this line item have not been saved."
-        onOpenChange={setDiscarding}
-        onDiscard={() => {
-          setDiscarding(false)
-          onOpenChange(false)
-        }}
+        {...discard}
       />
     </>
   )

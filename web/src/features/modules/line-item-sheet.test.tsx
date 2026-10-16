@@ -9,6 +9,7 @@ import { makeModel, me, mockSession, renderApp, serveModels, workspace } from "@
 import { formulaText, formulaView, setFormula } from "@/test/formula"
 import { type ModuleStore, serveModuleStore } from "@/test/module-edits"
 import { server } from "@/test/server"
+import { spinning } from "@/test/spinning"
 import {
   forecastId,
   makeLineItem,
@@ -71,11 +72,6 @@ async function openSheet(
 async function choose(typist: Typist, combobox: HTMLElement, option: string) {
   await typist.click(combobox)
   await typist.click(await screen.findByRole("option", { name: option }))
-}
-
-/** Whether a button shows the spinner that says its request is running. */
-function spinning(button: HTMLElement) {
-  return button.querySelector("svg.animate-spin") !== null
 }
 
 async function save(typist: Typist, sheet: ReturnType<typeof within>) {

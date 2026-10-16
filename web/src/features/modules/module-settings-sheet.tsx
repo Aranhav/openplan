@@ -1,9 +1,10 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { Loader2, Trash2 } from "lucide-react"
-import { type RefObject, useRef, useState } from "react"
+import { type RefObject, useState } from "react"
 import { useForm } from "react-hook-form"
 import { toast } from "sonner"
 import { DeleteDialog } from "@/components/delete-dialog"
+import { DiscardChangesDialog } from "@/components/discard-changes-dialog"
 import { ProductionLock, ProductionNotice } from "@/components/production-lock"
 import { Button } from "@/components/ui/button"
 import { Form } from "@/components/ui/form"
@@ -19,15 +20,14 @@ import {
 import { useDeleteModule, useUpdateModule } from "@/features/structure/api"
 import { groupModules } from "@/features/structure/modules"
 import type { ModuleDto, StructureDto } from "@/features/structure/types"
-import { closeUnlessBusy } from "@/lib/close-unless-busy"
+import { useSheetDismiss } from "@/hooks/use-sheet-dismiss"
 import type { components } from "@/lib/api/schema"
 import { reportFormError } from "@/lib/form-errors"
+import { focusFirstField } from "@/lib/sheet-focus"
 import { axesOf, axesValues, sameAxes } from "./axes"
 import { ClearValuesDialog } from "./clear-values-dialog"
-import { DiscardChangesDialog } from "./discard-changes-dialog"
 import { MODULE_FIELD_ERRORS, type ModuleValues, moduleSchema } from "./module-form"
 import { ModuleFields } from "./module-fields"
-import { focusFirstField } from "./sheet-focus"
 import { useSheetForm } from "./use-sheet-form"
 
 type UpdateModuleRequest = components["schemas"]["UpdateModuleRequest"]
@@ -78,22 +78,12 @@ export function ModuleSettingsSheet({
   onCloseAutoFocus,
 }: ModuleSettingsSheetProps) {
   const update = useUpdateModule(modelId)
-  // Whether the form has edits that dismissing the sheet would lose; the form says.
-  const dirty = useRef(false)
-  const [discarding, setDiscarding] = useState(false)
-
-  // Escape, a click outside and the close button end up here; the Cancel button does not ask.
-  function dismiss(next: boolean) {
-    if (!next && dirty.current) {
-      setDiscarding(true)
-    } else {
-      onOpenChange(next)
-    }
-  }
+  // Escape, a click outside and the close button ask before they lose edits; Cancel does not.
+  const { dirtyRef, dismiss, discard } = useSheetDismiss(onOpenChange, update.isPending)
 
   return (
     <>
-      <Sheet open={open} onOpenChange={(next) => closeUnlessBusy(update.isPending, dismiss)(next)}>
+      <Sheet open={open} onOpenChange={dismiss}>
         <SheetContent
           onOpenAutoFocus={focusFirstField}
           onCloseAutoFocus={onCloseAutoFocus}
@@ -112,20 +102,15 @@ export function ModuleSettingsSheet({
             structure={structure}
             module={module}
             locked={locked}
-            dirty={dirty}
+            dirty={dirtyRef}
             onClose={() => onOpenChange(false)}
             onDeleted={onDeleted}
           />
         </SheetContent>
       </Sheet>
       <DiscardChangesDialog
-        open={discarding}
         description="Your changes to this module have not been saved."
-        onOpenChange={setDiscarding}
-        onDiscard={() => {
-          setDiscarding(false)
-          onOpenChange(false)
-        }}
+        {...discard}
       />
     </>
   )
