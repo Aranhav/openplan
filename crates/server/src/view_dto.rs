@@ -141,7 +141,7 @@ pub struct RowFilterDto {
     value: Option<ValueDto>,
 }
 
-fn yes() -> bool {
+pub(crate) fn yes() -> bool {
     true
 }
 

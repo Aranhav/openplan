@@ -1,8 +1,10 @@
 -- The saved views of a module: a name and the definition of a grid, as it was sent. A read checks
--- a definition against the module's structure as it is then (see views_api), so the definition
--- is stored as given and never rewritten. A view names its module by id only: modules are part of
--- the model's structure document, not rows of their own, so a view outlives a deleted module until
--- its model is deleted. Every table enables row level security (see 0002).
+-- a definition against the module's structure as it is then (see views_api), so the definition is
+-- stored as given and never rewritten. A view names its module by id only and has no foreign key to
+-- it, since modules are part of the model's structure document. Deleting a module deletes its views
+-- in the same handler (modules_api::delete_module), and so does deleting a list, for the views of
+-- its properties module (structure_api::delete_list); deleting the model cascades. Every table
+-- enables row level security (see 0002).
 CREATE TABLE views (
   id uuid PRIMARY KEY,
   model_id uuid NOT NULL REFERENCES models(id) ON DELETE CASCADE,

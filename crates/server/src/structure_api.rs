@@ -14,8 +14,8 @@ use axum::{
     routing::{delete, get, patch, post, put},
 };
 use openplan_engine::{
-    Calendar as EngineCalendar, Command, ItemId, ItemSpec, List, ListId, Model, Structure,
-    SubsetId, TimeLevel, TimeRangeId, VersionId,
+    Calendar as EngineCalendar, Command, ItemId, ItemSpec, List, ListId, Model, ModuleId,
+    Structure, SubsetId, TimeLevel, TimeRangeId, VersionId,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -731,7 +731,7 @@ pub(crate) async fn update_list(
         ("list_id" = Uuid, Path, description = "The list's id"),
     ),
     responses(
-        (status = 204, description = "The list was deleted"),
+        (status = 204, description = "The list, its properties and the saved views of those properties were deleted"),
         (status = 401, description = "Not signed in (auth.unauthenticated)"),
         (status = 403, description = "Not a workspace builder (auth.forbidden)"),
         (status = 404, description = "No such model or list, or the caller is not a member of the workspace (not_found)"),
@@ -743,12 +743,27 @@ pub(crate) async fn delete_list(
     user: CurrentUser,
     ApiPath((model_id, list_id)): ApiPath<(Uuid, Uuid)>,
 ) -> AppResult<StatusCode> {
-    delete_with(&state, &user, model_id, move |_| {
-        Ok(vec![Command::DeleteList {
-            id: ListId(list_id),
-        }])
-    })
-    .await
+    let handle = handle_for(
+        &state,
+        &user,
+        model_id,
+        WorkspaceRole::Builder,
+        ProdLock::Enforce,
+    )
+    .await?;
+    handle
+        .apply_with(user.id, move |_| {
+            Ok(vec![Command::DeleteList {
+                id: ListId(list_id),
+            }])
+        })
+        .await?;
+    // The list's properties module goes with the list, so the views on that module go too.
+    sqlx::query("DELETE FROM views WHERE module_id = $1")
+        .bind(ModuleId::for_list_properties(ListId(list_id)).0)
+        .execute(&state.db)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[utoipa::path(

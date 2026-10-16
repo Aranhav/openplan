@@ -70,7 +70,7 @@ fn to_json<T: Serialize>(value: &T) -> AppResult<Vec<u8>> {
     serde_json::to_vec(value).map_err(|error| AppError::Internal(error.into()))
 }
 
-async fn blocking<T: Send + 'static>(
+pub(crate) async fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> AppResult<T> + Send + 'static,
 ) -> AppResult<T> {
     tokio::task::spawn_blocking(work)

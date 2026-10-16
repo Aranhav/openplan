@@ -19,7 +19,7 @@ use axum::{
     routing::{get, patch},
 };
 use chrono::{DateTime, Utc};
-use openplan_engine::{AxisSpec, Model, Module, ModuleId, ViewDim, view};
+use openplan_engine::{AxisSpec, MAX_MODULE_DIMENSIONS, Model, Module, ModuleId, ViewDim, view};
 use serde::{Deserialize, Serialize};
 use sqlx::{Postgres, Transaction};
 use utoipa::ToSchema;
@@ -32,11 +32,12 @@ use crate::{
     authz::WorkspaceRole,
     error::{AppError, AppResult, FieldError},
     extract::{ApiJson, ApiPath, Capped},
+    query_api::blocking,
     structure_api::{ProdLock, handle_for},
     validate,
     view_dto::{
         MAX_FILTERS, MAX_LINE_ITEMS, MAX_MEMBERS, MemberRefDto, PageSelectionDto, RowFilterDto,
-        ViewDimDto,
+        ViewDimDto, yes,
     },
 };
 
@@ -50,6 +51,8 @@ const MAX_COLUMN_WIDTHS: usize = 1_000;
 const COLUMN_WIDTHS: RangeInclusive<u16> = 24..=2_000;
 /// The index that keeps the names of the views of a module apart.
 const NAME_INDEX: &str = "views_module_name_key";
+/// The index that keeps one default view per module.
+const DEFAULT_INDEX: &str = "views_module_default_key";
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -112,10 +115,6 @@ pub struct ConditionalFormat {
     style: FormatStyle,
 }
 
-fn yes() -> bool {
-    true
-}
-
 /// What a view shows of a module: the same as a query of the grid, with the same limits, less
 /// the window.
 #[derive(Serialize, Deserialize, ToSchema)]
@@ -165,6 +164,14 @@ fn limit(field: &str, message: &str) -> AppError {
 impl ViewDefinition {
     /// The first limit the definition breaks, named by its field.
     fn check_limits(&self) -> AppResult<()> {
+        if self.rows.len() + self.columns.len() + self.pages.len() > MAX_MODULE_DIMENSIONS {
+            return Err(limit(
+                "rows",
+                &format!(
+                    "Send at most {MAX_MODULE_DIMENSIONS} dimensions on the rows, columns and pages."
+                ),
+            ));
+        }
         if self.filters.is_over() {
             return Err(limit("filters", "Send at most 10 filters."));
         }
@@ -198,6 +205,81 @@ impl ViewDefinition {
         }
         Ok(())
     }
+
+    /// Checks the definition against its limits and the values its conditional formats need, and
+    /// trims the names of the formats. The first failure is a 422 that names its field.
+    fn check(&mut self) -> AppResult<()> {
+        self.check_limits()?;
+        self.check_formats()
+    }
+
+    /// The conditional formats, each checked by [`check_format`].
+    fn check_formats(&mut self) -> AppResult<()> {
+        let mut formats = std::mem::take(&mut self.conditional_formats).into_vec();
+        for (index, format) in formats.iter_mut().enumerate() {
+            check_format(index, format)?;
+        }
+        self.conditional_formats = Capped::from(formats);
+        Ok(())
+    }
+}
+
+/// A 422 that names a field of the conditional format at `index`.
+fn format_limit(index: usize, field: &str, message: &str) -> AppError {
+    AppError::Validation(vec![FieldError {
+        field: format!("definition.conditional_formats[{index}].{field}"),
+        message: message.to_string(),
+    }])
+}
+
+/// Checks one conditional format, and trims its name: the name is 1 to 80 characters, the rule
+/// has the values its operation compares with, and a between rule's second value is at least its
+/// first.
+fn check_format(index: usize, format: &mut ConditionalFormat) -> AppResult<()> {
+    format.name = validate::entity_name("name", &format.name).map_err(|mut error| {
+        error.field = format!("definition.conditional_formats[{index}].name");
+        error
+    })?;
+    if format.line_item_ids.len() > MAX_LINE_ITEMS {
+        return Err(format_limit(
+            index,
+            "line_item_ids",
+            "Send at most 1,000 line items for a conditional format.",
+        ));
+    }
+    let compares = matches!(
+        format.op,
+        FormatOp::Lt
+            | FormatOp::Le
+            | FormatOp::Gt
+            | FormatOp::Ge
+            | FormatOp::Eq
+            | FormatOp::Ne
+            | FormatOp::Between
+    );
+    if compares && format.value.is_none() {
+        return Err(format_limit(index, "value", "Enter a value for this rule."));
+    }
+    if format.op == FormatOp::Between {
+        match (format.value, format.value2) {
+            (_, None) => {
+                return Err(format_limit(
+                    index,
+                    "value2",
+                    "Enter a second value for a between rule.",
+                ));
+            }
+            (Some(low), Some(high)) if high < low => {
+                return Err(format_limit(
+                    index,
+                    "value2",
+                    "The second value must be at least the first.",
+                ));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// The body of a request to save a view.
@@ -531,20 +613,11 @@ impl FromRequestParts<AppState> for Writer {
     }
 }
 
-/// Runs `work` on a thread that may block, as the grid's heavy work does.
-async fn blocking<T: Send + 'static>(
-    work: impl FnOnce() -> AppResult<T> + Send + 'static,
-) -> AppResult<T> {
-    tokio::task::spawn_blocking(work)
-        .await
-        .map_err(|error| AppError::Internal(error.into()))?
-}
-
 /// Takes the model's row lock for the rest of the transaction, so that the views of a model are
 /// changed one at a time: the count of its views, and the one default, are then what the
 /// transaction sees.
 async fn lock_model(tx: &mut Transaction<'_, Postgres>, model_id: Uuid) -> AppResult<()> {
-    sqlx::query("SELECT 1 FROM models WHERE id = $1 FOR UPDATE")
+    sqlx::query("SELECT 1 FROM models WHERE id = $1 FOR NO KEY UPDATE")
         .bind(model_id)
         .fetch_optional(&mut **tx)
         .await?
@@ -582,6 +655,15 @@ fn map_write_error(error: sqlx::Error) -> AppError {
                 detail: "A view with this name already exists in this module.".into(),
             }
         }
+        sqlx::Error::Database(db_error)
+            if db_error.is_unique_violation() && db_error.constraint() == Some(DEFAULT_INDEX) =>
+        {
+            AppError::Conflict {
+                code: "view.default_conflict",
+                detail: "Another view became the module's default at the same time. Try again."
+                    .into(),
+            }
+        }
         sqlx::Error::Database(db_error) if db_error.is_foreign_key_violation() => {
             AppError::NotFound
         }
@@ -602,6 +684,7 @@ fn map_write_error(error: sqlx::Error) -> AppError {
         (status = 401, description = "Not signed in (auth.unauthenticated)"),
         (status = 404, description = "No such model or module, or the caller is not a member of the model's workspace (not_found)"),
         (status = 503, description = "Too many pieces of heavy work are going on and none was free within 10 seconds (server.busy); `Retry-After` says when to try again"),
+        (status = 422, description = "The module has a dimension of more than 100,000 members, whose members cannot be listed to prune the views (structure.invalid)"),
     )
 )]
 pub(crate) async fn list_views(
@@ -652,15 +735,15 @@ pub(crate) async fn list_views(
         (status = 401, description = "Not signed in (auth.unauthenticated)"),
         (status = 403, description = "Not a workspace builder (auth.forbidden)"),
         (status = 404, description = "No such model or module, or the caller is not a member of the model's workspace (not_found)"),
-        (status = 409, description = "A view of the module has that name (structure.name_taken)"),
+        (status = 409, description = "A view of the module has that name (structure.name_taken), or another became the default at the same time (view.default_conflict)"),
         (status = 413, description = "The body is more than 2 MiB (payload_too_large)"),
-        (status = 422, description = "The name is blank or longer than 80 characters, the module has 200 views already, a field of the definition is invalid or over its limit (validation)"),
+        (status = 422, description = "The name is blank or longer than 80 characters, the module has 200 views already, a field of the definition is invalid or over its limit, or a conditional format's name, values or line items are invalid (validation)"),
     )
 )]
 pub(crate) async fn create_view(
     State(state): State<AppState>,
     Writer(access): Writer,
-    ApiJson(body): ApiJson<CreateViewRequest>,
+    ApiJson(mut body): ApiJson<CreateViewRequest>,
 ) -> AppResult<(StatusCode, Json<ViewDto>)> {
     if access
         .handle
@@ -672,7 +755,7 @@ pub(crate) async fn create_view(
         return Err(AppError::NotFound);
     }
     let name = validate::entity_name("name", &body.name)?;
-    body.definition.check_limits()?;
+    body.definition.check()?;
     let is_default = body.is_default.unwrap_or(false);
 
     let mut tx = state.db.begin().await?;
@@ -723,23 +806,23 @@ pub(crate) async fn create_view(
         (status = 401, description = "Not signed in (auth.unauthenticated)"),
         (status = 403, description = "Not a workspace builder (auth.forbidden)"),
         (status = 404, description = "No such view in the model, or the caller is not a member of the model's workspace (not_found)"),
-        (status = 409, description = "Another view of the module has that name (structure.name_taken)"),
+        (status = 409, description = "Another view of the module has that name (structure.name_taken), or another became the default at the same time (view.default_conflict)"),
         (status = 413, description = "The body is more than 2 MiB (payload_too_large)"),
-        (status = 422, description = "The name is blank or longer than 80 characters, or a field of the definition is invalid or over its limit (validation)"),
+        (status = 422, description = "The name is blank or longer than 80 characters, or a field of the definition is invalid or over its limit, or a conditional format's name, values or line items are invalid (validation)"),
     )
 )]
 pub(crate) async fn update_view(
     State(state): State<AppState>,
     Writer(access): Writer,
-    ApiJson(body): ApiJson<UpdateViewRequest>,
+    ApiJson(mut body): ApiJson<UpdateViewRequest>,
 ) -> AppResult<Json<ViewDto>> {
     let name = body
         .name
         .as_deref()
         .map(|raw| validate::entity_name("name", raw))
         .transpose()?;
-    if let Some(definition) = &body.definition {
-        definition.check_limits()?;
+    if let Some(definition) = body.definition.as_mut() {
+        definition.check()?;
     }
 
     let mut tx = state.db.begin().await?;
