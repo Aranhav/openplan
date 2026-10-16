@@ -14,6 +14,12 @@ use super::{
 
 const SYSTEM_AREA: &str = "System";
 
+/// The most dimensions a module has, its lists, subsets, Time and Versions together, and so the
+/// most coordinates a cell of a line item has. Cells are addressed by a list of coordinates that
+/// is read into memory before it can be checked against the line item, so the limit is also what
+/// a request is read up to.
+pub const MAX_MODULE_DIMENSIONS: usize = 16;
+
 /// A grid of line items over shared dimensions.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Module {
@@ -215,6 +221,9 @@ impl Structure {
             .transpose()?;
         if let Some(axes) = &axes {
             self.check_axes(axes, true)?;
+            for line_item in self.line_items_in(id) {
+                check_dimensions(line_item, axes)?;
+            }
             if let Some(line_item) = self
                 .line_items_in(id)
                 .find(|li| finer_than_module(&li.time_scale, axes))
@@ -371,6 +380,9 @@ impl Structure {
         if let Some(axes) = &line_item.applies_to {
             self.check_axes(axes, false)?;
         }
+        if let Some(module) = self.modules.get(&line_item.module) {
+            check_dimensions(line_item, &module.axes)?;
+        }
         if let VersionsScope::Only(only) = &line_item.versions {
             if only.is_empty() {
                 return Err(EngineError::invalid(
@@ -406,9 +418,15 @@ impl Structure {
         Ok(name)
     }
 
-    /// Checks that axes exist and are distinct. `allow_time_versions` is false for a line
-    /// item's `applies_to`, which only replaces list and subset axes.
+    /// Checks that axes exist and are distinct, and that a module has no more than
+    /// [`MAX_MODULE_DIMENSIONS`]. `allow_time_versions` is false for a line item's `applies_to`,
+    /// which only replaces list and subset axes.
     fn check_axes(&self, axes: &[AxisSpec], allow_time_versions: bool) -> Result<(), EngineError> {
+        if allow_time_versions && axes.len() > MAX_MODULE_DIMENSIONS {
+            return Err(EngineError::invalid(format!(
+                "A module can have at most {MAX_MODULE_DIMENSIONS} dimensions."
+            )));
+        }
         let mut lists = HashSet::new();
         let mut has_time = false;
         let mut has_versions = false;
@@ -467,6 +485,32 @@ fn clean_area(raw: &str) -> Result<String, EngineError> {
         return Ok(String::new());
     }
     clean_name("functional area", area)
+}
+
+/// Fails if `line_item` would have more than [`MAX_MODULE_DIMENSIONS`] dimensions in a module with
+/// `module_axes`: its own lists and subsets, and Time and Versions where it has them.
+fn check_dimensions(line_item: &LineItem, module_axes: &[AxisSpec]) -> Result<(), EngineError> {
+    let is_own = |axis: &&AxisSpec| matches!(axis, AxisSpec::List { .. } | AxisSpec::Subset { .. });
+    let own = line_item
+        .applies_to
+        .as_deref()
+        .unwrap_or(module_axes)
+        .iter()
+        .filter(is_own)
+        .count();
+    let has = |wanted: fn(&AxisSpec) -> bool| module_axes.iter().any(wanted);
+    let time = has(|axis| matches!(axis, AxisSpec::Time { .. }))
+        && line_item.time_scale != TimeScale::None;
+    let versions =
+        has(|axis| matches!(axis, AxisSpec::Versions)) && line_item.versions != VersionsScope::None;
+    let dimensions = own + usize::from(time) + usize::from(versions);
+    if dimensions > MAX_MODULE_DIMENSIONS {
+        return Err(EngineError::invalid(format!(
+            "Line item '{}' would have {dimensions} dimensions; the limit is {MAX_MODULE_DIMENSIONS}.",
+            line_item.name
+        )));
+    }
+    Ok(())
 }
 
 /// The Time dimension among a module's axes: its level and optional range.
