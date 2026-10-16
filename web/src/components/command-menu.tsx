@@ -1,6 +1,6 @@
-import { useNavigate } from "@tanstack/react-router"
+import { useNavigate, useParams } from "@tanstack/react-router"
 import { Box, Building2, Check, CircleUser, LayoutGrid, UserCog, Users } from "lucide-react"
-import { type ReactNode, useEffect } from "react"
+import { type ReactNode, type RefObject, useEffect, useRef } from "react"
 import { ErrorState } from "@/components/error-state"
 import { THEME_OPTIONS } from "@/components/theme-options"
 import { useTheme } from "@/components/theme-provider"
@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/dialog"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useMe } from "@/features/auth/api"
+import { ModelCommands } from "@/features/build/model-commands"
 import { useModels } from "@/features/models/api"
 import { useWorkspaces } from "@/features/workspaces/api"
 import { roleLabels } from "@/features/workspaces/roles"
@@ -35,12 +36,23 @@ interface CommandMenuProps {
   onOpenChange: (open: boolean) => void
 }
 
-export function CommandMenu({ open, onOpenChange }: CommandMenuProps) {
+/** The palette only opens from the keyboard or the search button, so neither is the dialog's trigger. */
+export function CommandMenu({
+  open,
+  onOpenChange,
+  searchButton,
+}: CommandMenuProps & {
+  /** Gets the focus back when the palette closes and whatever had it before is gone. */
+  searchButton: RefObject<HTMLElement | null>
+}) {
   const navigate = useNavigate()
   const { theme, setTheme } = useTheme()
   const { data: me } = useMe()
   const { data: workspaces = [] } = useWorkspaces()
   const { workspace } = useCurrentWorkspace()
+  const { modelId } = useParams({ strict: false })
+  // Set by the shortcut only: the search button is its own opener, and is the fallback anyway.
+  const opener = useRef<HTMLElement | null>(null)
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -52,12 +64,24 @@ export function CommandMenu({ open, onOpenChange }: CommandMenuProps) {
       // over in every case, but only act on a fresh press, and never from behind another dialog.
       event.preventDefault()
       if (!event.repeat && (open || !document.querySelector(OPEN_DIALOG))) {
+        if (!open) {
+          const active = document.activeElement
+          opener.current = active instanceof HTMLElement && active !== document.body ? active : null
+        }
         onOpenChange(!open)
       }
     }
     document.addEventListener("keydown", onKeyDown)
     return () => document.removeEventListener("keydown", onKeyDown)
   }, [open, onOpenChange])
+
+  // Radix hands the focus back to the dialog's trigger, which this one does not have.
+  function restoreFocus(event: Event) {
+    event.preventDefault()
+    const target = opener.current?.isConnected ? opener.current : searchButton.current
+    opener.current = null
+    target?.focus()
+  }
 
   function run(action: () => unknown) {
     onOpenChange(false)
@@ -66,13 +90,14 @@ export function CommandMenu({ open, onOpenChange }: CommandMenuProps) {
 
   // Each item's value is what the search matches, so it spells out where the item leads.
   return (
-    <PaletteDialog open={open} onOpenChange={onOpenChange}>
+    <PaletteDialog open={open} onOpenChange={onOpenChange} onCloseAutoFocus={restoreFocus}>
       <CommandInput
         className="text-base md:text-sm"
         placeholder="Search pages, models and workspaces…"
       />
       <CommandList className="max-h-[min(24rem,60svh)]">
         <CommandEmpty>No results found.</CommandEmpty>
+        {modelId && <ModelCommands modelId={modelId} run={run} />}
         <CommandGroup heading="Go to">
           {workspace && (
             <>
@@ -168,11 +193,12 @@ export function CommandMenu({ open, onOpenChange }: CommandMenuProps) {
 function PaletteDialog({
   open,
   onOpenChange,
+  onCloseAutoFocus,
   children,
-}: CommandMenuProps & { children: ReactNode }) {
+}: CommandMenuProps & { onCloseAutoFocus: (event: Event) => void; children: ReactNode }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="overflow-hidden p-0">
+      <DialogContent className="overflow-hidden p-0" onCloseAutoFocus={onCloseAutoFocus}>
         <DialogHeader className="sr-only">
           <DialogTitle>Command palette</DialogTitle>
           <DialogDescription>

@@ -18,7 +18,7 @@ OpenPlan is an open-source Enterprise Performance Management (EPM) / connected-p
 3. Editing one input cell in a 1M-cell model shows recalculated results in under 50 ms of server time.
 4. All tests (engine, server, web unit, Playwright E2E) pass in CI on every merge.
 
-**Non-goals (initial release):** sparse storage engine (Anaplan Polaris-style), week/day time granularity, Excel add-in, native mobile apps, multi-node clustering (one server process owns all loaded models), ERP-specific connectors (REST API + CSV/XLSX cover integration).
+**Non-goals (initial release):** sparse storage engine (Anaplan Polaris-style; roadmap M9, §15), week/day time granularity (roadmap M10, §15), Excel add-in (roadmap M16), native mobile apps (roadmap M19), multi-node clustering (one server process owns all loaded models; roadmap M18), ERP-specific connectors (REST API + CSV/XLSX cover integration; roadmap M16).
 
 ## 2. Architecture
 
@@ -459,3 +459,45 @@ Each milestone gets its own implementation plan in `docs/superpowers/plans/`, is
 | M6 | Collaboration & ALM | Comments + mentions, presence, audit log, cell history, drill to source, revisions, diff, sync, `.openplan` export/import, model copy |
 | M7 | Advanced | Scenario sandboxes, forecasting action, AI provider settings + four AI features |
 | M8 | Launch | Demo model, docs (user guide, formula reference, API guide), perf benchmarks, accessibility audit, README with screenshots, release Docker image workflow |
+
+### Roadmap after the initial release
+
+Built only after M8 merges, in this order. Each gets its own design spec and plan before any code.
+
+| # | Name | Deliverables |
+|---|---|---|
+| M9 | Sparse engine | Hybrid storage chosen per line item from its fill: dense columns as today for well-filled data, block-sparse storage for sparse data. Block-sparse means sparse across the outer dimensions (only combinations that hold data get a block) and dense inside a block (time and versions as plain arrays, so the vectorised kernels keep dense speed). Sorted mixed-radix keys with a default value per line item (only exceptions stored); sparsity-aware operators (product → intersection, sum → union, IF follows its condition); formulas that would fill a huge space keep a default instead of materialising; summaries as streaming group-by over sorted keys, parallel over blocks; change-set (key-level) incremental recalc; codec and checkpoints for blocks; view queries and alignment over sparse keys. The per-line-item cell cap moves from allocated to populated cells. Every engine test runs on both storages with property tests proving identical results. Targets: 100M populated cells in a 54-billion-cell space within about 3 GB; a one-cell edit recalculates in under 50 ms; well-filled data within 1.2× of today's dense speed. |
+| M10 | Week and day time | Week and day time levels; ISO weeks and 4-4-5 / 4-5-4 / 5-4-4 retail calendars and 13-period years; week↔month mapping for weeks that span months; time functions, summaries, switchover and time ranges at week and day level; Time screen and grid support. Depends on M9 because day-level models are large and sparse. |
+| M11 | Forecasting and ML engine | An internal forecasting engine that runs inside OpenPlan. Data never leaves the server, and it is separate from the M7 AI features, which explain and assist. **Demand classification** (Syntetos–Boylan ADI/CV²: smooth, erratic, intermittent, lumpy) routes each series to suitable methods. **Statistical:** full ETS family (additive/multiplicative error, trend and seasonality, damped trend) with AICc selection; AutoARIMA; Theta and Optimized Theta; MSTL for multiple seasonalities (weekly + yearly). **Intermittent demand:** Croston, SBA and TSB (for obsolescence), ADIDA. **Machine learning:** global gradient-boosted tree models trained across all series, with lag, rolling, calendar, holiday, price and promotion features (the approach that won the M5 competition); external drivers as regressors. **Optional pre-trained time-series foundation model** run locally on CPU through ONNX for zero-shot forecasts. **Ensembles** of the best methods per series. **Hierarchical reconciliation** (bottom-up, top-down, MinT) so SKU, family and region forecasts add up. **Probabilistic forecasts** (P10/P50/P90) for safety stock. **Rolling-origin back-testing** with MAPE, WAPE, MASE, RMSSE and bias, and automatic per-series model choice. **Explainability:** trend/seasonality/driver decomposition and feature importance. Runs as background jobs, parallel over series, writing results as one batch through the model actor, and can be scheduled to retrain. Weekly seasonality depends on M10; large SKU × location sets benefit from M9. |
+| M12 | Planning methods | **Breakback**: type a value on a summary cell and spread it to its children, in proportion, evenly or by a driver, with locked cells kept. **SPREAD and allocation functions.** **Allocation engine**: multi-step cost allocations (direct, step-down, reciprocal, activity-based) as declared rules with an audit of every step. **Multi-currency**: rate tables by version and period, conversion functions, reporting currency, translation (average and closing rate). **BOM explosion**: multi-level recursive bills of materials. **Goal seek.** |
+| M13 | Financial consolidation and close | Legal entities and ownership; intercompany matching and eliminations; currency translation with CTA; minority interest; journals (manual and recurring) with approval; account mapping from the GL; close calendar and task checklist; balance sheet and cash flow checks; audit trail for every number. |
+| M14 | Optimizer | Linear and mixed-integer solver for supply and production planning, inventory deployment, workforce scheduling, and territory and quota balancing. Objective, constraints and decisions are mapped to line items; results are written back as one batch; infeasibility is explained. |
+| M15 | Sales performance and incentive compensation | Territory design with map views; quota setting with breakback (M12); capacity planning; a transaction-level crediting engine (rules, splits, hierarchies, effective dating) on large transaction lists (M9); commission plans (tiers, accelerators, caps, draws, clawbacks); a payee statements portal for external users; disputes workflow; payroll export. |
+| M16 | Integration hub | Native connectors: Salesforce, HubSpot, NetSuite, SAP, Oracle, Microsoft Dynamics, QuickBooks, Xero, Workday, BambooHR, Snowflake, BigQuery, Redshift, Postgres, MySQL, S3, Google Sheets. Scheduled imports, actions and processes; incremental loads; webhooks and an events API; an Excel add-in and a Google Sheets add-on with live read and write. |
+| M17 | Reporting and distribution | Paginated, pixel-accurate financial reports and board books; PDF, PowerPoint and formatted Excel output; scheduled email distribution with access applied per recipient; variance commentary woven into reports; map charts. |
+| M18 | Enterprise scale and security | Multi-node clustering with model placement and failover; high availability and backups; SAML SSO and SCIM provisioning; customer-managed encryption keys; data residency; audit export to SIEM; internationalisation (translations, locale number/date formats, right-to-left); SOC 2 readiness. |
+| M19 | Use-case applications and mobile | Ready-to-use application templates, each a model plus pages, imports and workflow, installable from a gallery, for every use case in the table below; installable mobile app (approvals, dashboards, comments, notifications). |
+
+#### Use-case coverage
+
+| Area | Use cases | Covered by |
+|---|---|---|
+| Finance | Budgeting, rolling forecasts, long-range plans, driver-based plans, 3-statement models | M1–M8 |
+| Finance | Capex and depreciation, lease schedules, project budgets | M1–M8 + M19 templates |
+| Finance | Cost allocation and profitability, multi-currency planning | M12 |
+| Finance | Consolidation, intercompany, close management | M13 |
+| Finance | Daily cash flow and treasury | M10 + M19 |
+| Finance | Board reporting and management packs | M4 + M17 |
+| Sales | Territory and quota planning, sales capacity | M12 + M15 |
+| Sales | Incentive compensation and commissions | M15 |
+| Sales | Pipeline and bookings forecasting from CRM | M11 + M16 |
+| Supply chain | Demand planning and forecasting | M11 |
+| Supply chain | S&OP / IBP consensus | M5 + M11 |
+| Supply chain | Supply, inventory, production and distribution planning | M12 (BOM) + M14 |
+| Supply chain | Retail merchandise planning and open-to-buy, assortment | M9 + M10 + M19 |
+| Workforce | Headcount, compensation, hiring and attrition plans | M1–M8 + M16 (HRIS) + M19 |
+| Workforce | Workforce scheduling | M10 + M14 |
+| Marketing | Budget and campaign planning, ROI | M1–M8 + M19 |
+| Marketing | Marketing mix modelling | M11 |
+| Operations | IT and cloud spend (FinOps), procurement and spend planning | M16 + M19 |
+| Industry | Banking (loan books, interest-rate risk), insurance, healthcare, public sector (position budgeting, grants), ESG and emissions planning | M12 + M19 templates |

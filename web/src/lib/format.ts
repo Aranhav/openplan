@@ -28,3 +28,8 @@ export function relativeTime(iso: string, now: Date = new Date()): string {
   const [unit, size] = UNITS.find(([, size]) => Math.abs(gap) >= size)!
   return formatter.format(Math.trunc(gap / size), unit)
 }
+
+/** "1 item", "12 items": the count with a thousands separator, and the noun in the plural unless it is one. */
+export function countOf(count: number, noun: string) {
+  return `${count.toLocaleString("en")} ${count === 1 ? noun : `${noun}s`}`
+}

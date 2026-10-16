@@ -31,6 +31,7 @@ use uuid::Uuid;
 use crate::{
     engine_store,
     error::{AppError, AppResult},
+    view_cache::{self, PassingCache, PassingStore},
 };
 
 /// How many change-log rows, batches and the cells they changed, pile up before an actor has a
@@ -101,6 +102,9 @@ pub struct ModelHandle {
     /// Weak, so that the channel closes with the actor and not when the last handle is gone.
     events: broadcast::WeakSender<ModelEvent>,
     last_used: Arc<Mutex<Instant>>,
+    /// The rows that pass the filters of the views read lately, which go with the model for as
+    /// long as it is loaded.
+    passing: Arc<PassingCache>,
 }
 
 impl ModelHandle {
@@ -167,6 +171,11 @@ impl ModelHandle {
     pub fn snapshot_seq(&self) -> (Arc<Model>, i64) {
         let published = self.published.borrow();
         (Arc::clone(&published.model), published.seq)
+    }
+
+    /// The rows that pass the filters of the views read lately.
+    pub fn passing_cache(&self) -> Arc<PassingCache> {
+        Arc::clone(&self.passing)
     }
 
     /// Follows the batches applied from now on. The channel closes when the actor stops, so
@@ -252,6 +261,8 @@ struct Actor {
     last_failure: Option<Failure>,
     published: watch::Sender<Published>,
     events: broadcast::Sender<ModelEvent>,
+    /// The rows that pass the filters of the views read lately, which a batch makes out of date.
+    passing: Arc<PassingCache>,
 }
 
 /// What the actor wakes up for.
@@ -265,7 +276,14 @@ enum Event {
 type Saved = (InFlight, Result<AppResult<()>, JoinError>);
 
 impl Actor {
-    async fn run(mut self, mut mailbox: mpsc::Receiver<Request>) {
+    async fn run(self, mailbox: mpsc::Receiver<Request>) {
+        let passing = Arc::clone(&self.passing);
+        self.serve(mailbox).await;
+        // However the actor ended, the model is not in memory any more.
+        passing.forget();
+    }
+
+    async fn serve(mut self, mut mailbox: mpsc::Receiver<Request>) {
         loop {
             let event = tokio::select! {
                 request = mailbox.recv() => Event::Request(request),
@@ -369,6 +387,8 @@ impl Actor {
             model: Arc::clone(&self.model),
             seq,
         });
+        // Rows found in the model before the batch are let go of now, not at the next view.
+        self.passing.invalidate(seq);
         let event = if change_set.structure_changed {
             ModelEvent::StructureChanged { seq }
         } else {
@@ -519,7 +539,12 @@ struct Running {
 
 impl Running {
     /// Loads the model and starts its actor.
-    async fn start(db: &PgPool, model_id: Uuid) -> AppResult<Running> {
+    async fn start(
+        db: &PgPool,
+        model_id: Uuid,
+        event_buffer: usize,
+        passing: Arc<PassingStore>,
+    ) -> AppResult<Running> {
         let (model, seq) = engine_store::load(db, model_id).await?;
         let (checkpointed_seq, rows_since_checkpoint) =
             engine_store::batches_since_checkpoint(db, model_id).await?;
@@ -528,7 +553,8 @@ impl Running {
             model: Arc::clone(&model),
             seq,
         });
-        let (events, _) = broadcast::channel(EVENT_BUFFER);
+        let (events, _) = broadcast::channel(event_buffer);
+        let passing = Arc::new(PassingCache::new(model_id, passing));
         let (mailbox, requests) = mpsc::channel(MAILBOX_SIZE);
         let handle = ModelHandle {
             model_id,
@@ -536,6 +562,7 @@ impl Running {
             published: snapshots,
             events: events.downgrade(),
             last_used: Arc::new(Mutex::new(Instant::now())),
+            passing: Arc::clone(&passing),
         };
         let actor = Actor {
             model_id,
@@ -548,6 +575,7 @@ impl Running {
             last_failure: None,
             published,
             events,
+            passing,
         };
         Ok(Running {
             handle,
@@ -584,6 +612,10 @@ enum Pick {
 struct Registry {
     db: PgPool,
     idle: Duration,
+    /// How many events a slow subscriber of a model may fall behind by.
+    event_buffer: usize,
+    /// The rows that pass the filters of the views of every model, within one budget.
+    passing: Arc<PassingStore>,
     slots: Mutex<HashMap<Uuid, Arc<Slot>>>,
     /// Lets as many actors save their last checkpoint at once as half the connections of the
     /// pool, so that unloading many models does not make the batches that go on wait for one.
@@ -599,11 +631,19 @@ pub struct ModelRegistry {
 impl ModelRegistry {
     /// A registry over the models in `db`, which unloads a model once it is `idle` unused.
     pub fn new(db: PgPool, idle: Duration) -> ModelRegistry {
+        ModelRegistry::with_event_buffer(db, idle, EVENT_BUFFER)
+    }
+
+    /// [`ModelRegistry::new`], with subscribers that may fall behind by `event_buffer` events
+    /// before they miss some, which a test makes small.
+    pub fn with_event_buffer(db: PgPool, idle: Duration, event_buffer: usize) -> ModelRegistry {
         let stopping = (db.options().get_max_connections() / 2).max(1) as usize;
         ModelRegistry {
             inner: Arc::new(Registry {
                 db,
                 idle,
+                event_buffer,
+                passing: Arc::new(PassingStore::new(view_cache::BUDGET)),
                 slots: Mutex::new(HashMap::new()),
                 stopping: Arc::new(Semaphore::new(stopping)),
             }),
@@ -621,7 +661,13 @@ impl ModelRegistry {
             return Ok(running.handle.clone());
         }
         // Either nothing is loaded or the actor stopped on its own; the database has the truth.
-        let started = Running::start(&self.inner.db, model_id).await?;
+        let started = Running::start(
+            &self.inner.db,
+            model_id,
+            self.inner.event_buffer,
+            Arc::clone(&self.inner.passing),
+        )
+        .await?;
         let handle = started.handle.clone();
         *running = Some(started);
         Ok(handle)

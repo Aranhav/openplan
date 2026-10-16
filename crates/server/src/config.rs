@@ -21,6 +21,10 @@ pub struct Config {
     pub db_pool_size: u32,
     /// How many minutes a model may go unused before it is saved and unloaded.
     pub model_idle_minutes: u32,
+    /// Where browsers open the WebSocket of a model: `wss://host` without a path. It is
+    /// `OPENPLAN_LIVE_URL`, or else the public URL with `ws` or `wss` for `http` or `https`. None
+    /// when the public URL is not a web address, and then the request's own host is used.
+    pub live_url: Option<String>,
 }
 
 impl fmt::Debug for Config {
@@ -33,6 +37,7 @@ impl fmt::Debug for Config {
             .field("trusted_proxy_hops", &self.trusted_proxy_hops)
             .field("db_pool_size", &self.db_pool_size)
             .field("model_idle_minutes", &self.model_idle_minutes)
+            .field("live_url", &self.live_url)
             .finish_non_exhaustive()
     }
 }
@@ -90,20 +95,94 @@ impl Config {
                 })?,
             None => DEFAULT_MODEL_IDLE_MINUTES,
         };
+        let public_url = required("OPENPLAN_PUBLIC_URL")?;
+        let live_url = match value("OPENPLAN_LIVE_URL") {
+            Some(live) => Some(explicit_live_url(&live)?),
+            None => derived_live_url(&public_url),
+        };
         Ok(Config {
             database_url: required("DATABASE_URL")?,
-            public_url: required("OPENPLAN_PUBLIC_URL")?,
+            public_url,
             bind,
             log: value("OPENPLAN_LOG").unwrap_or_else(|| DEFAULT_LOG.to_string()),
             trusted_proxy_hops,
             db_pool_size,
             model_idle_minutes,
+            live_url,
         })
     }
 
     pub fn secure_cookies(&self) -> bool {
         self.public_url.starts_with("https://")
     }
+
+    /// The origin of the public URL, which is what a browser sends as `Origin` from the app.
+    /// None when the public URL is not a web address.
+    pub fn public_origin(&self) -> Option<String> {
+        origin_of(&self.public_url)
+    }
+}
+
+/// `OPENPLAN_LIVE_URL` as the server uses it: a `ws://` or `wss://` address with a host, without
+/// a trailing slash.
+fn explicit_live_url(live: &str) -> anyhow::Result<String> {
+    let live = live.trim_end_matches('/');
+    let has_host = live
+        .strip_prefix("wss://")
+        .or_else(|| live.strip_prefix("ws://"))
+        .is_some_and(|rest| !rest.is_empty());
+    anyhow::ensure!(
+        has_host,
+        "OPENPLAN_LIVE_URL is not a ws:// or wss:// address: {live}"
+    );
+    Ok(live.to_string())
+}
+
+/// The public URL with `ws` for `http` and `wss` for `https`, down to its origin.
+fn derived_live_url(public_url: &str) -> Option<String> {
+    let origin = origin_of(public_url)?;
+    origin
+        .strip_prefix("https://")
+        .map(|rest| format!("wss://{rest}"))
+        .or_else(|| {
+            origin
+                .strip_prefix("http://")
+                .map(|rest| format!("ws://{rest}"))
+        })
+}
+
+/// The origin of a web address as a browser writes it in the `Origin` header: the scheme and the
+/// host in lower case, and the port unless it is the scheme's own. None for anything that is not
+/// an `http` or `https` address with a host.
+pub fn origin_of(url: &str) -> Option<String> {
+    let (scheme, rest) = url.split_once("://")?;
+    let scheme = scheme.to_ascii_lowercase();
+    let default_port = match scheme.as_str() {
+        "http" => "80",
+        "https" => "443",
+        _ => return None,
+    };
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let authority = authority.rsplit('@').next()?.to_ascii_lowercase();
+    let (host, port) = match authority.strip_prefix('[') {
+        Some(_) => {
+            let end = authority.find(']')? + 1;
+            (&authority[..end], authority[end..].strip_prefix(':'))
+        }
+        None => match authority.split_once(':') {
+            Some((host, port)) => (host, Some(port)),
+            None => (authority.as_str(), None),
+        },
+    };
+    if host.is_empty() {
+        return None;
+    }
+    Some(match port {
+        Some(port) if !port.is_empty() && port != default_port => {
+            format!("{scheme}://{host}:{port}")
+        }
+        _ => format!("{scheme}://{host}"),
+    })
 }
 
 #[cfg(test)]
@@ -370,5 +449,88 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(config.bind.to_string(), "0.0.0.0:10000");
+    }
+
+    fn live_config(vars: &[(&str, &str)]) -> anyhow::Result<Config> {
+        let mut all = vec![("DATABASE_URL", "postgres://localhost/openplan")];
+        all.extend_from_slice(vars);
+        config_from(&all)
+    }
+
+    #[test]
+    fn the_live_url_follows_the_public_url_when_it_is_not_set() {
+        for (public, live) in [
+            ("http://localhost:8080", "ws://localhost:8080"),
+            ("https://plan.acme.com", "wss://plan.acme.com"),
+            ("https://plan.acme.com/", "wss://plan.acme.com"),
+            ("HTTPS://plan.acme.com/app", "wss://plan.acme.com"),
+        ] {
+            let config = live_config(&[("OPENPLAN_PUBLIC_URL", public)]).unwrap();
+            assert_eq!(config.live_url.as_deref(), Some(live), "{public}");
+        }
+    }
+
+    #[test]
+    fn the_live_url_can_be_set_apart_from_the_public_url() {
+        let config = live_config(&[
+            ("OPENPLAN_PUBLIC_URL", "https://openplan.vercel.app"),
+            ("OPENPLAN_LIVE_URL", " wss://openplan-api.onrender.com/ "),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            config.live_url.as_deref(),
+            Some("wss://openplan-api.onrender.com")
+        );
+    }
+
+    #[test]
+    fn a_live_url_that_is_not_a_websocket_address_is_an_error() {
+        for live in [
+            "https://openplan-api.onrender.com",
+            "openplan-api",
+            "wss://",
+        ] {
+            let err = live_config(&[
+                ("OPENPLAN_PUBLIC_URL", "https://plan.acme.com"),
+                ("OPENPLAN_LIVE_URL", live),
+            ])
+            .unwrap_err();
+            assert!(err.to_string().contains("OPENPLAN_LIVE_URL"), "{err}");
+        }
+    }
+
+    #[test]
+    fn without_a_web_address_there_is_no_live_url_to_derive() {
+        let config = live_config(&[("OPENPLAN_PUBLIC_URL", "plan.acme.com")]).unwrap();
+
+        assert_eq!(config.live_url, None);
+        assert_eq!(config.public_origin(), None);
+    }
+
+    #[test]
+    fn the_origin_of_a_url_is_what_a_browser_sends() {
+        for (url, origin) in [
+            ("http://localhost:8080", Some("http://localhost:8080")),
+            ("https://Plan.Acme.com/", Some("https://plan.acme.com")),
+            (
+                "https://plan.acme.com:443/a?b#c",
+                Some("https://plan.acme.com"),
+            ),
+            ("http://plan.acme.com:80", Some("http://plan.acme.com")),
+            (
+                "http://plan.acme.com:8080",
+                Some("http://plan.acme.com:8080"),
+            ),
+            ("https://ada@plan.acme.com", Some("https://plan.acme.com")),
+            ("http://[::1]:8080/", Some("http://[::1]:8080")),
+            ("http://[::1]:80", Some("http://[::1]")),
+            ("https://", None),
+            ("ftp://plan.acme.com", None),
+            ("plan.acme.com", None),
+            ("null", None),
+        ] {
+            assert_eq!(origin_of(url).as_deref(), origin, "{url}");
+        }
     }
 }

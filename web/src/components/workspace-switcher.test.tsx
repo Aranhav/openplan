@@ -15,6 +15,7 @@ import {
 } from "@/test/app"
 import { problem } from "@/test/problem"
 import { server } from "@/test/server"
+import { spinning } from "@/test/spinning"
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 
@@ -200,7 +201,7 @@ describe("the workspace switcher", () => {
 
     const submit = within(dialog).getByRole("button", { name: "Create workspace" })
     expect(submit).toBeDisabled()
-    expect(submit.querySelector("svg.animate-spin")).toBeInTheDocument()
+    expect(spinning(submit)).toBe(true)
     // Let the request finish, so nothing is still running when the next test starts.
     await waitFor(() => expect(router.state.location.pathname).toBe(`/w/${initech.id}`))
   })

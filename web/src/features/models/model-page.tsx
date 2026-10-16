@@ -1,7 +1,5 @@
-import { Link, useNavigate } from "@tanstack/react-router"
-import { ArrowLeft, Box } from "lucide-react"
+import { useNavigate } from "@tanstack/react-router"
 import { useState } from "react"
-import { EmptyState } from "@/components/empty-state"
 import { ErrorState } from "@/components/error-state"
 import { PageHeader } from "@/components/page-header"
 import { Button } from "@/components/ui/button"
@@ -9,9 +7,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Skeleton } from "@/components/ui/skeleton"
 import { canEditModels } from "@/features/workspaces/roles"
 import { useCurrentWorkspace } from "@/hooks/use-current-workspace"
-import { useDocumentTitle } from "@/hooks/use-document-title"
+import { useHeadingFocus } from "@/hooks/use-heading-focus"
 import { useRestoreFocus } from "@/hooks/use-restore-focus"
-import { ApiError } from "@/lib/api/client"
 import type { components } from "@/lib/api/schema"
 import { useModel } from "./api"
 import { DeleteModelDialog } from "./delete-model-dialog"
@@ -21,11 +18,7 @@ import { ModelSettingsForm } from "./model-settings-form"
 export function ModelPage({ modelId }: { modelId: string }) {
   const model = useModel(modelId)
 
-  // A 404 means the model is gone, even if a copy of it is still on screen. Any other failure to
-  // refresh leaves the page as it is, so a form with unsaved changes is never unmounted.
-  if (model.error instanceof ApiError && model.error.status === 404) {
-    return <ModelNotFound />
-  }
+  // A failure to refresh leaves the page as it is, so a form with unsaved changes is never unmounted.
   if (model.data) {
     return <ModelDetails model={model.data} />
   }
@@ -56,31 +49,12 @@ export function ModelPage({ modelId }: { modelId: string }) {
   )
 }
 
-function ModelNotFound() {
-  useDocumentTitle("Model not found · OpenPlan")
-  return (
-    <EmptyState
-      icon={Box}
-      title="Model not found"
-      description="It may have been deleted, or you don't have access."
-      action={
-        <Button asChild>
-          <Link to="/">
-            <ArrowLeft />
-            Back to models
-          </Link>
-        </Button>
-      }
-      headingLevel={1}
-    />
-  )
-}
-
 function ModelDetails({ model }: { model: components["schemas"]["ModelDto"] }) {
   const { workspace } = useCurrentWorkspace()
   const navigate = useNavigate()
   const [deleting, setDeleting] = useState(false)
   const { ref: deleteRef, onCloseAutoFocus: restoreFocus } = useRestoreFocus<HTMLButtonElement>()
+  const heading = useHeadingFocus()
   const canEdit = workspace !== undefined && canEditModels(workspace.role)
 
   return (
@@ -124,7 +98,7 @@ function ModelDetails({ model }: { model: components["schemas"]["ModelDto"] }) {
           open={deleting}
           onOpenChange={setDeleting}
           onCloseAutoFocus={restoreFocus}
-          focusAfterDelete={() => document.querySelector("h1")}
+          focusAfterDelete={heading}
           onDeleted={() =>
             navigate({ to: "/w/$workspaceId", params: { workspaceId: model.workspace_id } })
           }

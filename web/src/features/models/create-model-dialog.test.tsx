@@ -7,6 +7,7 @@ import { makeModel, workspace } from "@/test/app"
 import { problem } from "@/test/problem"
 import { renderWithProviders } from "@/test/render"
 import { server } from "@/test/server"
+import { spinning } from "@/test/spinning"
 import { CreateModelDialog } from "./create-model-dialog"
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
@@ -153,7 +154,7 @@ describe("CreateModelDialog", () => {
 
     const submit = within(dialog).getByRole("button", { name: "Create model" })
     expect(submit).toBeDisabled()
-    expect(submit.querySelector("svg.animate-spin")).toBeInTheDocument()
+    expect(spinning(submit)).toBe(true)
     // Let the request finish, so nothing is still running when the next test starts.
     await waitFor(() => expect(router.state.location.pathname).toBe(`/m/${created.id}`))
   })

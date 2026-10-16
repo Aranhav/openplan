@@ -17,7 +17,9 @@ mod module;
 pub(crate) use layout::Layout;
 pub use layout::MAX_LINE_ITEM_CELLS;
 pub use list::{Item, List, Lookup};
-pub use module::{AxisSpec, LineItem, Module, SummaryMethod, TimeScale, VersionsScope};
+pub use module::{
+    AxisSpec, LineItem, MAX_MODULE_DIMENSIONS, Module, SummaryMethod, TimeScale, VersionsScope,
+};
 
 const MAX_NAME_CHARS: usize = 80;
 

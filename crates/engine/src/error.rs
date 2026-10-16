@@ -83,6 +83,19 @@ impl EngineError {
     }
 }
 
+/// A count with a comma between groups of three digits, `67,108,864`.
+pub(crate) fn grouped(count: u128) -> String {
+    let digits = count.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (position, digit) in digits.chars().enumerate() {
+        if position > 0 && (digits.len() - position).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,5 +248,19 @@ mod tests {
                 "suggestion": "Revenue",
             })
         );
+    }
+
+    #[test]
+    fn counts_are_grouped_by_thousands() {
+        for (count, grouped_count) in [
+            (0, "0"),
+            (999, "999"),
+            (1_000, "1,000"),
+            (12_345, "12,345"),
+            (2_000_000, "2,000,000"),
+            (67_108_864, "67,108,864"),
+        ] {
+            assert_eq!(grouped(count), grouped_count);
+        }
     }
 }

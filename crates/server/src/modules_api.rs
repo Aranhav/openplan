@@ -682,7 +682,7 @@ pub(crate) async fn update_module(
         ("module_id" = Uuid, Path, description = "The module's id"),
     ),
     responses(
-        (status = 204, description = "The module and its line items were deleted"),
+        (status = 204, description = "The module, its line items and its saved views were deleted"),
         (status = 401, description = "Not signed in (auth.unauthenticated)"),
         (status = 403, description = "Not a workspace builder (auth.forbidden)"),
         (status = 404, description = "No such model or module, or the caller is not a member of the workspace (not_found)"),
@@ -709,6 +709,12 @@ pub(crate) async fn delete_module(
                 id: ModuleId(module_id),
             }],
         )
+        .await?;
+    // The views name their module by id and have no foreign key to it, so they go with it here,
+    // once the module is gone from the model.
+    sqlx::query("DELETE FROM views WHERE module_id = $1")
+        .bind(module_id)
+        .execute(&state.db)
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -804,7 +810,8 @@ pub(crate) async fn create_line_item(
             references.line_item("read_access_driver", line_item.read_access_driver);
             references.line_item("write_access_driver", line_item.write_access_driver);
             references.finish()?;
-            let answer = LineItemDto::from(&line_item);
+            // The formula was just accepted, so it has no problems.
+            let answer = LineItemDto::new(&line_item, &[]);
             Ok((vec![Command::CreateLineItem(line_item)], answer))
         })
         .await?;
@@ -907,10 +914,15 @@ pub(crate) async fn update_line_item(
             references.finish()?;
             let mut updated = current.clone();
             patch.clone().apply_to(&mut updated);
-            Ok((
-                vec![Command::UpdateLineItem { id, patch }],
-                LineItemDto::from(&updated),
-            ))
+            // A formula that was just set was accepted, so it has no problems. Otherwise the line
+            // item has those the model last read in its formula, such as a name that was deleted.
+            let problems = if patch.formula.is_some() {
+                &[]
+            } else {
+                model.line_item_errors(id).unwrap_or_default()
+            };
+            let answer = LineItemDto::new(&updated, problems);
+            Ok((vec![Command::UpdateLineItem { id, patch }], answer))
         })
         .await?;
     Ok(Json(updated))

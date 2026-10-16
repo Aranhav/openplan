@@ -110,6 +110,21 @@ pub enum Value {
     Period(Option<(TimeLevel, u32)>),
 }
 
+impl Value {
+    /// Whether this is the blank value of its type: 0, false, empty text, or no date, item or
+    /// period. [`Column::is_blank_at`] says the same of a stored cell.
+    pub fn is_blank(&self) -> bool {
+        match self {
+            Value::Number(number) => *number == 0.0,
+            Value::Boolean(flag) => !flag,
+            Value::Text(text) => text.is_empty(),
+            Value::Date(date) => date.is_none(),
+            Value::Item(item) => item.is_none(),
+            Value::Period(period) => period.is_none(),
+        }
+    }
+}
+
 /// Typed storage for the cells of one line item.
 ///
 /// Dates are days since 1970-01-01 (`i32::MIN` is blank); items are dense indices into
@@ -355,6 +370,49 @@ mod tests {
             Column::Period(vec![u32::MAX; 2])
         );
         assert_eq!(Column::new_blank(&ValueType::Text, 0).len(), 0);
+    }
+
+    #[test]
+    fn values_are_blank_exactly_when_their_stored_cells_are() {
+        // A column of a blank cell and a filled one, and the values that read as them.
+        let cases = [
+            (
+                Column::Number(vec![0.0, 1.5]),
+                Value::Number(0.0),
+                Value::Number(1.5),
+            ),
+            (
+                Column::Boolean(vec![false, true]),
+                Value::Boolean(false),
+                Value::Boolean(true),
+            ),
+            (
+                Column::Text(vec![Arc::from(""), Arc::from("a")]),
+                Value::Text(Arc::from("")),
+                Value::Text(Arc::from("a")),
+            ),
+            (
+                Column::Date(vec![i32::MIN, 0]),
+                Value::Date(None),
+                Value::Date(NaiveDate::from_ymd_opt(1970, 1, 1)),
+            ),
+            (
+                Column::Item(vec![u32::MAX, 0]),
+                Value::Item(None),
+                Value::Item(Some(ItemId::new())),
+            ),
+            (
+                Column::Period(vec![u32::MAX, 0]),
+                Value::Period(None),
+                Value::Period(Some((TimeLevel::Month, 0))),
+            ),
+        ];
+        for (column, blank, filled) in cases {
+            assert!(column.is_blank_at(0));
+            assert_eq!(blank.is_blank(), column.is_blank_at(0), "{blank:?}");
+            assert!(!column.is_blank_at(1));
+            assert_eq!(filled.is_blank(), column.is_blank_at(1), "{filled:?}");
+        }
     }
 
     #[test]

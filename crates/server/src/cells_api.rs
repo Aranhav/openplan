@@ -17,8 +17,8 @@ use axum::{
 };
 use chrono::{DateTime, NaiveDate, Utc};
 use openplan_engine::{
-    CellEdit, CellIssue, Command, CoordToken, EngineError, ItemId, LineItemId, Model, TimeLevel,
-    Value,
+    CellEdit, CellIssue, Command, CoordToken, EngineError, ItemId, LineItemId,
+    MAX_MODULE_DIMENSIONS, Model, TimeLevel, Value,
 };
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
@@ -31,8 +31,8 @@ use crate::{
     authz::WorkspaceRole,
     engine_store::{self, CellHistory, cell_key},
     error::{AppError, AppResult, FieldError},
-    extract::{ApiJson, ApiPath, ApiQuery},
-    structure_api::{ProdLock, handle_for},
+    extract::{ApiJson, ApiPath, ApiQuery, Capped},
+    structure_api::{ProdLock, Viewer, handle_for},
     structure_dto::TimeLevelDto,
 };
 
@@ -40,6 +40,10 @@ use crate::{
 const MAX_EDITS: usize = 100_000;
 /// The most cells one read takes.
 const MAX_CELLS: usize = 10_000;
+/// The most coordinates a cell has, one for each dimension of its line item, which no module has
+/// more of. A request is read into memory before it can be checked against the line item, and a
+/// coordinate takes some 10 times the bytes it is written in.
+const MAX_COORDS: usize = MAX_MODULE_DIMENSIONS;
 /// The most changes the history of a cell lists.
 const HISTORY_LIMIT: i64 = 100;
 /// The most problems of a request that an error lists.
@@ -119,15 +123,19 @@ pub struct CellEditDto {
     /// One token for each dimension of the line item, in the order the cells are laid out: the
     /// list and subset dimensions first, then Time, then Versions. An item id for a list or
     /// subset, a period label such as `Jan 26` for Time, and a version id for Versions.
+    ///
+    /// At most 16.
     #[schema(value_type = Vec<String>)]
-    coords: Vec<CoordToken>,
+    coords: Capped<CoordToken, MAX_COORDS>,
     value: ValueDto,
 }
 
 #[derive(Deserialize, ToSchema)]
 pub struct WriteCellsRequest {
-    /// At most 100,000 cells. A cell edited twice takes the value of its last edit.
-    edits: Vec<CellEditDto>,
+    /// At most 100,000 cells. A cell edited twice takes the value of its last edit. The body
+    /// may be up to 32 MiB, and only the first 100,000 edits of one that has more are read.
+    #[schema(value_type = Vec<CellEditDto>)]
+    edits: Capped<CellEditDto, MAX_EDITS>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -145,9 +153,9 @@ pub struct ReadCellsRequest {
     /// subset dimension takes an item id, which reads the cell itself, an item of a list above
     /// it, which reads the total of the items below it, or `"top"`, the total of all of them. A
     /// Time dimension takes a period label at its level or a coarser one, whatever the case. A
-    /// Versions dimension takes a version id.
+    /// Versions dimension takes a version id. A cell has at most 16 coordinates.
     #[schema(value_type = Vec<Vec<String>>)]
-    cells: Vec<Vec<CoordToken>>,
+    cells: Capped<Capped<CoordToken, MAX_COORDS>, MAX_CELLS>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -229,6 +237,10 @@ fn too_many(field: &str, message: &str) -> AppError {
     }])
 }
 
+fn too_many_coordinates() -> String {
+    format!("A cell has at most {MAX_COORDS} coordinates.")
+}
+
 fn missing_line_item(field: &str) -> FieldError {
     FieldError {
         field: field.to_string(),
@@ -262,6 +274,12 @@ struct Group {
 /// period labels written the way the calendar writes them. Each is checked, and the first that
 /// is not valid fails the request with its edits named by their position in the request.
 fn write_commands(model: &Model, edits: Vec<CellEditDto>) -> AppResult<Vec<Command>> {
+    if let Some(index) = edits.iter().position(|edit| edit.coords.is_over()) {
+        return Err(AppError::Engine(EngineError::InvalidCoordinate {
+            message: too_many_coordinates(),
+            index: Some(index),
+        }));
+    }
     let structure = model.structure();
     let missing: Vec<FieldError> = edits
         .iter()
@@ -288,7 +306,7 @@ fn write_commands(model: &Model, edits: Vec<CellEditDto>) -> AppResult<Vec<Comma
         });
         let group = &mut groups[group];
         group.requests.push(request);
-        group.coords.push(edit.coords);
+        group.coords.push(edit.coords.into_vec());
         group.values.push(edit.value);
     }
     groups
@@ -359,17 +377,18 @@ fn located(error: EngineError, requests: &[usize]) -> AppError {
         (status = 401, description = "Not signed in (auth.unauthenticated)"),
         (status = 403, description = "Not a workspace planner (auth.forbidden)"),
         (status = 404, description = "No such model, or the caller is not a member of its workspace (not_found)"),
-        (status = 422, description = "More than 100,000 edits (validation), a line item that does not exist (structure.invalid), a coordinate that fits no cell (cells.invalid_coordinate), a calculated line item (cells.not_input), or a value that does not fit its cell (cells.invalid_value; `errors` lists up to 100 edits as `edits[i]`, i being the position in the request). Only the first line item with invalid edits is reported. Nothing is written."),
+        (status = 422, description = "More than 100,000 edits (validation), a line item that does not exist (structure.invalid), a coordinate that fits no cell or an edit with more than 16 coordinates (cells.invalid_coordinate), a calculated line item (cells.not_input), or a value that does not fit its cell (cells.invalid_value; `errors` lists up to 100 edits as `edits[i]`, i being the position in the request). Only the first line item with invalid edits is reported. Nothing is written."),
+        (status = 413, description = "The body is more than 32 MiB (payload_too_large)"),
     )
 )]
 pub(crate) async fn write_cells(
     Planner { user, handle }: Planner,
     ApiJson(body): ApiJson<WriteCellsRequest>,
 ) -> AppResult<Json<WriteCellsResponse>> {
-    if body.edits.len() > MAX_EDITS {
+    if body.edits.is_over() {
         return Err(too_many("edits", "Send at most 100,000 edits at a time."));
     }
-    let edits = body.edits;
+    let edits = body.edits.into_vec();
     // The commands are made in the actor, from the model they are applied to.
     let outcome = handle
         .apply_with(user.id, move |model| write_commands(model, edits))
@@ -395,26 +414,34 @@ pub(crate) async fn write_cells(
         (status = 200, description = "The value of each cell, at the level its tokens name", body = ReadCellsResponse),
         (status = 401, description = "Not signed in (auth.unauthenticated)"),
         (status = 404, description = "No such model, or the caller is not a member of its workspace (not_found)"),
-        (status = 422, description = "More than 10,000 cells (validation), a line item that does not exist (structure.invalid), or a token that fits no level of its dimension (cells.invalid_coordinate)"),
+        (status = 413, description = "The body is more than 8 MiB (payload_too_large)"),
+        (status = 503, description = "Too many pieces of heavy work are going on and none was free within 10 seconds (server.busy); `Retry-After` says when to try again"),
+        (status = 422, description = "More than 10,000 cells (validation), a line item that does not exist (structure.invalid), or a token that fits no level of its dimension or a cell with more than 16 coordinates (cells.invalid_coordinate)"),
     )
 )]
 pub(crate) async fn read_cells(
     State(state): State<AppState>,
-    user: CurrentUser,
-    ApiPath(model_id): ApiPath<Uuid>,
+    Viewer { handle, .. }: Viewer,
     ApiJson(body): ApiJson<ReadCellsRequest>,
 ) -> AppResult<Json<ReadCellsResponse>> {
-    let handle = handle_for(
-        &state,
-        &user,
-        model_id,
-        WorkspaceRole::Viewer,
-        ProdLock::Ignore,
-    )
-    .await?;
-    if body.cells.len() > MAX_CELLS {
+    if body.cells.is_over() {
         return Err(too_many("cells", "Send at most 10,000 cells at a time."));
     }
+    let cells: Vec<Vec<CoordToken>> = body
+        .cells
+        .into_vec()
+        .into_iter()
+        .enumerate()
+        .map(|(index, coords)| {
+            if coords.is_over() {
+                return Err(AppError::Engine(EngineError::InvalidCoordinate {
+                    message: format!("Cell {index}: {}", too_many_coordinates()),
+                    index: None,
+                }));
+            }
+            Ok(coords.into_vec())
+        })
+        .collect::<AppResult<_>>()?;
     let model = handle.snapshot();
     let line_item = LineItemId(body.line_item_id);
     if model.structure().line_item(line_item).is_none() {
@@ -423,9 +450,13 @@ pub(crate) async fn read_cells(
         )]));
     }
     // Rolling up a large line item for the first time can take a while.
-    let values = tokio::task::spawn_blocking(move || model.read(line_item, &body.cells))
-        .await
-        .map_err(|error| AppError::Internal(error.into()))??;
+    let permit = state.work.permit().await?;
+    let values = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        model.read(line_item, &cells)
+    })
+    .await
+    .map_err(|error| AppError::Internal(error.into()))??;
     Ok(Json(ReadCellsResponse {
         values: values.iter().map(ValueDto::from).collect(),
     }))

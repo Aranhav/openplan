@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { relativeTime } from "./format"
+import { countOf, relativeTime } from "./format"
 
 const now = new Date("2026-10-15T12:00:00Z")
 
@@ -50,5 +50,17 @@ describe("relativeTime", () => {
 
   it("compares with the current time when none is given", () => {
     expect(relativeTime(new Date().toISOString())).toBe("just now")
+  })
+})
+
+describe("countOf", () => {
+  it("puts the noun in the plural unless there is one", () => {
+    expect(countOf(1, "item")).toBe("1 item")
+    expect(countOf(0, "item")).toBe("0 items")
+    expect(countOf(2, "child item")).toBe("2 child items")
+  })
+
+  it("separates the thousands", () => {
+    expect(countOf(60000, "item")).toBe("60,000 items")
   })
 })

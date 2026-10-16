@@ -7,6 +7,8 @@ use common::{
     TestApp, TestResponse, assert_problem, change_rows, create_items, create_list, create_member,
     create_module, create_user, id_of, list_axis, month, plan, sign_in, sign_in_beside, url,
 };
+use openplan_engine::MAX_MODULE_DIMENSIONS;
+use openplan_server::auth::SESSION_COOKIE;
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -1534,6 +1536,14 @@ async fn the_cells_routes_are_in_the_openapi_document(pool: PgPool) {
     ] {
         assert!(schemas.contains_key(name), "{name}");
     }
+    // The text names the limit that the server reads a cell's coordinates up to.
+    for text in [
+        &document["components"]["schemas"]["CellEditDto"]["properties"]["coords"]["description"],
+        &document["components"]["schemas"]["ReadCellsRequest"]["properties"]["cells"]["description"],
+    ] {
+        let text = text.as_str().unwrap();
+        assert!(text.contains(&MAX_MODULE_DIMENSIONS.to_string()), "{text}");
+    }
 }
 
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
@@ -1731,4 +1741,85 @@ async fn a_write_is_refused_to_who_may_not_plan_before_its_body_is_read(pool: Pg
             .await;
         assert_problem(&refused, StatusCode::FORBIDDEN, "auth.forbidden");
     }
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn a_read_is_refused_to_who_may_not_read_before_its_body_is_read(pool: PgPool) {
+    let (mut admin, _, id) = plan(&pool).await;
+    create_user(&mut admin, "olga@acme.com", "Olga Outsider").await;
+    let mut outsider = sign_in_beside(&admin, "olga@acme.com").await;
+    let mut anonymous = admin.fork();
+    anonymous.forget_cookie(SESSION_COOKIE);
+    let stranger = Uuid::now_v7();
+    // Each of these is refused by the body once it is read.
+    let too_large = format!(
+        r#"{{"line_item_id":"{stranger}","cells":[],"padding":"{}"}}"#,
+        "x".repeat(9 << 20)
+    );
+    let nul = format!(r#"{{"line_item_id":"{stranger}","cells":[],"note":"a\u0000"}}"#);
+    let bodies = [
+        (
+            too_large.as_str(),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "payload_too_large",
+        ),
+        (nul.as_str(), StatusCode::UNPROCESSABLE_ENTITY, "validation"),
+        ("{oops", StatusCode::BAD_REQUEST, "bad_request"),
+    ];
+
+    for (body, status, code) in bodies {
+        let read = admin
+            .post_raw(&url(&id, "/cells/read"), Some("application/json"), body)
+            .await;
+        assert_problem(&read, status, code);
+
+        let refused = outsider
+            .post_raw(&url(&id, "/cells/read"), Some("application/json"), body)
+            .await;
+        assert_problem(&refused, StatusCode::NOT_FOUND, "not_found");
+        let refused = anonymous
+            .post_raw(&url(&id, "/cells/read"), Some("application/json"), body)
+            .await;
+        assert_problem(&refused, StatusCode::UNAUTHORIZED, "auth.unauthenticated");
+    }
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn a_cell_has_at_most_16_coordinates(pool: PgPool) {
+    let (mut admin, _, id) = plan(&pool).await;
+    let module = create_module(&mut admin, &id, "Settings", Vec::new()).await;
+    let rate = create_line_item(&mut admin, &id, &module, json!({ "name": "Rate" })).await;
+    let rows = change_rows(&pool, &id).await;
+    let coordinates = |count: usize| vec!["Jan 26"; count];
+
+    let written = write(
+        &mut admin,
+        &id,
+        vec![
+            edit(&rate, at([]), number(1.0)),
+            edit(&rate, coordinates(17), number(1.0)),
+        ],
+    )
+    .await;
+    assert_problem(
+        &written,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "cells.invalid_coordinate",
+    );
+    assert_eq!(
+        written.json["detail"],
+        "Edit 1: A cell has at most 16 coordinates."
+    );
+    assert_eq!(change_rows(&pool, &id).await, rows);
+
+    let found = read(&mut admin, &id, &rate, vec![at([]), coordinates(17)]).await;
+    assert_problem(
+        &found,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "cells.invalid_coordinate",
+    );
+    assert_eq!(
+        found.json["detail"],
+        "Cell 1: A cell has at most 16 coordinates."
+    );
 }

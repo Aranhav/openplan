@@ -1,4 +1,5 @@
 import { fileURLToPath } from "node:url"
+import AxeBuilder from "@axe-core/playwright"
 import { type Locator, type Page, expect, request } from "@playwright/test"
 
 export interface User {
@@ -33,14 +34,17 @@ export async function signOut(page: Page, user: Pick<User, "email">) {
   await expect(page).toHaveURL(/\/login$/)
 }
 
-/** Creates a model from the models page and waits for its page to open. */
+/** Creates a model from the models page and waits for its modules to open. */
 export async function createModel(page: Page, name: string) {
   await page.getByRole("button", { name: "New model" }).click()
   const dialog = page.getByRole("dialog", { name: "Create model" })
   await dialog.getByLabel("Name").fill(name)
   await dialog.getByRole("button", { name: "Create model" }).click()
-  await expect(page).toHaveURL(/\/m\/[0-9a-f-]{36}$/)
-  await expect(page.getByRole("heading", { name, level: 1 })).toBeVisible()
+  await expect(page).toHaveURL(/\/m\/[0-9a-f-]{36}\/modules$/)
+  await expect(page.getByRole("heading", { name: "Modules", level: 1 })).toBeVisible()
+  await expect(
+    page.getByRole("navigation", { name: "breadcrumb" }).getByRole("link", { name }),
+  ).toBeVisible()
 }
 
 /** A toast with this text; sonner renders each one as a list item. */
@@ -53,6 +57,11 @@ interface ScreenshotOptions {
   ready: Locator
   /** Brings back what a reload closes (a palette, a dialog) before the picture is taken. */
   reopen?: () => Promise<void>
+  /**
+   * Whether the whole page is taken, not what the window shows (the default). A whole-page picture
+   * resizes the window while it is taken, which closes a menu that is laid out by the window's width.
+   */
+  fullPage?: boolean
 }
 
 /**
@@ -60,7 +69,11 @@ interface ScreenshotOptions {
  * it and the page is reloaded, so this also checks that the choice survives a load. The page is
  * left in the light theme.
  */
-export async function screenshot(page: Page, name: string, { ready, reopen }: ScreenshotOptions) {
+export async function screenshot(
+  page: Page,
+  name: string,
+  { ready, reopen, fullPage = true }: ScreenshotOptions,
+) {
   for (const theme of ["dark", "light"] as const) {
     await page.evaluate((value) => localStorage.setItem("openplan-theme", value), theme)
     await page.reload()
@@ -74,21 +87,60 @@ export async function screenshot(page: Page, name: string, { ready, reopen }: Sc
     }
     await page.screenshot({
       path: `${SCREENSHOT_DIR}${name}-${theme}.png`,
-      fullPage: true,
+      fullPage,
       animations: "disabled",
     })
   }
 }
 
+interface AxeOptions {
+  /** Rules to leave out. */
+  except?: string[]
+  /** Checks only what this selector matches, which leaves out the rules about the page as a whole. */
+  within?: string
+}
+
+/**
+ * What axe finds wrong on the page as it is, one "rule: selector (why)" line for each place.
+ * Colour contrast is checked, since this is a real browser with the real stylesheet.
+ *
+ * A Radix modal menu hides the rest of the page from assistive technology while it is open, which
+ * makes the page as a whole fail rules that are about the page (no heading, content outside a
+ * landmark, a hidden element that has the focus). A menu is therefore checked by itself with
+ * `within`, which holds it to every rule there is.
+ */
+export async function axeViolations(page: Page, { except = [], within }: AxeOptions = {}) {
+  // A panel fades in: contrast is only the one the user reads once it has stopped.
+  await page.evaluate(() =>
+    Promise.all(
+      document
+        .getAnimations()
+        .filter((animation) => Number.isFinite(animation.effect?.getComputedTiming().endTime))
+        .map((animation) => animation.finished.catch(() => undefined)),
+    ),
+  )
+  let builder = new AxeBuilder({ page }).disableRules(except)
+  if (within) {
+    builder = builder.include(within)
+  }
+  const results = await builder.analyze()
+  return results.violations.flatMap(({ id, nodes }) =>
+    nodes.map(({ target, any, all, none }) => {
+      const why = [...any, ...all, ...none].map(({ message }) => message).join(" ")
+      return `${id}: ${target.join(" ")} (${why})`
+    }),
+  )
+}
+
 /** What the API-backed helpers below use: JSON in and out, and the CSRF header on writes. */
-interface ApiClient {
+export interface ApiClient {
   get<T>(path: string): Promise<T>
   post<T>(path: string, data: unknown): Promise<T>
   delete(path: string): Promise<void>
 }
 
 /** Runs `run` with an API client signed in as `user`, so a spec can arrange data without the UI. */
-async function withApi<T>(
+export async function withApi<T>(
   baseURL: string,
   user: Pick<User, "email" | "password">,
   run: (api: ApiClient) => Promise<T>,
@@ -154,6 +206,96 @@ export async function createModelViaApi(
     )
     return model.id
   })
+}
+
+/** Creates a module in a model through the API and returns its id. */
+export async function createModuleViaApi(
+  baseURL: string,
+  user: Pick<User, "email" | "password">,
+  modelId: string,
+  module: { name: string; functional_area: string; axes: unknown[] },
+) {
+  return withApi(baseURL, user, async (api) => {
+    const created = await api.post<{ id: string }>(`/api/v1/models/${modelId}/modules`, module)
+    return created.id
+  })
+}
+
+/** Creates a list with these items in a model through the API and returns its id. */
+export async function createListViaApi(
+  baseURL: string,
+  user: Pick<User, "email" | "password">,
+  modelId: string,
+  name: string,
+  items: string[],
+) {
+  return withApi(baseURL, user, async (api) => {
+    const list = await api.post<{ id: string }>(`/api/v1/models/${modelId}/lists`, { name })
+    await api.post(`/api/v1/models/${modelId}/lists/${list.id}/items`, {
+      items: items.map((item) => ({ name: item })),
+    })
+    return list.id
+  })
+}
+
+/** Creates a line item in a module through the API and returns its id. */
+export async function createLineItemViaApi(
+  baseURL: string,
+  user: Pick<User, "email" | "password">,
+  modelId: string,
+  moduleId: string,
+  lineItem: { name: string; formula?: string; format?: unknown },
+) {
+  return withApi(baseURL, user, async (api) => {
+    const created = await api.post<{ id: string }>(
+      `/api/v1/models/${modelId}/modules/${moduleId}/line-items`,
+      lineItem,
+    )
+    return created.id
+  })
+}
+
+/** Deletes a line item through the API, so that the formulas that used it have errors. */
+export async function deleteLineItemViaApi(
+  baseURL: string,
+  user: Pick<User, "email" | "password">,
+  modelId: string,
+  lineItemId: string,
+) {
+  await withApi(baseURL, user, (api) =>
+    api.delete(`/api/v1/models/${modelId}/line-items/${lineItemId}`),
+  )
+}
+
+/** Writes numbers into cells through the API: one token for each dimension of the line item. */
+export async function writeCellsViaApi(
+  baseURL: string,
+  user: Pick<User, "email" | "password">,
+  modelId: string,
+  edits: { line_item_id: string; coords: string[]; value: number }[],
+) {
+  await withApi(baseURL, user, (api) =>
+    api.post(`/api/v1/models/${modelId}/cells`, {
+      edits: edits.map(({ value, ...edit }) => ({ ...edit, value: { t: "number", v: value } })),
+    }),
+  )
+}
+
+/** The structure of a model through the API. */
+export async function structureViaApi(
+  baseURL: string,
+  user: Pick<User, "email" | "password">,
+  modelId: string,
+) {
+  return withApi(baseURL, user, (api) =>
+    api.get<{
+      calendar: { first_year: number; years: number }
+      month_labels: string[]
+      lists: { id: string; name: string; items: { id: string; name: string }[] }[]
+      modules: { id: string; name: string }[]
+      line_items: { id: string; name: string; module: string; ordinal: number }[]
+    }>(`/api/v1/models/${modelId}/structure`),
+  )
 }
 
 /** Creates an account through the API (as `admin`) and adds it to the admin's first workspace. */

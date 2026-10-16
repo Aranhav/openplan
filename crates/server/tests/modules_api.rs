@@ -3,8 +3,8 @@ mod common;
 use axum::http::{Method, StatusCode};
 use common::{
     TestApp, TestResponse, assert_problem, change_rows, create_line_item, create_list,
-    create_member, create_module, create_user, id_of, list_axis, month, plan, sign_in, structure,
-    url,
+    create_member, create_module, create_user, id_of, list_axis, month, plan, sign_in,
+    sign_in_beside, structure, url,
 };
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -94,6 +94,7 @@ async fn create_module_and_line_items(pool: PgPool) {
             "ordinal": 0,
             "format": number_format(),
             "formula": null,
+            "formula_errors": [],
             "summary": { "method": "sum" },
             "time_summary": null,
             "applies_to": null,
@@ -339,6 +340,11 @@ async fn the_structure_is_served_as_the_engine_writes_it(pool: PgPool) {
     .await;
 
     let mut served = structure(&mut admin, &model).await;
+    // The problems of the formulas are the one thing the engine's document does not hold.
+    for line_item in served["line_items"].as_array_mut().unwrap() {
+        assert_eq!(line_item["formula_errors"], json!([]));
+        line_item.as_object_mut().unwrap().remove("formula_errors");
+    }
 
     let handle = admin
         .state
@@ -356,6 +362,127 @@ async fn the_structure_is_served_as_the_engine_writes_it(pool: PgPool) {
     assert_eq!(served, engine);
     assert_eq!(labels.as_array().unwrap().len(), 36);
     assert_eq!(served["line_items"].as_array().unwrap().len(), 7);
+}
+
+fn formula_errors_of(doc: &Value, line_item: &str) -> Value {
+    doc["line_items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|candidate| candidate["id"] == line_item)
+        .unwrap()["formula_errors"]
+        .clone()
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn the_structure_lists_the_problems_of_formulas_that_stopped_working(pool: PgPool) {
+    let (mut admin, workspace, model) = plan(&pool).await;
+    let module = create_module(&mut admin, &model, "Plan", vec![month()]).await;
+    let rent = create_line_item(&mut admin, &model, &module, json!({ "name": "Rent" })).await;
+    let per_head = id_of(
+        &create_line_item(
+            &mut admin,
+            &model,
+            &module,
+            json!({ "name": "Rent per head", "formula": "Rent / 12" }),
+        )
+        .await,
+    );
+    let input =
+        id_of(&create_line_item(&mut admin, &model, &module, json!({ "name": "Utilities" })).await);
+    let doc = structure(&mut admin, &model).await;
+    assert_eq!(formula_errors_of(&doc, &per_head), json!([]));
+
+    let deleted = admin
+        .delete(&url(&model, &format!("/line-items/{}", id_of(&rent))))
+        .await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.text);
+
+    let doc = structure(&mut admin, &model).await;
+    let problems = formula_errors_of(&doc, &per_head);
+    assert_eq!(problems.as_array().unwrap().len(), 1, "{problems}");
+    assert_eq!(problems[0]["code"], "formula.unknown_name");
+    assert_eq!(problems[0]["message"], "Unknown name 'Rent'.");
+    assert_eq!(
+        (&problems[0]["start"], &problems[0]["end"]),
+        (&json!(0), &json!(4))
+    );
+    assert_eq!(problems[0]["suggestion"], Value::Null);
+    assert_eq!(formula_errors_of(&doc, &input), json!([]));
+
+    create_member(
+        &mut admin,
+        &workspace,
+        "viewer@acme.com",
+        "Vera Viewer",
+        "viewer",
+    )
+    .await;
+    let mut viewer = sign_in_beside(&admin, "viewer@acme.com").await;
+    let seen = structure(&mut viewer, &model).await;
+    assert_eq!(formula_errors_of(&seen, &per_head), problems);
+
+    let fixed = patch_line_item(
+        &mut admin,
+        &model,
+        &per_head,
+        json!({ "formula": "Utilities / 12" }),
+    )
+    .await;
+    assert_eq!(fixed.status, StatusCode::OK, "{}", fixed.text);
+    assert_eq!(fixed.json["formula_errors"], json!([]));
+    let doc = structure(&mut admin, &model).await;
+    assert_eq!(formula_errors_of(&doc, &per_head), json!([]));
+    let seen = structure(&mut viewer, &model).await;
+    assert_eq!(formula_errors_of(&seen, &per_head), json!([]));
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn a_change_that_leaves_the_formula_alone_answers_with_its_problems(pool: PgPool) {
+    let (mut admin, _, model) = plan(&pool).await;
+    let module = create_module(&mut admin, &model, "Plan", vec![month()]).await;
+    let rent = create_line_item(&mut admin, &model, &module, json!({ "name": "Rent" })).await;
+    let per_head = id_of(
+        &create_line_item(
+            &mut admin,
+            &model,
+            &module,
+            json!({ "name": "Rent per head", "formula": "Rent / 12" }),
+        )
+        .await,
+    );
+    let deleted = admin
+        .delete(&url(&model, &format!("/line-items/{}", id_of(&rent))))
+        .await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.text);
+    let problems = formula_errors_of(&structure(&mut admin, &model).await, &per_head);
+    assert_eq!(problems.as_array().unwrap().len(), 1, "{problems}");
+
+    let renamed = patch_line_item(
+        &mut admin,
+        &model,
+        &per_head,
+        json!({ "name": "Rent each", "notes": "Monthly" }),
+    )
+    .await;
+
+    assert_eq!(renamed.status, StatusCode::OK, "{}", renamed.text);
+    assert_eq!(renamed.json["name"], "Rent each");
+    assert_eq!(renamed.json["formula"], "Rent / 12");
+    assert_eq!(renamed.json["formula_errors"], problems);
+
+    let same = patch_line_item(
+        &mut admin,
+        &model,
+        &per_head,
+        json!({ "formula": "Rent / 12" }),
+    )
+    .await;
+    assert_problem(
+        &same,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "formula.unknown_name",
+    );
 }
 
 #[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
@@ -1560,4 +1687,44 @@ async fn modules_and_formulas_survive_unloading_the_model(pool: PgPool) {
     admin.state.models.shutdown().await;
 
     assert_eq!(structure(&mut admin, &model).await, before);
+}
+
+#[sqlx::test(migrator = "openplan_server::db::MIGRATOR")]
+async fn a_module_has_at_most_16_dimensions(pool: PgPool) {
+    let (mut admin, _, id) = plan(&pool).await;
+    let mut axes = vec![month()];
+    for at in 0..16 {
+        let list = create_list(&mut admin, &id, json!({ "name": format!("List {at}") })).await;
+        axes.push(list_axis(&list));
+    }
+
+    // Sixteen dimensions, and then one more.
+    let wide = create_module(&mut admin, &id, "Wide", axes[..16].to_vec()).await;
+    let refused = admin
+        .post(
+            &url(&id, "/modules"),
+            Some(json!({ "name": "Wider", "axes": axes })),
+        )
+        .await;
+    assert_problem(
+        &refused,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "structure.invalid",
+    );
+    assert_eq!(
+        refused.json["detail"],
+        "A module can have at most 16 dimensions."
+    );
+    let grown = admin
+        .request(
+            Method::PATCH,
+            &url(&id, &format!("/modules/{wide}")),
+            Some(json!({ "axes": axes })),
+        )
+        .await;
+    assert_problem(
+        &grown,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "structure.invalid",
+    );
 }

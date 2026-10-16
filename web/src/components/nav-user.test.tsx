@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest"
 import { mockSession, renderApp, user, workspace } from "@/test/app"
 import { problem } from "@/test/problem"
 import { server } from "@/test/server"
+import { spinning } from "@/test/spinning"
 
 vi.mock("sonner", () => ({ toast: { error: vi.fn() } }))
 
@@ -93,7 +94,7 @@ describe("the user menu", () => {
 
     const signOut = within(menu).getByRole("menuitem", { name: "Sign out" })
     expect(signOut).toHaveAttribute("aria-disabled", "true")
-    expect(signOut.querySelector("svg.animate-spin")).toBeInTheDocument()
+    expect(spinning(signOut)).toBe(true)
     // Let it finish, so nothing is still running when the next test starts.
     expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument()
   })

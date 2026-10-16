@@ -17,6 +17,7 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { useMe } from "@/features/auth/api"
 import { useElementMap } from "@/hooks/use-element-map"
+import { useHeadingFocus } from "@/hooks/use-heading-focus"
 import { LG_BREAKPOINT, useIsMobile } from "@/hooks/use-mobile"
 import { errorDetail } from "@/lib/api/client"
 import type { components } from "@/lib/api/schema"
@@ -40,6 +41,7 @@ interface MembersTableProps {
 export function MembersTable({ workspace, members, canManage }: MembersTableProps) {
   const { data: me } = useMe()
   const removeButtons = useElementMap<HTMLButtonElement>()
+  const heading = useHeadingFocus()
   // The member in the dialog stays put as it closes; only `confirming` says whether it is shown.
   const [removal, setRemoval] = useState<{ member: MemberDto; index: number }>()
   const [confirming, setConfirming] = useState(false)
@@ -65,7 +67,7 @@ export function MembersTable({ workspace, members, canManage }: MembersTableProp
     const focusId = stillListed
       ? opener.member.user_id
       : listed[Math.min(opener.index, listed.length - 1)]?.user_id
-    const next = removeButtons.get(focusId) ?? document.querySelector("h1")
+    const next = removeButtons.get(focusId) ?? heading()
     next?.focus()
   }
 
@@ -196,6 +198,7 @@ interface RoleCellProps {
 function RoleCell({ workspaceId, member, isSelf, canManage }: RoleCellProps) {
   const updateMember = useUpdateMember(workspaceId)
   const trigger = useRef<HTMLButtonElement>(null)
+  const heading = useHeadingFocus()
   // The role chosen for yourself, until it is confirmed or dropped.
   const [chosen, setChosen] = useState<WorkspaceRole>()
 
@@ -237,7 +240,7 @@ function RoleCell({ workspaceId, member, isSelf, canManage }: RoleCellProps) {
   // to the heading of the page, which has just turned read-only.
   function restoreFocus(event: Event) {
     event.preventDefault()
-    const next = trigger.current ?? document.querySelector("h1")
+    const next = trigger.current ?? heading()
     next?.focus()
   }
 

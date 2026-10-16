@@ -3,9 +3,9 @@ use std::sync::Arc;
 use chrono::NaiveDate;
 use openplan_engine::{
     Axis, AxisSpec, Calendar, CellEdit, ChangeSet, Command, CoordToken, EngineError, Format,
-    ItemId, ItemSpec, LineItem, LineItemId, LineItemPatch, ListId, MAX_LINE_ITEM_CELLS, Model,
-    ModuleId, SubsetId, SummaryMethod, TimeLevel, TimeRangeId, TimeScale, Value, VersionId,
-    VersionsScope,
+    ItemId, ItemSpec, LineItem, LineItemId, LineItemPatch, ListId, MAX_LINE_ITEM_CELLS,
+    MAX_MODULE_DIMENSIONS, Model, ModuleId, SubsetId, SummaryMethod, TimeLevel, TimeRangeId,
+    TimeScale, Value, VersionId, VersionsScope,
 };
 use serde_json::json;
 
@@ -3124,4 +3124,117 @@ fn a_stored_model_with_a_line_item_over_the_limit_is_refused_before_its_cells_ar
     let refused = Model::from_parts(doc, chunks).unwrap_err();
 
     too_big(refused, "Volume", "8,000,000,000");
+}
+
+fn lists(model: &mut Model, count: usize) -> Vec<AxisSpec> {
+    (0..count)
+        .map(|_| list_axis(new_list(model, &format!("List {}", ListId::new().0))))
+        .collect()
+}
+
+fn message(error: EngineError) -> String {
+    assert_eq!(error.code(), "structure.invalid", "{error}");
+    error.to_string()
+}
+
+#[test]
+fn a_module_has_at_most_16_dimensions() {
+    assert_eq!(MAX_MODULE_DIMENSIONS, 16);
+    let mut model = model();
+    let mut axes = lists(&mut model, 14);
+    axes.extend([month_axis(), AxisSpec::Versions]);
+
+    // Sixteen dimensions, Time and Versions among them, are a module.
+    let id = new_module(&mut model, "Wide", axes.clone());
+    // A seventeenth is not, when it is made or when it is added.
+    axes.push(list_axis(new_list(&mut model, "One more")));
+    let created = model.apply(Command::CreateModule {
+        id: ModuleId::new(),
+        name: "Wider".to_string(),
+        axes: axes.clone(),
+        functional_area: String::new(),
+    });
+    assert_eq!(
+        message(created.unwrap_err()),
+        "A module can have at most 16 dimensions."
+    );
+    let grown = model.apply(Command::UpdateModule {
+        id,
+        name: None,
+        axes: Some(axes),
+        functional_area: None,
+    });
+    assert_eq!(
+        message(grown.unwrap_err()),
+        "A module can have at most 16 dimensions."
+    );
+}
+
+#[test]
+fn a_line_item_has_at_most_16_dimensions() {
+    let mut model = model();
+    let products = new_list(&mut model, "Products");
+    let module = new_module(&mut model, "Sales", vec![list_axis(products), month_axis()]);
+    let own = |model: &mut Model, name: &str, count: usize| LineItem {
+        applies_to: Some(lists(model, count)),
+        ..line_item(module, name, Format::number())
+    };
+
+    // Fifteen lists and Time are sixteen.
+    let fits = own(&mut model, "Fits", 15);
+    let fits_id = fits.id;
+    model.apply(Command::CreateLineItem(fits)).unwrap();
+    // Sixteen lists and Time are not.
+    let too_many = own(&mut model, "Too many", 16);
+    assert_eq!(
+        message(model.apply(Command::CreateLineItem(too_many)).unwrap_err()),
+        "Line item 'Too many' would have 17 dimensions; the limit is 16."
+    );
+    // Taking Time away from it leaves room, and so does a line item that has no Time of its own.
+    let sixteen = lists(&mut model, 16);
+    let patched = model.apply(Command::UpdateLineItem {
+        id: fits_id,
+        patch: LineItemPatch {
+            applies_to: Some(Some(sixteen)),
+            time_scale: Some(TimeScale::None),
+            ..LineItemPatch::default()
+        },
+    });
+    patched.unwrap();
+    let patched = model.apply(Command::UpdateLineItem {
+        id: fits_id,
+        patch: LineItemPatch {
+            time_scale: Some(TimeScale::Module),
+            ..LineItemPatch::default()
+        },
+    });
+    assert_eq!(
+        message(patched.unwrap_err()),
+        "Line item 'Fits' would have 17 dimensions; the limit is 16."
+    );
+}
+
+#[test]
+fn a_dimension_added_to_a_module_may_not_take_a_line_item_past_16() {
+    let mut model = model();
+    let products = new_list(&mut model, "Products");
+    let module = new_module(&mut model, "Sales", vec![list_axis(products), month_axis()]);
+    // Fifteen lists of its own and Time: sixteen, until the module gets Versions.
+    let wide = LineItem {
+        applies_to: Some(lists(&mut model, 15)),
+        ..line_item(module, "Wide", Format::number())
+    };
+    model.apply(Command::CreateLineItem(wide)).unwrap();
+
+    let versioned = model.apply(Command::UpdateModule {
+        id: module,
+        name: None,
+        axes: Some(vec![list_axis(products), month_axis(), AxisSpec::Versions]),
+        functional_area: None,
+    });
+
+    assert_eq!(
+        message(versioned.unwrap_err()),
+        "Line item 'Wide' would have 17 dimensions; the limit is 16."
+    );
 }

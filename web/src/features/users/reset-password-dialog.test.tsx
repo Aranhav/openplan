@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest"
 import { problem } from "@/test/problem"
 import { renderWithProviders } from "@/test/render"
 import { server } from "@/test/server"
+import { spinning } from "@/test/spinning"
 import { ResetPasswordDialog } from "./reset-password-dialog"
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
@@ -118,7 +119,7 @@ describe("ResetPasswordDialog", () => {
 
     const submit = dialog.getByRole("button", { name: "Reset password" })
     expect(submit).toBeDisabled()
-    expect(submit.querySelector("svg.animate-spin")).toBeInTheDocument()
+    expect(spinning(submit)).toBe(true)
     expect(dialog.getByRole("button", { name: "Cancel" })).toBeDisabled()
     expect(dialog.queryByRole("button", { name: "Close" })).not.toBeInTheDocument()
     await typist.keyboard("{Escape}")

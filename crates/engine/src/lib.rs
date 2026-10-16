@@ -10,6 +10,7 @@ mod shape;
 mod structure;
 mod summary;
 mod value;
+pub mod view;
 
 pub use calendar::{Calendar, TimeLevel, TimeRange};
 pub use codec::{InputChunk, ItemDoc, ListDoc, StructureDoc};
@@ -23,8 +24,12 @@ pub use ids::{ItemId, LineItemId, ListId, ModuleId, SubsetId, TimeRangeId, Versi
 pub use model::{Model, RecalcStats};
 pub use shape::{Axis, Shape};
 pub use structure::{
-    AxisSpec, Item, LineItem, List, MAX_LINE_ITEM_CELLS, Module, Structure, Subset, SummaryMethod,
-    TimeScale, Version, VersionsScope,
+    AxisSpec, Item, LineItem, List, MAX_LINE_ITEM_CELLS, MAX_MODULE_DIMENSIONS, Module, Structure,
+    Subset, SummaryMethod, TimeScale, Version, VersionsScope,
 };
 pub use summary::{LevelSpec, aggregate};
 pub use value::{Column, Format, NegativeStyle, NumberUnit, Value, ValueType};
+pub use view::{
+    CellFlag, FilterOp, Header, LineItemInfo, Member, MemberRef, PageMember, PageSelection,
+    RowFilter, ViewDim, ViewQuery, ViewResult, Window,
+};

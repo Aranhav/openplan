@@ -1,5 +1,5 @@
 import createClient, { type Middleware } from "openapi-fetch"
-import type { paths } from "./schema"
+import type { components, paths } from "./schema"
 
 type StripApiPrefix<P> = {
   [K in keyof P as K extends `/api/v1${infer Rest}` ? Rest : never]: P[K]
@@ -17,13 +17,18 @@ export interface FieldError {
   message: string
 }
 
+/** One problem the server found in a formula, with where (in bytes from the start of the formula). */
+export type FormulaProblem = components["schemas"]["FormulaProblem"]
+
 export class ApiError extends Error {
   status: number
   code: string
   detail: string
   errors: FieldError[]
-  /** Seconds to wait before retrying, from the Retry-After header of a 429. */
+  /** Seconds to wait before retrying, from the Retry-After header of a 429 or a 503. */
   retryAfter?: number
+  /** Every problem of a formula the server refused (`formula.*` codes), in full. */
+  formulaErrors: FormulaProblem[]
 
   constructor(
     status: number,
@@ -31,6 +36,7 @@ export class ApiError extends Error {
     detail: string,
     errors: FieldError[] = [],
     retryAfter?: number,
+    formulaErrors: FormulaProblem[] = [],
   ) {
     super(detail)
     this.name = "ApiError"
@@ -39,6 +45,7 @@ export class ApiError extends Error {
     this.detail = detail
     this.errors = errors
     this.retryAfter = retryAfter
+    this.formulaErrors = formulaErrors
   }
 }
 
@@ -46,12 +53,22 @@ export function errorDetail(error: unknown): string {
   return error instanceof ApiError ? error.detail : FALLBACK_DETAIL
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null
 }
 
 function isFieldError(value: unknown): value is FieldError {
   return isRecord(value) && typeof value.field === "string" && typeof value.message === "string"
+}
+
+function isFormulaProblem(value: unknown): value is FormulaProblem {
+  return (
+    isRecord(value) &&
+    typeof value.code === "string" &&
+    typeof value.message === "string" &&
+    typeof value.start === "number" &&
+    typeof value.end === "number"
+  )
 }
 
 function parseRetryAfter(header: string | null): number | undefined {
@@ -72,6 +89,7 @@ function toApiError(response: Response, body: unknown): ApiError {
     typeof body.detail === "string" ? body.detail : FALLBACK_DETAIL,
     Array.isArray(body.errors) ? body.errors.filter(isFieldError) : [],
     retryAfter,
+    Array.isArray(body.formula_errors) ? body.formula_errors.filter(isFormulaProblem) : [],
   )
 }
 
@@ -85,24 +103,29 @@ function readCookie(name: string): string | undefined {
   return undefined
 }
 
+function addCsrfHeader(request: Request) {
+  if (request.method !== "GET") {
+    const token = readCookie(CSRF_COOKIE)
+    if (token) {
+      request.headers.set(CSRF_HEADER, token)
+    }
+  }
+}
+
+function isAbort(error: unknown): boolean {
+  return isRecord(error) && error.name === "AbortError"
+}
+
 const csrf: Middleware = {
   onRequest({ request }) {
-    if (request.method !== "GET") {
-      const token = readCookie(CSRF_COOKIE)
-      if (token) {
-        request.headers.set(CSRF_HEADER, token)
-      }
-    }
+    addCsrfHeader(request)
     return request
   },
 }
 
 const network: Middleware = {
   onError({ error }) {
-    if (isRecord(error) && error.name === "AbortError") {
-      return undefined
-    }
-    return new ApiError(0, "network", NETWORK_DETAIL)
+    return isAbort(error) ? undefined : new ApiError(0, "network", NETWORK_DETAIL)
   },
 }
 

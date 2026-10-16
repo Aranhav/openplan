@@ -1,6 +1,7 @@
 import { defineConfig, devices } from "@playwright/test"
 
-const BASE_URL = "http://localhost:8090"
+const PORT = process.env.E2E_PORT || "8090"
+const BASE_URL = `http://localhost:${PORT}`
 
 // The specs share one server and one database, so they run one at a time. `onboarding` creates
 // the instance's admin and workspace, which the other specs sign in with; they depend on it.

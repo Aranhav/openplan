@@ -25,3 +25,10 @@ export const passwordSchema = z
   .string()
   .min(10, "Password must be at least 10 characters.")
   .max(256, "Password must be at most 256 characters.")
+
+/** The name of a version, time range or other part of a model's structure. */
+export const structureNameSchema = z
+  .string()
+  .trim()
+  .min(1, "Name is required.")
+  .max(80, "Name must be at most 80 characters.")

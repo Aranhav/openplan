@@ -1,5 +1,5 @@
 import type { QueryClient } from "@tanstack/react-query"
-import { act, configure, screen, waitFor, within } from "@testing-library/react"
+import { act, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { HttpResponse, delay, http } from "msw"
 import { toast } from "sonner"
@@ -8,9 +8,7 @@ import { queryKeys } from "@/lib/api/keys"
 import { makeModel, me, mockSession, renderApp, serveModels, workspace } from "@/test/app"
 import { problem } from "@/test/problem"
 import { server } from "@/test/server"
-
-// The first render of the whole app in a test file can take over a second on a busy machine.
-configure({ asyncUtilTimeout: 3000 })
+import { spinning } from "@/test/spinning"
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 
@@ -30,7 +28,7 @@ function signedInAs(role: "admin" | "builder" | "planner" | "viewer") {
 }
 
 async function findSettings() {
-  const heading = await screen.findByText("Model settings")
+  const heading = await screen.findByRole("heading", { level: 2, name: "Model settings" })
   return within(heading.closest("[data-slot=card]") as HTMLElement)
 }
 
@@ -38,7 +36,7 @@ describe("the model page", () => {
   it("shows the model's name and mode above its settings", async () => {
     mockSession()
     serveModels([model])
-    renderApp(`/m/${model.id}`)
+    renderApp(`/m/${model.id}/settings`)
 
     expect(await screen.findByRole("heading", { level: 1, name: "Revenue plan" })).toBeVisible()
     const header = screen.getByRole("heading", { level: 1 }).parentElement as HTMLElement
@@ -57,7 +55,7 @@ describe("the model page", () => {
   it("outlines the page: the model's name, then a heading for each card", async () => {
     mockSession()
     serveModels([model])
-    renderApp(`/m/${model.id}`)
+    renderApp(`/m/${model.id}/settings`)
     await screen.findByRole("heading", { level: 1, name: "Revenue plan" })
 
     expect(screen.getAllByRole("heading", { level: 2 }).map((card) => card.textContent)).toEqual([
@@ -69,7 +67,7 @@ describe("the model page", () => {
   it("shows a production model's mode", async () => {
     mockSession()
     serveModels([{ ...model, mode: "prod" }])
-    renderApp(`/m/${model.id}`)
+    renderApp(`/m/${model.id}/settings`)
 
     const settings = await findSettings()
     expect(settings.getByRole("switch", { name: "Production mode" })).toBeChecked()
@@ -85,7 +83,7 @@ describe("the model page", () => {
         return HttpResponse.json(model)
       }),
     )
-    renderApp(`/m/${model.id}`)
+    renderApp(`/m/${model.id}/settings`)
 
     expect(await screen.findByRole("status", { name: "Loading model" })).toBeVisible()
     expect(await screen.findByRole("heading", { level: 1, name: "Revenue plan" })).toBeVisible()
@@ -96,7 +94,7 @@ describe("the model page", () => {
     mockSession()
     serveModels([model])
     const typist = userEvent.setup()
-    renderApp(`/m/${model.id}`)
+    renderApp(`/m/${model.id}/settings`)
     const settings = await findSettings()
 
     const save = settings.getByRole("button", { name: "Save changes" })
@@ -119,7 +117,7 @@ describe("the model page", () => {
       }),
     )
     const typist = userEvent.setup()
-    renderApp(`/m/${model.id}`)
+    renderApp(`/m/${model.id}/settings`)
     const settings = await findSettings()
     const name = settings.getByLabelText("Name")
     await typist.clear(name)
@@ -145,7 +143,7 @@ describe("the model page", () => {
       }),
     )
     const typist = userEvent.setup()
-    renderApp(`/m/${model.id}`)
+    renderApp(`/m/${model.id}/settings`)
     const settings = await findSettings()
     const name = settings.getByLabelText("Name")
     await typist.clear(name)
@@ -154,7 +152,7 @@ describe("the model page", () => {
 
     const save = settings.getByRole("button", { name: "Save changes" })
     expect(save).toBeDisabled()
-    expect(save.querySelector("svg.animate-spin")).toBeInTheDocument()
+    expect(spinning(save)).toBe(true)
     await waitFor(() => expect(toast.success).toHaveBeenCalledWith("Changes saved"))
   })
 
@@ -162,7 +160,7 @@ describe("the model page", () => {
     mockSession()
     serveModels([model])
     const typist = userEvent.setup()
-    renderApp(`/m/${model.id}`)
+    renderApp(`/m/${model.id}/settings`)
     const settings = await findSettings()
     await typist.clear(settings.getByLabelText("Name"))
     await typist.click(settings.getByRole("button", { name: "Save changes" }))
@@ -183,7 +181,7 @@ describe("the model page", () => {
       ),
     )
     const typist = userEvent.setup()
-    renderApp(`/m/${model.id}`)
+    renderApp(`/m/${model.id}/settings`)
     const settings = await findSettings()
     await typist.type(settings.getByLabelText("Name"), " 2")
     await typist.click(settings.getByRole("button", { name: "Save changes" }))
@@ -206,7 +204,7 @@ describe("the model page", () => {
       }),
     )
     const typist = userEvent.setup()
-    renderApp(`/m/${model.id}`)
+    renderApp(`/m/${model.id}/settings`)
     const settings = await findSettings()
     await typist.type(settings.getByLabelText("Description"), " Updated monthly.")
     await typist.click(settings.getByRole("button", { name: "Save changes" }))
@@ -221,7 +219,7 @@ describe("the model page", () => {
   it("shows a change made elsewhere in a field nobody has touched", async () => {
     mockSession()
     serveModels([model])
-    const { queryClient } = renderApp(`/m/${model.id}`)
+    const { queryClient } = renderApp(`/m/${model.id}/settings`)
     const settings = await findSettings()
     await act(async () => {
       queryClient.setQueryData(queryKeys.model(model.id), { ...model, name: "Renamed elsewhere" })
@@ -243,7 +241,7 @@ describe("the model page", () => {
       }),
     )
     const typist = userEvent.setup()
-    const { queryClient } = renderApp(`/m/${model.id}`)
+    const { queryClient } = renderApp(`/m/${model.id}/settings`)
     const settings = await findSettings()
     await typist.type(settings.getByLabelText("Description"), " Updated monthly.")
     await act(async () => {
@@ -267,7 +265,7 @@ describe("the model page", () => {
     mockSession()
     serveModels([model])
     const typist = userEvent.setup()
-    const { queryClient } = renderApp(`/m/${model.id}`)
+    const { queryClient } = renderApp(`/m/${model.id}/settings`)
     const settings = await findSettings()
     await typist.type(settings.getByLabelText("Name"), " 2")
     server.use(http.get(modelUrl, () => problem(500, "internal", "The database is starting up.")))
@@ -282,7 +280,7 @@ describe("the model page", () => {
   it("says the model is not found when a refresh finds it gone", async () => {
     mockSession()
     serveModels([model])
-    const { queryClient } = renderApp(`/m/${model.id}`)
+    const { queryClient } = renderApp(`/m/${model.id}/settings`)
     await findSettings()
     server.use(http.get(modelUrl, () => problem(404, "not_found", "Not found.")))
     await refresh(queryClient, queryKeys.model(model.id))
@@ -294,7 +292,7 @@ describe("the model page", () => {
     mockSession()
     server.use(http.get(modelUrl, () => problem(500, "internal", "The database is starting up.")))
     const typist = userEvent.setup()
-    renderApp(`/m/${model.id}`)
+    renderApp(`/m/${model.id}/settings`)
 
     expect(await screen.findByRole("alert")).toHaveTextContent("The database is starting up.")
     serveModels([model])
@@ -309,7 +307,7 @@ describe("deleting a model from its page", () => {
     mockSession()
     serveModels([model])
     const typist = userEvent.setup()
-    const { router } = renderApp(`/m/${model.id}`)
+    const { router } = renderApp(`/m/${model.id}/settings`)
     let pathWhenToasted: string | undefined
     vi.mocked(toast.success).mockImplementationOnce(() => {
       pathWhenToasted = router.state.location.pathname
@@ -332,7 +330,7 @@ describe("deleting a model from its page", () => {
     mockSession()
     serveModels([model])
     const typist = userEvent.setup()
-    renderApp(`/m/${model.id}`)
+    renderApp(`/m/${model.id}/settings`)
     const danger = within(
       (await screen.findByText("Danger zone")).closest("[data-slot=card]") as HTMLElement,
     )
@@ -355,7 +353,7 @@ describe("deleting a model from its page", () => {
       }),
     )
     const typist = userEvent.setup()
-    const { router } = renderApp(`/m/${model.id}`)
+    const { router } = renderApp(`/m/${model.id}/settings`)
     const danger = within(
       (await screen.findByText("Danger zone")).closest("[data-slot=card]") as HTMLElement,
     )
@@ -374,7 +372,7 @@ describe("deleting a model from its page", () => {
     mockSession()
     serveModels([model])
     const typist = userEvent.setup()
-    const { router } = renderApp(`/m/${model.id}`)
+    const { router } = renderApp(`/m/${model.id}/settings`)
     const danger = within(
       (await screen.findByText("Danger zone")).closest("[data-slot=card]") as HTMLElement,
     )
@@ -383,7 +381,7 @@ describe("deleting a model from its page", () => {
     await typist.click(within(dialog).getByRole("button", { name: "Cancel" }))
 
     await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument())
-    expect(router.state.location.pathname).toBe(`/m/${model.id}`)
+    expect(router.state.location.pathname).toBe(`/m/${model.id}/settings`)
     expect(danger.getByRole("button", { name: "Delete model" })).toHaveFocus()
   })
 })
@@ -392,7 +390,7 @@ describe.each(["planner", "viewer"] as const)("the model page for a %s", (role) 
   it("shows the settings as plain text, with nothing to change or delete", async () => {
     signedInAs(role)
     serveModels([model])
-    renderApp(`/m/${model.id}`)
+    renderApp(`/m/${model.id}/settings`)
     const settings = await findSettings()
 
     expect(settings.getByText("Revenue plan")).toBeVisible()
@@ -408,7 +406,7 @@ describe.each(["planner", "viewer"] as const)("the model page for a %s", (role) 
   it("says when a model has no description", async () => {
     signedInAs(role)
     serveModels([{ ...model, description: "" }])
-    renderApp(`/m/${model.id}`)
+    renderApp(`/m/${model.id}/settings`)
     const settings = await findSettings()
 
     expect(settings.getByText("No description")).toBeVisible()
@@ -420,7 +418,7 @@ describe("a model that is not there", () => {
     mockSession()
     serveModels([])
     const typist = userEvent.setup()
-    const { router } = renderApp(`/m/${model.id}`)
+    const { router } = renderApp(`/m/${model.id}/settings`)
 
     expect(await screen.findByRole("heading", { level: 1, name: "Model not found" })).toBeVisible()
     expect(screen.getByText("It may have been deleted, or you don't have access.")).toBeVisible()

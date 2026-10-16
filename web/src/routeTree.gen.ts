@@ -15,9 +15,17 @@ import { Route as SetupRouteImport } from './routes/setup'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as AppProfileRouteImport } from './routes/_app/profile'
 import { Route as AppAdminUsersRouteImport } from './routes/_app/admin/users'
+import { Route as AppMModelIdRouteRouteImport } from './routes/_app/m/$modelId/route'
 import { Route as AppMModelIdIndexRouteImport } from './routes/_app/m/$modelId/index'
+import { Route as AppMModelIdSettingsRouteImport } from './routes/_app/m/$modelId/settings'
+import { Route as AppMModelIdTimeRouteImport } from './routes/_app/m/$modelId/time'
+import { Route as AppMModelIdVersionsRouteImport } from './routes/_app/m/$modelId/versions'
 import { Route as AppWWorkspaceIdIndexRouteImport } from './routes/_app/w/$workspaceId/index'
 import { Route as AppWWorkspaceIdMembersRouteImport } from './routes/_app/w/$workspaceId/members'
+import { Route as AppMModelIdListsIndexRouteImport } from './routes/_app/m/$modelId/lists/index'
+import { Route as AppMModelIdListsListIdRouteImport } from './routes/_app/m/$modelId/lists/$listId'
+import { Route as AppMModelIdModulesIndexRouteImport } from './routes/_app/m/$modelId/modules/index'
+import { Route as AppMModelIdModulesModuleIdRouteImport } from './routes/_app/m/$modelId/modules/$moduleId'
 
 const AppRoute = AppRouteImport.update({
   id: '/_app',
@@ -48,10 +56,30 @@ const AppAdminUsersRoute = AppAdminUsersRouteImport.update({
   path: '/admin/users',
   getParentRoute: () => AppRoute,
 } as any)
-const AppMModelIdIndexRoute = AppMModelIdIndexRouteImport.update({
-  id: '/m/$modelId/',
-  path: '/m/$modelId/',
+const AppMModelIdRouteRoute = AppMModelIdRouteRouteImport.update({
+  id: '/m/$modelId',
+  path: '/m/$modelId',
   getParentRoute: () => AppRoute,
+} as any)
+const AppMModelIdIndexRoute = AppMModelIdIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => AppMModelIdRouteRoute,
+} as any)
+const AppMModelIdSettingsRoute = AppMModelIdSettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
+  getParentRoute: () => AppMModelIdRouteRoute,
+} as any)
+const AppMModelIdTimeRoute = AppMModelIdTimeRouteImport.update({
+  id: '/time',
+  path: '/time',
+  getParentRoute: () => AppMModelIdRouteRoute,
+} as any)
+const AppMModelIdVersionsRoute = AppMModelIdVersionsRouteImport.update({
+  id: '/versions',
+  path: '/versions',
+  getParentRoute: () => AppMModelIdRouteRoute,
 } as any)
 const AppWWorkspaceIdIndexRoute = AppWWorkspaceIdIndexRouteImport.update({
   id: '/w/$workspaceId/',
@@ -63,16 +91,45 @@ const AppWWorkspaceIdMembersRoute = AppWWorkspaceIdMembersRouteImport.update({
   path: '/w/$workspaceId/members',
   getParentRoute: () => AppRoute,
 } as any)
+const AppMModelIdListsIndexRoute = AppMModelIdListsIndexRouteImport.update({
+  id: '/lists/',
+  path: '/lists/',
+  getParentRoute: () => AppMModelIdRouteRoute,
+} as any)
+const AppMModelIdListsListIdRoute = AppMModelIdListsListIdRouteImport.update({
+  id: '/lists/$listId',
+  path: '/lists/$listId',
+  getParentRoute: () => AppMModelIdRouteRoute,
+} as any)
+const AppMModelIdModulesIndexRoute = AppMModelIdModulesIndexRouteImport.update({
+  id: '/modules/',
+  path: '/modules/',
+  getParentRoute: () => AppMModelIdRouteRoute,
+} as any)
+const AppMModelIdModulesModuleIdRoute =
+  AppMModelIdModulesModuleIdRouteImport.update({
+    id: '/modules/$moduleId',
+    path: '/modules/$moduleId',
+    getParentRoute: () => AppMModelIdRouteRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
   '/login': typeof LoginRoute
   '/setup': typeof SetupRoute
   '/profile': typeof AppProfileRoute
+  '/m/$modelId': typeof AppMModelIdRouteRouteWithChildren
   '/admin/users': typeof AppAdminUsersRoute
+  '/m/$modelId/settings': typeof AppMModelIdSettingsRoute
+  '/m/$modelId/time': typeof AppMModelIdTimeRoute
+  '/m/$modelId/versions': typeof AppMModelIdVersionsRoute
   '/w/$workspaceId/members': typeof AppWWorkspaceIdMembersRoute
   '/m/$modelId/': typeof AppMModelIdIndexRoute
   '/w/$workspaceId/': typeof AppWWorkspaceIdIndexRoute
+  '/m/$modelId/lists/$listId': typeof AppMModelIdListsListIdRoute
+  '/m/$modelId/modules/$moduleId': typeof AppMModelIdModulesModuleIdRoute
+  '/m/$modelId/lists/': typeof AppMModelIdListsIndexRoute
+  '/m/$modelId/modules/': typeof AppMModelIdModulesIndexRoute
 }
 export interface FileRoutesByTo {
   '/login': typeof LoginRoute
@@ -80,9 +137,16 @@ export interface FileRoutesByTo {
   '/profile': typeof AppProfileRoute
   '/': typeof AppIndexRoute
   '/admin/users': typeof AppAdminUsersRoute
+  '/m/$modelId/settings': typeof AppMModelIdSettingsRoute
+  '/m/$modelId/time': typeof AppMModelIdTimeRoute
+  '/m/$modelId/versions': typeof AppMModelIdVersionsRoute
   '/w/$workspaceId/members': typeof AppWWorkspaceIdMembersRoute
   '/m/$modelId': typeof AppMModelIdIndexRoute
   '/w/$workspaceId': typeof AppWWorkspaceIdIndexRoute
+  '/m/$modelId/lists/$listId': typeof AppMModelIdListsListIdRoute
+  '/m/$modelId/modules/$moduleId': typeof AppMModelIdModulesModuleIdRoute
+  '/m/$modelId/lists': typeof AppMModelIdListsIndexRoute
+  '/m/$modelId/modules': typeof AppMModelIdModulesIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -91,10 +155,18 @@ export interface FileRoutesById {
   '/setup': typeof SetupRoute
   '/_app/profile': typeof AppProfileRoute
   '/_app/': typeof AppIndexRoute
+  '/_app/m/$modelId': typeof AppMModelIdRouteRouteWithChildren
   '/_app/admin/users': typeof AppAdminUsersRoute
+  '/_app/m/$modelId/settings': typeof AppMModelIdSettingsRoute
+  '/_app/m/$modelId/time': typeof AppMModelIdTimeRoute
+  '/_app/m/$modelId/versions': typeof AppMModelIdVersionsRoute
   '/_app/w/$workspaceId/members': typeof AppWWorkspaceIdMembersRoute
   '/_app/m/$modelId/': typeof AppMModelIdIndexRoute
   '/_app/w/$workspaceId/': typeof AppWWorkspaceIdIndexRoute
+  '/_app/m/$modelId/lists/$listId': typeof AppMModelIdListsListIdRoute
+  '/_app/m/$modelId/modules/$moduleId': typeof AppMModelIdModulesModuleIdRoute
+  '/_app/m/$modelId/lists/': typeof AppMModelIdListsIndexRoute
+  '/_app/m/$modelId/modules/': typeof AppMModelIdModulesIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -103,10 +175,18 @@ export interface FileRouteTypes {
     | '/login'
     | '/setup'
     | '/profile'
+    | '/m/$modelId'
     | '/admin/users'
+    | '/m/$modelId/settings'
+    | '/m/$modelId/time'
+    | '/m/$modelId/versions'
     | '/w/$workspaceId/members'
     | '/m/$modelId/'
     | '/w/$workspaceId/'
+    | '/m/$modelId/lists/$listId'
+    | '/m/$modelId/modules/$moduleId'
+    | '/m/$modelId/lists/'
+    | '/m/$modelId/modules/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/login'
@@ -114,9 +194,16 @@ export interface FileRouteTypes {
     | '/profile'
     | '/'
     | '/admin/users'
+    | '/m/$modelId/settings'
+    | '/m/$modelId/time'
+    | '/m/$modelId/versions'
     | '/w/$workspaceId/members'
     | '/m/$modelId'
     | '/w/$workspaceId'
+    | '/m/$modelId/lists/$listId'
+    | '/m/$modelId/modules/$moduleId'
+    | '/m/$modelId/lists'
+    | '/m/$modelId/modules'
   id:
     | '__root__'
     | '/_app'
@@ -124,10 +211,18 @@ export interface FileRouteTypes {
     | '/setup'
     | '/_app/profile'
     | '/_app/'
+    | '/_app/m/$modelId'
     | '/_app/admin/users'
+    | '/_app/m/$modelId/settings'
+    | '/_app/m/$modelId/time'
+    | '/_app/m/$modelId/versions'
     | '/_app/w/$workspaceId/members'
     | '/_app/m/$modelId/'
     | '/_app/w/$workspaceId/'
+    | '/_app/m/$modelId/lists/$listId'
+    | '/_app/m/$modelId/modules/$moduleId'
+    | '/_app/m/$modelId/lists/'
+    | '/_app/m/$modelId/modules/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -180,12 +275,40 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppAdminUsersRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/m/$modelId': {
+      id: '/_app/m/$modelId'
+      path: '/m/$modelId'
+      fullPath: '/m/$modelId'
+      preLoaderRoute: typeof AppMModelIdRouteRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/m/$modelId/': {
       id: '/_app/m/$modelId/'
-      path: '/m/$modelId'
+      path: '/'
       fullPath: '/m/$modelId/'
       preLoaderRoute: typeof AppMModelIdIndexRouteImport
-      parentRoute: typeof AppRoute
+      parentRoute: typeof AppMModelIdRouteRoute
+    }
+    '/_app/m/$modelId/settings': {
+      id: '/_app/m/$modelId/settings'
+      path: '/settings'
+      fullPath: '/m/$modelId/settings'
+      preLoaderRoute: typeof AppMModelIdSettingsRouteImport
+      parentRoute: typeof AppMModelIdRouteRoute
+    }
+    '/_app/m/$modelId/time': {
+      id: '/_app/m/$modelId/time'
+      path: '/time'
+      fullPath: '/m/$modelId/time'
+      preLoaderRoute: typeof AppMModelIdTimeRouteImport
+      parentRoute: typeof AppMModelIdRouteRoute
+    }
+    '/_app/m/$modelId/versions': {
+      id: '/_app/m/$modelId/versions'
+      path: '/versions'
+      fullPath: '/m/$modelId/versions'
+      preLoaderRoute: typeof AppMModelIdVersionsRouteImport
+      parentRoute: typeof AppMModelIdRouteRoute
     }
     '/_app/w/$workspaceId/': {
       id: '/_app/w/$workspaceId/'
@@ -201,24 +324,77 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppWWorkspaceIdMembersRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/m/$modelId/lists/': {
+      id: '/_app/m/$modelId/lists/'
+      path: '/lists'
+      fullPath: '/m/$modelId/lists/'
+      preLoaderRoute: typeof AppMModelIdListsIndexRouteImport
+      parentRoute: typeof AppMModelIdRouteRoute
+    }
+    '/_app/m/$modelId/lists/$listId': {
+      id: '/_app/m/$modelId/lists/$listId'
+      path: '/lists/$listId'
+      fullPath: '/m/$modelId/lists/$listId'
+      preLoaderRoute: typeof AppMModelIdListsListIdRouteImport
+      parentRoute: typeof AppMModelIdRouteRoute
+    }
+    '/_app/m/$modelId/modules/': {
+      id: '/_app/m/$modelId/modules/'
+      path: '/modules'
+      fullPath: '/m/$modelId/modules/'
+      preLoaderRoute: typeof AppMModelIdModulesIndexRouteImport
+      parentRoute: typeof AppMModelIdRouteRoute
+    }
+    '/_app/m/$modelId/modules/$moduleId': {
+      id: '/_app/m/$modelId/modules/$moduleId'
+      path: '/modules/$moduleId'
+      fullPath: '/m/$modelId/modules/$moduleId'
+      preLoaderRoute: typeof AppMModelIdModulesModuleIdRouteImport
+      parentRoute: typeof AppMModelIdRouteRoute
+    }
   }
 }
+
+interface AppMModelIdRouteRouteChildren {
+  AppMModelIdSettingsRoute: typeof AppMModelIdSettingsRoute
+  AppMModelIdTimeRoute: typeof AppMModelIdTimeRoute
+  AppMModelIdVersionsRoute: typeof AppMModelIdVersionsRoute
+  AppMModelIdIndexRoute: typeof AppMModelIdIndexRoute
+  AppMModelIdListsListIdRoute: typeof AppMModelIdListsListIdRoute
+  AppMModelIdModulesModuleIdRoute: typeof AppMModelIdModulesModuleIdRoute
+  AppMModelIdListsIndexRoute: typeof AppMModelIdListsIndexRoute
+  AppMModelIdModulesIndexRoute: typeof AppMModelIdModulesIndexRoute
+}
+
+const AppMModelIdRouteRouteChildren: AppMModelIdRouteRouteChildren = {
+  AppMModelIdSettingsRoute: AppMModelIdSettingsRoute,
+  AppMModelIdTimeRoute: AppMModelIdTimeRoute,
+  AppMModelIdVersionsRoute: AppMModelIdVersionsRoute,
+  AppMModelIdIndexRoute: AppMModelIdIndexRoute,
+  AppMModelIdListsListIdRoute: AppMModelIdListsListIdRoute,
+  AppMModelIdModulesModuleIdRoute: AppMModelIdModulesModuleIdRoute,
+  AppMModelIdListsIndexRoute: AppMModelIdListsIndexRoute,
+  AppMModelIdModulesIndexRoute: AppMModelIdModulesIndexRoute,
+}
+
+const AppMModelIdRouteRouteWithChildren =
+  AppMModelIdRouteRoute._addFileChildren(AppMModelIdRouteRouteChildren)
 
 interface AppRouteChildren {
   AppProfileRoute: typeof AppProfileRoute
   AppIndexRoute: typeof AppIndexRoute
+  AppMModelIdRouteRoute: typeof AppMModelIdRouteRouteWithChildren
   AppAdminUsersRoute: typeof AppAdminUsersRoute
   AppWWorkspaceIdMembersRoute: typeof AppWWorkspaceIdMembersRoute
-  AppMModelIdIndexRoute: typeof AppMModelIdIndexRoute
   AppWWorkspaceIdIndexRoute: typeof AppWWorkspaceIdIndexRoute
 }
 
 const AppRouteChildren: AppRouteChildren = {
   AppProfileRoute: AppProfileRoute,
   AppIndexRoute: AppIndexRoute,
+  AppMModelIdRouteRoute: AppMModelIdRouteRouteWithChildren,
   AppAdminUsersRoute: AppAdminUsersRoute,
   AppWWorkspaceIdMembersRoute: AppWWorkspaceIdMembersRoute,
-  AppMModelIdIndexRoute: AppMModelIdIndexRoute,
   AppWWorkspaceIdIndexRoute: AppWWorkspaceIdIndexRoute,
 }
 

@@ -15,7 +15,19 @@ test("a model is created, renamed and switched to production mode", async ({ pag
   await createModel(page, "FY27 Budget")
   await expect(toastWith(page, "Model created")).toBeVisible()
 
-  await expect(page.getByText("Model settings", { exact: true })).toBeVisible()
+  await expect(page.getByRole("heading", { name: "No modules yet", level: 2 })).toBeVisible()
+  const build = page.getByRole("navigation", { name: "Build" })
+  await expect(build.getByRole("link", { name: "Modules" })).toHaveAttribute("aria-current", "page")
+  await screenshot(page, "model-modules", {
+    ready: page.getByRole("heading", { name: "No modules yet", level: 2 }),
+  })
+
+  await build.getByRole("link", { name: "Model settings" }).click()
+  await expect(page.getByRole("heading", { name: "Model settings", level: 2 })).toBeVisible()
+  await expect(build.getByRole("link", { name: "Model settings" })).toHaveAttribute(
+    "aria-current",
+    "page",
+  )
   const save = page.getByRole("button", { name: "Save changes" })
   await page.getByLabel("Name", { exact: true }).fill("FY27 Operating Budget")
   await save.click()

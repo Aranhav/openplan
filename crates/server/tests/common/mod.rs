@@ -1,7 +1,7 @@
 // Each test crate compiles this module and uses only part of it.
 #![allow(dead_code)]
 
-use std::collections::HashMap;
+use std::{collections::HashMap, net::SocketAddr};
 
 use axum::{
     Router,
@@ -15,6 +15,7 @@ use openplan_server::{
     app::{AppState, build_router},
     auth::{CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE},
     config::Config,
+    live::{Live, LiveSettings},
 };
 use serde_json::{Value, json};
 use sqlx::{PgPool, postgres::PgPoolOptions, types::Json};
@@ -56,13 +57,25 @@ impl TestApp {
     }
 
     pub fn new(db: PgPool) -> TestApp {
+        TestApp::with_state(db, |_| {})
+    }
+
+    /// An app whose live sockets keep the times in `live`, which a test makes short.
+    pub fn with_live(db: PgPool, live: LiveSettings) -> TestApp {
+        TestApp::with_state(db, |state| state.live = Live::new(live))
+    }
+
+    /// An app whose state `change` has changed before the router is made from it, such as to put
+    /// a limit that a test reaches in the place of the server's own.
+    pub fn with_state(db: PgPool, change: impl FnOnce(&mut AppState)) -> TestApp {
         let config = Config::from_lookup(|name| match name {
             "DATABASE_URL" => Some("postgres://invalid".to_string()),
             "OPENPLAN_PUBLIC_URL" => Some("http://localhost:8080".to_string()),
             _ => None,
         })
         .expect("test config is valid");
-        let state = AppState::new(db.clone(), config);
+        let mut state = AppState::new(db.clone(), config);
+        change(&mut state);
         TestApp {
             router: build_router(state.clone()),
             state,
@@ -80,6 +93,36 @@ impl TestApp {
             db: self.db.clone(),
             cookies: self.cookies.clone(),
         }
+    }
+
+    /// The `Cookie` header and the CSRF token of the signed-in client, for requests that are sent
+    /// over a socket instead of through the router.
+    pub fn credentials(&self) -> (String, String) {
+        let cookie = self
+            .cookies
+            .iter()
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        (
+            cookie,
+            self.cookies.get(CSRF_COOKIE).cloned().unwrap_or_default(),
+        )
+    }
+
+    /// Serves the app on a port of the local machine, as the binary does, and returns the
+    /// address. The server runs until the test ends.
+    pub async fn serve(&self) -> SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = self
+            .router
+            .clone()
+            .into_make_service_with_connect_info::<SocketAddr>();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        address
     }
 
     /// Makes the client lose a cookie, as a browser does when site data is cleared.
@@ -337,7 +380,11 @@ pub fn id_of(json: &Value) -> String {
 /// years from January 2026, so that the period labels in these tests mean the same whatever the
 /// date they run on. Returns the admin, the workspace and the model.
 pub async fn plan(pool: &PgPool) -> (TestApp, String, String) {
-    let mut admin = TestApp::new(pool.clone());
+    plan_in(TestApp::new(pool.clone())).await
+}
+
+/// [`plan`] in an app that was made, such as one with short times for its live sockets.
+pub async fn plan_in(mut admin: TestApp) -> (TestApp, String, String) {
     let workspace = setup_admin(&mut admin).await;
     let model = create_model(&mut admin, &workspace, "Plan").await;
     let calendar = admin

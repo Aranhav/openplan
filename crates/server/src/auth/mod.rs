@@ -65,7 +65,7 @@ impl FromRequestParts<AppState> for CurrentUser {
 }
 
 /// 32 random bytes as unpadded base64url.
-fn random_token() -> String {
+pub(crate) fn random_token() -> String {
     let mut bytes = [0u8; 32];
     rand::rng().fill_bytes(&mut bytes);
     URL_SAFE_NO_PAD.encode(bytes)

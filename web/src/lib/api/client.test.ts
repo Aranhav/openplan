@@ -41,6 +41,34 @@ describe("unwrap", () => {
     })
   })
 
+  it("keeps every problem the server found in a formula, with where", async () => {
+    const problems = [
+      { code: "formula.unknown_name", message: "Unknown name 'Revnue'", start: 4, end: 10 },
+      { code: "formula.arity", message: "SUM takes 1 argument", start: 12, end: 20, suggestion: null },
+    ]
+    const body = {
+      code: "formula.unknown_name",
+      detail: "The formula has 2 problems.",
+      errors: [{ field: "formula", message: "4-10: Unknown name 'Revnue'" }],
+      formula_errors: [...problems, { code: "formula.syntax" }],
+    }
+
+    const error = await unwrap(
+      Promise.resolve({ error: body, response: problem(422, body) }),
+    ).catch((cause: unknown) => cause)
+
+    expect(error).toBeInstanceOf(ApiError)
+    expect((error as ApiError).formulaErrors).toEqual(problems)
+  })
+
+  it("has no formula problems when the server names none", async () => {
+    const error = await unwrap(
+      Promise.resolve({ error: { code: "validation" }, response: problem(422, { code: "validation" }) }),
+    ).catch((cause: unknown) => cause)
+
+    expect((error as ApiError).formulaErrors).toEqual([])
+  })
+
   it("falls back to an internal error when the body is not problem+json", async () => {
     const result = unwrap(
       Promise.resolve({

@@ -8,3 +8,6 @@ e2e/screenshots/
 .superpowers/
 web/.tanstack/
 web/.vitest/
+
+# Full output of quiet test and check runs (CLAUDE.md "Context cost")
+.logs/
