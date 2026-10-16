@@ -117,6 +117,26 @@ describe("page selectors", () => {
     expect(screen.queryByRole("listbox")).not.toBeInTheDocument()
   })
 
+  it.each([
+    [20, "a menu"],
+    [21, "a search"],
+  ])("has %i members chosen from %s", async (count, kind) => {
+    const user = userEvent.setup()
+    const members = Array.from({ length: count }, (_, i) => memberOf(`m${i}`, `Member ${i + 1}`))
+    serveMembers(() => members)
+    renderSelectors({ ...initial, pages: [{ dim: regions, key: "m0" }] })
+
+    await user.click(await screen.findByRole("combobox", { name: /^Regions/ }))
+
+    if (kind === "a menu") {
+      expect(await screen.findAllByRole("option")).toHaveLength(20)
+      expect(screen.queryByPlaceholderText("Find in Regions…")).not.toBeInTheDocument()
+    } else {
+      expect(await screen.findByPlaceholderText("Find in Regions…")).toBeVisible()
+      expect(screen.getAllByRole("option")).toHaveLength(21)
+    }
+  })
+
   it("shows the first 100 of a long list and says how to find the rest", async () => {
     const user = userEvent.setup()
     serveMembers(membersOf)
