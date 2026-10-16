@@ -346,6 +346,62 @@ test("the Blueprint marks a formula that no longer works and the settings sheet 
   await expect(toastWith(page, "Line item saved")).toBeVisible()
 })
 
+test("the settings of a line item are kept as the server stores them", async ({ page }) => {
+  const structure = await structureViaApi(baseURL, ADMIN, modelId)
+  const costs = structure.modules.find((module) => module.name === "Costs") as { id: string }
+  await login(page, ADMIN)
+  await page.goto(`/m/${modelId}/modules/${costs.id}?tab=blueprint`)
+  await blueprintRow(page, "Utilities").dblclick()
+  const sheet = page.getByRole("dialog", { name: "Line item settings" })
+
+  await sheet.getByLabel("Code").fill("UTIL")
+  await sheet.getByRole("combobox", { name: "Summary", exact: true }).click()
+  await page.getByRole("option", { name: "Average" }).click()
+  await sheet.getByRole("combobox", { name: "Time summary" }).click()
+  await page.getByRole("option", { name: "Closing balance" }).click()
+  await sheet.getByRole("radio", { name: /Chosen lists and subsets/ }).click()
+  await sheet.getByRole("checkbox", { name: /Regions/ }).uncheck()
+  await sheet.getByRole("combobox", { name: "Time scale" }).click()
+  await page.getByRole("option", { name: "Quarter" }).click()
+  await sheet.getByRole("radio", { name: "Chosen versions" }).click()
+  await sheet.getByRole("button", { name: "Save changes" }).click()
+  await expect(sheet.getByText("Choose at least one version.")).toBeVisible()
+  await sheet.getByRole("checkbox").last().check()
+  await sheet.getByRole("button", { name: "Save changes" }).click()
+  // Another set of dimensions and another time scale mean other cells, so the values go.
+  const confirm = page.getByRole("alertdialog", { name: "Clear input values?" })
+  await expect(confirm).toContainText("This clears the line item's input values.")
+  await confirm.getByRole("button", { name: "Save and clear values" }).click()
+  await expect(toastWith(page, "Line item saved")).toBeVisible()
+  await expect(sheet).toBeHidden()
+
+  const row = blueprintRow(page, "Utilities")
+  await expect(row).toContainText("Average")
+  await expect(row).toContainText("Quarter")
+  await expect(row).toContainText("None")
+  await page.reload()
+  await blueprintRow(page, "Utilities").dblclick()
+  await expect(sheet.getByLabel("Code")).toHaveValue("UTIL")
+  await expect(sheet.getByRole("combobox", { name: "Summary", exact: true })).toHaveText("Average")
+  await expect(sheet.getByRole("combobox", { name: "Time summary" })).toHaveText("Closing balance")
+  await expect(sheet.getByRole("combobox", { name: "Time scale" })).toHaveText("Quarter")
+  await expect(sheet.getByRole("radio", { name: /Chosen lists and subsets/ })).toBeChecked()
+  await expect(sheet.getByRole("radio", { name: "Chosen versions" })).toBeChecked()
+
+  // A ratio of two other number line items, and the way back to the module's lists.
+  await sheet.getByRole("combobox", { name: "Summary", exact: true }).click()
+  await page.getByRole("option", { name: "Ratio" }).click()
+  await sheet.getByRole("combobox", { name: "Numerator" }).click()
+  await page.getByRole("option", { name: "Rent per head" }).click()
+  await sheet.getByRole("combobox", { name: "Denominator" }).click()
+  await page.getByRole("option", { name: "Rent per head" }).click()
+  await sheet.getByRole("radio", { name: "Module default" }).first().click()
+  await sheet.getByRole("button", { name: "Save changes" }).click()
+  await page.getByRole("alertdialog").getByRole("button", { name: "Save and clear values" }).click()
+  await expect(toastWith(page, "Line item saved").last()).toBeVisible()
+  await expect(blueprintRow(page, "Utilities")).toContainText("Ratio")
+})
+
 test("the module settings rename the module, confirm a change of dimensions and delete it", async ({
   page,
 }) => {
