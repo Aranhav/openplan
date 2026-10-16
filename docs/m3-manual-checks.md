@@ -63,7 +63,7 @@ Needs: a desktop browser whose window can be dragged to narrower and wider, with
 1. Make the window about 1000 px wide. Expected: the row shows Pivot, the page selectors, Filter, Show/hide, the summaries toggle, Conditional formatting and the saved views; no More button.
 2. Drag the window narrower until the filter, show/hide, summaries and formatting controls disappear and a More button (three dots) takes their place. Expected: this happens at one width, without the controls flickering in and out while the edge moves.
 3. Open the More menu, and drag the window slowly to under 768 px and back to over it. Expected: the menu stays open or closes cleanly (no orphan menu left on screen), nothing in the row is cut off, overlaps another control, or makes the page scroll sideways, and the focus is on the More button or on the page, not lost.
-4. With the window at 700 px open the More menu, choose Filter, and resize back to over 1000 px. Expected: the panel stays open and attached to the Filter button, which is back in the row.
+4. With the window at 700 px open the More menu, choose Filter, and resize back to over 1000 px. Expected: the panel is not left floating where the More button was: it is open beside a control of the row, or it has closed, and the focus is on the page, not lost.
 5. Go down to about 400 px. Expected: the row wraps onto more lines instead of clipping, and the page does not scroll sideways.
 
 ## 5. Screen reader: the live indicator and the formula problem count
@@ -74,13 +74,13 @@ Needs: VoiceOver (macOS, Safari) and NVDA with Firefox or Chrome (Windows). Chec
 
 ### 5a. The live indicator
 
-The mark beside "Module settings" has the name "Live updates on" when the page is connected.
+The mark beside "Module settings" is an image named "Live updates on" when the page is connected.
 
-1. Open a module and let it connect. Expected: nothing is announced at first, and not at the moment it connects. Move to the mark with the virtual cursor: it is read as an image, "Live updates on".
-2. Stop the server (or turn the network off in the browser's developer tools). Expected: "Reconnecting…" is announced once, within a few seconds, and the mark changes to the arrows.
-3. After the server has been gone for a while (about a minute) Expected: "Live updates off" is announced once.
-4. Start the server again and reload. Expected: still silent when the connection is first made.
-5. Break and restore the connection once more while the page stays open. Expected: "Reconnecting…" when it breaks, and "Live updates on" when it is back, each once.
+1. Open a module and let it connect. Expected: nothing is announced, neither while it connects nor when it is live. Move to the mark with the virtual cursor: it is read as an image, "Live updates on".
+2. Stop the server (or turn the network off in the browser's developer tools). Expected: "Reconnecting…" is announced once, within a few seconds, and the mark changes to the arrows. It is not announced again at each retry.
+3. Start the server again (or turn the network on). Expected: "Live updates on" is announced once, and the mark is the green dot.
+4. Reload the page. Expected: silent again while it connects.
+5. Open a throwaway model on this page, and delete that model from a second browser. Expected: "Live updates off" is announced once, the mark becomes the crossed circle, and the page says the model is gone.
 
 ### 5b. The formula problem count
 
