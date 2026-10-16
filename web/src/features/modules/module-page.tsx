@@ -126,10 +126,11 @@ function ModuleScreen({
     <>
       <PageHeader
         title={module.name}
-        renderTitle={(headingClassName) => (
+        renderTitle={(headingClassName, headingRef) => (
           <ModuleTitle
             name={module.name}
             headingClassName={headingClassName}
+            headingRef={headingRef}
             locked={locked}
             onRename={
               canEdit

@@ -54,6 +54,27 @@ describe("useHeadingFocus", () => {
     expect(got).toBeNull()
   })
 
+  it("gives the heading that a page draws itself, which is handed the ref to give it by", async () => {
+    let got: HTMLElement | null = null
+    render(
+      <HeadingFocusProvider>
+        <PageHeader
+          title="Revenue"
+          renderTitle={(className, headingRef) => (
+            <h1 ref={headingRef} tabIndex={-1} className={className}>
+              Revenue, renamed in place
+            </h1>
+          )}
+        />
+        <Probe onGet={(heading) => (got = heading)} />
+      </HeadingFocusProvider>,
+    )
+
+    await userEvent.click(screen.getByRole("button", { name: "Ask" }))
+
+    expect(got).toBe(screen.getByRole("heading", { level: 1, name: "Revenue, renamed in place" }))
+  })
+
   it("gives nothing where there is no page around, such as a component on its own", async () => {
     let got: HTMLElement | null | undefined
     render(

@@ -1,6 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { Loader2, Pencil } from "lucide-react"
-import { useEffect, useRef, useState } from "react"
+import { type RefCallback, useEffect, useRef, useState } from "react"
 import { useForm } from "react-hook-form"
 import { z } from "zod"
 import { ProductionLock } from "@/components/production-lock"
@@ -18,6 +18,8 @@ interface ModuleTitleProps {
   name: string
   /** The class of the page's title, from `PageHeader`. */
   headingClassName: string
+  /** The ref of the page's title, from `PageHeader`, which is how focus finds it. */
+  headingRef: RefCallback<HTMLHeadingElement>
   /** Saves the new name; a refusal it throws is shown under the input. */
   onRename?: (name: string) => Promise<void>
   /** Whether production mode switches renaming off. */
@@ -28,7 +30,13 @@ interface ModuleTitleProps {
  * The name of a module, as the title of its page. Where the user may rename it, a button next to
  * it turns the title into an input: Enter saves, Escape gives up, and leaving the input saves.
  */
-export function ModuleTitle({ name, headingClassName, onRename, locked }: ModuleTitleProps) {
+export function ModuleTitle({
+  name,
+  headingClassName,
+  headingRef,
+  onRename,
+  locked,
+}: ModuleTitleProps) {
   const [editing, setEditing] = useState(false)
   const button = useRef<HTMLButtonElement>(null)
   // Whether focus goes back to the button once the input is gone: after Enter or Escape, not
@@ -45,7 +53,9 @@ export function ModuleTitle({ name, headingClassName, onRename, locked }: Module
   if (editing && onRename) {
     return (
       <>
-        <h1 className="sr-only">{name}</h1>
+        <h1 ref={headingRef} className="sr-only">
+          {name}
+        </h1>
         <NameInput
           name={name}
           onRename={onRename}
@@ -59,7 +69,7 @@ export function ModuleTitle({ name, headingClassName, onRename, locked }: Module
   }
   return (
     <div className="flex min-w-0 items-center gap-1">
-      <h1 tabIndex={-1} className={headingClassName}>
+      <h1 ref={headingRef} tabIndex={-1} className={headingClassName}>
         {name}
       </h1>
       {onRename && (
