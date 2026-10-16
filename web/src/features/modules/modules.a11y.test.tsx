@@ -11,6 +11,8 @@ import { server } from "@/test/server"
 import {
   makeLineItem,
   makeStructure,
+  productsId,
+  regionsId,
   revenueAmount,
   revenueMargin,
   revenueModule,
@@ -18,6 +20,7 @@ import {
   unitsSold,
 } from "@/test/structure"
 import { serveViewQuery } from "@/test/view-query"
+import { makeView, memberOf, serveMembers, serveViews } from "@/test/views"
 import { mockViewport } from "@/test/viewport"
 
 vi.mock("@/features/grid/measure-text", () => ({
@@ -103,6 +106,79 @@ describe("a module's page", () => {
     await screen.findByRole("grid", { name: "Revenue grid" })
 
     expect(await violations()).toEqual([])
+  })
+
+  describe("with the toolbar of the grid", () => {
+    /** The grid tab as it is with saved views, members to choose from, and changes that are not saved. */
+    async function openToolbar() {
+      const quarterly = makeView({
+        id: "view-q",
+        module_id: revenueModule.id,
+        name: "Quarterly review",
+        is_default: true,
+        definition: {
+          rows: [{ kind: "line_items" }],
+          columns: [{ kind: "time" }],
+          pages: [
+            { dim: { kind: "list", list: regionsId }, key: null },
+            { dim: { kind: "list", list: productsId }, key: null },
+            { dim: { kind: "versions" }, key: null },
+          ],
+        },
+      })
+      open(modulePath)
+      serveViews([quarterly])
+      serveMembers(() => [memberOf("a", "Alpha"), memberOf("b", "Beta")])
+      await screen.findByRole("grid", { name: "Revenue grid" })
+      const bar = within(await screen.findByRole("group", { name: "Grid controls" }))
+      await bar.findByRole("combobox", { name: /^Regions/ })
+      return bar
+    }
+
+    it("has none, with a view that has changes that are not saved", async () => {
+      const user = userEvent.setup()
+      const bar = await openToolbar()
+      await user.click(bar.getByRole("button", { name: "Summaries" }))
+      await bar.findByText("Modified")
+
+      expect(await violations()).toEqual([])
+    })
+
+    it.each([
+      ["Pivot", "Pivot"],
+      ["Filter", "Filter rows"],
+      ["Show/hide", "Show or hide members"],
+    ])("has none with the %s panel open", async (button, panel) => {
+      const user = userEvent.setup()
+      const bar = await openToolbar()
+
+      await user.click(bar.getByRole("button", { name: button }))
+      await screen.findByRole("dialog", { name: panel })
+
+      expect(await violations()).toEqual([])
+    })
+
+    it("has none with the conditional formatting sheet open", async () => {
+      const user = userEvent.setup()
+      const bar = await openToolbar()
+
+      await user.click(bar.getByRole("button", { name: "Conditional formatting" }))
+      await user.click(await screen.findByRole("button", { name: "Add rule" }))
+
+      expect(await violations()).toEqual([])
+    })
+
+    it("has none with the menu of the saved views open", async () => {
+      const user = userEvent.setup()
+      const bar = await openToolbar()
+
+      await user.click(bar.getByRole("button", { name: "View actions" }))
+      await screen.findByRole("menuitem", { name: "Save as…" })
+
+      // Radix traps the focus in the open menu, so the controls it hides are out of reach, and
+      // draws the menu outside the page's landmarks.
+      expect(await violations({ ignore: ["aria-hidden-focus", "region"] })).toEqual([])
+    })
   })
 
   it.each([

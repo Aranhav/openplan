@@ -106,7 +106,11 @@ export function GridToolbar({
           dispatch={dispatch}
         />
         <Separator orientation="vertical" className="mx-0.5 h-5" />
-        <div ref={pages} className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto [scrollbar-width:thin]">
+        {/* The padding leaves room for the focus rings, which a scrolling box would cut off. */}
+        <div
+          ref={pages}
+          className="-mx-1 -my-1 flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto px-1 py-1 [scrollbar-width:thin]"
+        >
           <PageSelectors
             modelId={modelId}
             module={module}

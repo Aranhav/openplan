@@ -412,7 +412,7 @@ function RuleCard({ form, index, count, lineItems, onMove, onRemove }: RuleCardP
                     <span
                       aria-hidden
                       className={cn(
-                        "size-3.5 rounded-full ring-offset-1 ring-offset-background [[data-state=on]_&]:ring-2 [[data-state=on]_&]:ring-ring",
+                        "size-3.5 rounded-full ring-offset-1 ring-offset-background [[data-state=on]_&]:ring-2 [[data-state=on]_&]:ring-foreground/70",
                         SWATCH[color],
                       )}
                     />

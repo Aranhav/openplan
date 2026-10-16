@@ -1,4 +1,4 @@
-import { type RefObject, useLayoutEffect, useRef, useState } from "react"
+import { type RefObject, useEffect, useLayoutEffect, useRef, useState } from "react"
 
 /**
  * Whether the toolbar has to put its secondary controls in the More menu: it does when the row
@@ -13,6 +13,18 @@ export function useToolbarFit(
   const [compact, setCompact] = useState(false)
   // How wide the row has to be for the wide layout to fit, as of the last time it did not.
   const needed = useRef(0)
+  // The width of the row, kept so that a window that changes size checks again.
+  const [, setWidth] = useState(0)
+
+  useEffect(() => {
+    const element = row.current
+    if (!element) {
+      return
+    }
+    const observer = new ResizeObserver(() => setWidth(element.clientWidth))
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [row])
 
   // After every render, since what the page selectors say (a member's name) changes what they need.
   useLayoutEffect(() => {
@@ -34,9 +46,6 @@ export function useToolbarFit(
       }
     }
     check()
-    const observer = new ResizeObserver(check)
-    observer.observe(element)
-    return () => observer.disconnect()
   })
 
   return compact
