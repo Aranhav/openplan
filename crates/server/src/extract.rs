@@ -1,4 +1,4 @@
-use std::error::Error as _;
+use std::{error::Error as _, fmt, marker::PhantomData};
 
 use axum::{
     Json,
@@ -9,7 +9,10 @@ use axum::{
     },
     http::{HeaderMap, StatusCode, header::CONTENT_TYPE, request::Parts},
 };
-use serde::{Deserialize, Deserializer, de::DeserializeOwned};
+use serde::{
+    Deserialize, Deserializer,
+    de::{DeserializeOwned, IgnoredAny, SeqAccess, Visitor},
+};
 
 use crate::{
     error::{AppError, FieldError},
@@ -140,6 +143,76 @@ where
     D: Deserializer<'de>,
 {
     Option::<T>::deserialize(deserializer).map(Some)
+}
+
+/// A list in a JSON body of which at most `N` elements are read into memory. Whatever comes
+/// after them is read as far as JSON goes, to find the end of the list, and counted, so that the
+/// handler can refuse a list that is too long without having made room for all of it. A request
+/// that is a few megabytes of `"",` takes 10 times that when it is read into a list of texts,
+/// and twice that while the list grows.
+pub struct Capped<T, const N: usize> {
+    items: Vec<T>,
+    total: usize,
+}
+
+impl<T, const N: usize> Capped<T, N> {
+    /// How many elements the list had, of which at most `N` were kept.
+    pub fn total(&self) -> usize {
+        self.total
+    }
+
+    /// Whether the list had more than `N` elements.
+    pub fn is_over(&self) -> bool {
+        self.total > N
+    }
+
+    /// The elements that were kept, the first `N`.
+    pub fn into_vec(self) -> Vec<T> {
+        self.items
+    }
+}
+
+impl<T, const N: usize> Default for Capped<T, N> {
+    fn default() -> Self {
+        Capped {
+            items: Vec::new(),
+            total: 0,
+        }
+    }
+}
+
+impl<'de, T: Deserialize<'de>, const N: usize> Deserialize<'de> for Capped<T, N> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Elements<T, const N: usize>(PhantomData<T>);
+
+        impl<'de, T: Deserialize<'de>, const N: usize> Visitor<'de> for Elements<T, N> {
+            type Value = Capped<T, N>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a list")
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(self, mut list: A) -> Result<Capped<T, N>, A::Error> {
+                let mut items = Vec::new();
+                while items.len() < N {
+                    match list.next_element()? {
+                        Some(item) => items.push(item),
+                        None => {
+                            let total = items.len();
+                            return Ok(Capped { items, total });
+                        }
+                    }
+                }
+                let mut total = N;
+                while list.next_element::<IgnoredAny>()?.is_some() {
+                    total += 1;
+                }
+                Ok(Capped { items, total })
+            }
+        }
+
+        deserializer.deserialize_seq(Elements(PhantomData))
+    }
 }
 
 /// A path parameter whose rejections are `application/problem+json` 404s: a
@@ -632,5 +705,34 @@ mod tests {
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
         assert_eq!(json["errors"][0]["field"], "query");
         assert_eq!(json["errors"][0]["message"], "The query string is invalid.");
+    }
+
+    #[test]
+    fn a_capped_list_keeps_what_fits_and_counts_the_rest() {
+        let list: Capped<u32, 3> = serde_json::from_str("[1,2,3,4,5]").unwrap();
+        assert_eq!(list.total(), 5);
+        assert!(list.is_over());
+        assert_eq!(list.into_vec(), [1, 2, 3]);
+
+        let list: Capped<u32, 3> = serde_json::from_str("[1,2,3]").unwrap();
+        assert_eq!(list.total(), 3);
+        assert!(!list.is_over());
+        assert_eq!(list.into_vec(), [1, 2, 3]);
+
+        let list: Capped<u32, 3> = serde_json::from_str("[]").unwrap();
+        assert_eq!(list.total(), 0);
+        assert!(!list.is_over());
+        assert!(list.into_vec().is_empty());
+    }
+
+    #[test]
+    fn a_capped_list_reads_the_elements_it_does_not_keep_only_as_far_as_json_goes() {
+        // Elements past the cap are not read into the type, so they need not fit it ...
+        let list: Capped<u32, 1> = serde_json::from_str(r#"[1,"two",{"three":3}]"#).unwrap();
+        assert_eq!(list.total(), 3);
+        // ... but they are still JSON, and a kept one has to fit.
+        assert!(serde_json::from_str::<Capped<u32, 1>>("[1,2,").is_err());
+        assert!(serde_json::from_str::<Capped<u32, 2>>(r#"[1,"two"]"#).is_err());
+        assert!(serde_json::from_str::<Capped<u32, 1>>("5").is_err());
     }
 }

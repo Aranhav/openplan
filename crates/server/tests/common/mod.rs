@@ -1,7 +1,7 @@
 // Each test crate compiles this module and uses only part of it.
 #![allow(dead_code)]
 
-use std::collections::HashMap;
+use std::{collections::HashMap, net::SocketAddr};
 
 use axum::{
     Router,
@@ -80,6 +80,36 @@ impl TestApp {
             db: self.db.clone(),
             cookies: self.cookies.clone(),
         }
+    }
+
+    /// The `Cookie` header and the CSRF token of the signed-in client, for requests that are sent
+    /// over a socket instead of through the router.
+    pub fn credentials(&self) -> (String, String) {
+        let cookie = self
+            .cookies
+            .iter()
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        (
+            cookie,
+            self.cookies.get(CSRF_COOKIE).cloned().unwrap_or_default(),
+        )
+    }
+
+    /// Serves the app on a port of the local machine, as the binary does, and returns the
+    /// address. The server runs until the test ends.
+    pub async fn serve(&self) -> SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = self
+            .router
+            .clone()
+            .into_make_service_with_connect_info::<SocketAddr>();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        address
     }
 
     /// Makes the client lose a cookie, as a browser does when site data is cleared.

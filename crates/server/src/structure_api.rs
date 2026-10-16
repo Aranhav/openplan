@@ -9,8 +9,8 @@ use std::ops::RangeInclusive;
 
 use axum::{
     Json, Router,
-    extract::State,
-    http::StatusCode,
+    extract::{FromRequestParts, State},
+    http::{StatusCode, request::Parts},
     routing::{delete, get, patch, post, put},
 };
 use openplan_engine::{
@@ -394,6 +394,31 @@ pub(crate) async fn handle_for(
         });
     }
     state.models.get(model_id).await
+}
+
+/// The actor of the model, for a caller who may read the model. It is taken from the head of the
+/// request, ahead of the body, so that a caller who may not read the model is refused without the
+/// body, which may be megabytes, being read.
+pub(crate) struct Viewer {
+    pub(crate) handle: ModelHandle,
+}
+
+impl FromRequestParts<AppState> for Viewer {
+    type Rejection = AppError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> AppResult<Viewer> {
+        let user = CurrentUser::from_request_parts(parts, state).await?;
+        let ApiPath(model_id) = ApiPath::<Uuid>::from_request_parts(parts, state).await?;
+        let handle = handle_for(
+            state,
+            &user,
+            model_id,
+            WorkspaceRole::Viewer,
+            ProdLock::Ignore,
+        )
+        .await?;
+        Ok(Viewer { handle })
+    }
 }
 
 /// Stores the version `id` as the request says, inside the actor, against the calendar the model
