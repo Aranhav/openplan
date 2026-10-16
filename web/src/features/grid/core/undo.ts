@@ -10,10 +10,17 @@ export type CellEdit = {
 }
 
 /**
- * Edits made together (one typed value, one paste), undone and redone together. `where` is the
- * range of the grid they were made in, for the grid to select again when it undoes or redoes them.
+ * Where in the grid a batch was made: a range of positions, in the view whose query has the key
+ * `view`. In another view (a member was collapsed, a filter set) the same positions are other
+ * cells.
  */
-export type EditBatch = { edits: CellEdit[]; where?: CellRange }
+export type Placement = { range: CellRange; view: string }
+
+/**
+ * Edits made together (one typed value, one paste), undone and redone together. `where` is the
+ * place of the grid they were made in, for the grid to select again when it undoes or redoes them.
+ */
+export type EditBatch = { edits: CellEdit[]; where?: Placement }
 
 const MAX_ENTRIES = 100
 

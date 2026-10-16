@@ -1,9 +1,12 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react"
+import { QueryClientProvider } from "@tanstack/react-query"
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { HttpResponse, delay, http } from "msw"
 import { toast } from "sonner"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { QUERY_STALE_TIME } from "@/lib/query-client"
 import { problem } from "@/test/problem"
+import { createTestQueryClient } from "@/test/render"
 import { server } from "@/test/server"
 import {
   ACTIVE,
@@ -17,19 +20,34 @@ import {
   type Body,
   cellAt,
   editCell,
+  editQuery,
   editView,
   expectActive,
   holdCells,
   lineItems,
   number,
+  reference,
   renderGrid,
   select,
+  serveCells,
   setup,
   written,
 } from "@/test/edit-view"
-import { lineItem, numberCell, salesView, serveViewQuery } from "@/test/view-query"
+import {
+  MODEL_ID,
+  header,
+  lineItem,
+  member,
+  numberCell,
+  productsList,
+  salesView,
+  serveViewQuery,
+  serveViewQueryBy,
+} from "@/test/view-query"
 import { numberFormat } from "@/test/number-format"
 import { mockViewport } from "@/test/viewport"
+import { Grid } from "./grid"
+import type { GridQuery, ViewQuery } from "./view-types"
 
 vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }))
 
@@ -881,6 +899,45 @@ describe("after undo, redo and paste", () => {
 
     await waitFor(() => expect(grid.scrollTop).toBe(0))
     await waitFor(() => expectActive(grid, 0, 0))
+  })
+
+  it("does not select positions of the old view once the view has changed", async () => {
+    // Hiding a product moves the ones below it up a row, so row 4 is another product.
+    const rowsOf = (q: ViewQuery) => {
+      const hidden = new Set((q.hidden ?? []).map((ref) => ref.key))
+      return [0, 1, 2, 3, 4, 5].filter((product) => !hidden.has(`p${product}`))
+    }
+    serveViewQueryBy((q) => {
+      const products = rowsOf(q)
+      return editView({
+        totalRows: products.length,
+        rowHeader: (row) => header(member(`p${products[row]}`, `Product ${products[row]}`)),
+      })
+    })
+    const bodies = serveCells()
+    const queryClient = createTestQueryClient({ staleTime: QUERY_STALE_TIME })
+    const gridOf = (query: GridQuery) => (
+      <QueryClientProvider client={queryClient}>
+        <Grid modelId={MODEL_ID} query={query} reference={reference} />
+      </QueryClientProvider>
+    )
+    const { rerender } = render(gridOf(editQuery))
+    const grid = await screen.findByRole("grid")
+    await waitFor(() => expect(cellAt(grid, 0, 0).textContent).not.toBe(""))
+    await select(grid, 4, BUDGET)
+    await userEvent.keyboard("42{Enter}")
+    await waitFor(() => expect(bodies).toHaveLength(1))
+    await select(grid, 0, NOTES)
+
+    rerender(gridOf({ ...editQuery, hidden: [{ dim: productsList, key: "p1" }] }))
+    await waitFor(() =>
+      expect(within(grid).queryByRole("rowheader", { name: "Product 1" })).not.toBeInTheDocument(),
+    )
+    await userEvent.keyboard("{Control>}z{/Control}")
+
+    await waitFor(() => expect(bodies).toHaveLength(2))
+    expect(bodies[1].edits).toEqual([written("li-budget", 4, number(40))])
+    expectActive(grid, 0, NOTES)
   })
 
   it("paste selects the block that was pasted, with the active cell at its top left", async () => {

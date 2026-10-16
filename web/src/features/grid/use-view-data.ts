@@ -103,6 +103,8 @@ export type ViewData = ViewShape & {
    */
   isPlaceholder: boolean
   error: Error | null
+  /** The key of the query of the view shown: the previous query's while it is a placeholder. */
+  viewKey: string
   lineItems: LineItemInfo[]
   /** The header of a row, once the block that holds it has loaded. */
   rowHeaders(row: number): Header | undefined
@@ -430,11 +432,12 @@ export function useViewData(modelId: string, query: GridQuery, visible: CellRang
     return assemble(loaded).lookup
   }
   const showPrevious = !loadedNow && settled !== null && settled.key !== key
-  const shown = showPrevious ? settled : { shape, lookup }
+  const shown = showPrevious ? settled : { key, shape, lookup }
 
   return {
     ...shown.shape,
     ...shown.lookup,
+    viewKey: shown.key,
     error,
     isPlaceholder: showPrevious && error === null,
     isFetching: origin.isFetching || others.isFetching,

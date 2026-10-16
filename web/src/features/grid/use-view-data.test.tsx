@@ -1,4 +1,4 @@
-import { QueryClientProvider } from "@tanstack/react-query"
+import { QueryClientProvider, hashKey } from "@tanstack/react-query"
 import { act, renderHook, waitFor } from "@testing-library/react"
 import type { ReactNode } from "react"
 import { HttpResponse, delay, http } from "msw"
@@ -221,15 +221,21 @@ describe("useViewData", () => {
     )
     await waitFor(() => expect(result.current.cell(0, 0)).toBeDefined())
 
-    rerender({ query: { ...salesQuery, show_summaries: false } })
+    expect(result.current.viewKey).toBe(hashKey([MODEL_ID, salesQuery]))
+    const next = { ...salesQuery, show_summaries: false }
+
+    rerender({ query: next })
 
     expect(result.current.isPlaceholder).toBe(true)
+    // The key is of the view that is shown, which is still the previous one.
+    expect(result.current.viewKey).toBe(hashKey([MODEL_ID, salesQuery]))
     expect(result.current.totalRows).toBe(1000)
     expect(result.current.cell(0, 0)?.value).toEqual({ t: "number", v: 0 })
     expect(result.current.rowHeaders(0)?.members[0].label).toBe("Product 1")
     expect(result.current.colHeaders(0)?.members[1].label).toBe("Line item 0")
     expect(result.current.lineItems).toHaveLength(25)
     await waitFor(() => expect(result.current.isPlaceholder).toBe(false))
+    expect(result.current.viewKey).toBe(hashKey([MODEL_ID, next]))
     expect(result.current.cell(0, 0)).toBeDefined()
   })
 

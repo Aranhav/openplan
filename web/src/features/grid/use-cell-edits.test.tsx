@@ -453,7 +453,7 @@ describe("useCellEdits history", () => {
   it("tells where an undone or redone batch was made, as soon as it is taken up", async () => {
     const response = gate()
     serveCells({ hold: [Promise.resolve(), response.opened, Promise.resolve()] })
-    const where = { rowStart: 2, rowEnd: 3, colStart: 1, colEnd: 1 }
+    const where = { range: { rowStart: 2, rowEnd: 3, colStart: 1, colEnd: 1 }, view: "view-a" }
     const { result, onReplay } = setup()
     await act(async () => {
       await result.current.commit([edit(5)], where)

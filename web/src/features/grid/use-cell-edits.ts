@@ -6,8 +6,7 @@ import { queryKeys } from "@/lib/api/keys"
 import { cellKey } from "./cell-targets"
 import { writeCells } from "./cells-api"
 import type { Value } from "./core/types"
-import type { CellRange } from "./core/selection"
-import { type CellEdit, UndoStack } from "./core/undo"
+import { type CellEdit, type Placement, UndoStack } from "./core/undo"
 
 type Side = "before" | "after"
 
@@ -19,7 +18,7 @@ export type BatchSource = "edit" | "paste" | "fill"
 
 type Handlers = {
   /** A batch was taken up by undo or redo: where it was made. */
-  onReplay?: (where: CellRange) => void
+  onReplay?: (where: Placement) => void
   /**
    * The server took a batch, or an undo or redo of one, and the views have been read again: how
    * many cells it was and what made it. A refusal is not reported here, it has its toast.
@@ -124,7 +123,7 @@ export function useCellEdits(modelId: string, moduleId: string, handlers: Handle
    */
   async function commit(
     edits: readonly CellEdit[],
-    where?: CellRange,
+    where?: Placement,
     source: BatchSource = "edit",
   ): Promise<boolean> {
     if (edits.length === 0) {

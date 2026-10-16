@@ -1,4 +1,4 @@
-import { type RefObject, useEffect, useEffectEvent, useState } from "react"
+import { type RefObject, useEffect, useEffectEvent, useRef, useState } from "react"
 import { toast } from "sonner"
 import { errorDetail } from "@/lib/api/client"
 import { type CellReader, type CellTarget, cellKey, cellTarget } from "./cell-targets"
@@ -15,7 +15,7 @@ import {
   rangeOf,
 } from "./core/selection"
 import type { Format, Value } from "./core/types"
-import type { CellEdit } from "./core/undo"
+import type { CellEdit, Placement } from "./core/undo"
 import { type GridReference, displayText, parseContextFor, sameValue } from "./edit-reference"
 import { shortcut } from "./shortcuts"
 import { type BatchSource, useCellEdits } from "./use-cell-edits"
@@ -37,6 +37,8 @@ type EditorState = {
 type Options = {
   modelId: string
   moduleId: string
+  /** The key of the query of the view that is shown: the cells' positions are positions in it. */
+  view: string
   /** Nothing can be written: a viewer, or a view that is not the current one yet. */
   readOnly: boolean
   reference: GridReference
@@ -114,6 +116,7 @@ function rangeOfPositions(positions: readonly Pos[]): CellRange {
 export function useGridEditing({
   modelId,
   moduleId,
+  view,
   readOnly,
   reference,
   selection,
@@ -127,9 +130,23 @@ export function useGridEditing({
   gridRef,
   focusGrid,
 }: Options) {
+  // The view that is shown now: undo and redo are taken up once the writes before them are done,
+  // and a closure of the render that asked for them would still know the view of then.
+  const shown = useRef(view)
+  useEffect(() => {
+    shown.current = view
+  }, [view])
+
+  /** Selects where a batch was made, unless the view changed: its positions are other cells. */
+  function selectPlacement(where: Placement) {
+    if (where.view === shown.current) {
+      selectRange(where.range)
+    }
+  }
+
   const edits = useCellEdits(modelId, moduleId, {
     // Undo and redo show what they changed.
-    onReplay: selectRange,
+    onReplay: selectPlacement,
     // A paste and a fill say what they did, and a refusal has its toast; one cell saved is said here.
     onSaved: (count, source) => {
       if (count === 1 && source !== "paste" && source !== "fill") {
@@ -174,7 +191,7 @@ export function useGridEditing({
     source: BatchSource = "edit",
   ): Promise<boolean> {
     const changes = candidates.flatMap(({ target, value }) => changeOf(target, value) ?? [])
-    return edits.commit(changes, where, source)
+    return edits.commit(changes, { range: where, view }, source)
   }
 
   function toggle(target: CellTarget, pos: Pos) {
@@ -398,7 +415,7 @@ export function useGridEditing({
     }
     // The pasted cells are selected, with the active cell at the top left, once it is known that
     // every value fits.
-    selectRange(pasted)
+    selectPlacement({ range: pasted, view })
     if (await write(candidates, pasted, "paste")) {
       toast.success(`Pasted ${cells(candidates.length)}${skippedNote(skipped)}`)
     }

@@ -297,6 +297,7 @@ export function Grid({
   const editing = useGridEditing({
     modelId,
     moduleId: query.module,
+    view: data.viewKey,
     readOnly: readOnly || data.isPlaceholder,
     reference,
     selection,
